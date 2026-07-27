@@ -7,8 +7,11 @@
 
 「添削結果」スプレッドシートの内容をAnkiカード化し、Google Cloud
 Text-to-Speech(Chirp 3: HD対応)で音声を自動追加するデスクトップGUIツール。
-片桐が日常的に使うローカルツールで、Windows上で `AnkiTTSツール.bat` から
-`pythonw` 経由で起動する。
+片桐が日常的に使うローカルツールで、Windows上で `ANKI出力ツール.bat` から
+`pythonw` 経由で起動する。**2026-07-27に「ANKI出力ツール」へ改称**
+(TTS音声追加専用のツールではなくなった実態に合わせたもの。ウィンドウ
+タイトル・起動用バッチファイル名・ビルド成果物名を変更。Pythonの内部
+クラス名`AnkiTTSApp`は変更していない)。
 
 もともと `anki_tts_gui.py` という1ファイル(約1270行)にGUIとバックエンド処理が
 すべて混在していたが、責務ごとに分割済み。**分割後のファイルが正典**であり、
@@ -56,7 +59,7 @@ card_def_builder.py
                   汎用モジュール(実装済み)
 config.json       APIキー・音声設定などの保存先(平文注意・Git管理対象外)
 backup/           自動バックアップされた.apkgの保存先
-AnkiTTSツール.bat  起動用バッチファイル(pythonw tts_gui.py を実行)
+ANKI出力ツール.bat 起動用バッチファイル(pythonw tts_gui.py を実行)
 ```
 
 ### tts_core.py
@@ -698,14 +701,31 @@ example_ja/example_blank/noteの7キーを受け取る。
 ## カード定義エディタ(⚙設定「カード定義」タブ)
 
 2026-07-27に「各タブが出力するカードタイプ・フィールド情報を、コード編集
-無しに直接編集・作成したい」との要望を受けて追加。**対象範囲は2026-07-27
-時点で「単語」タブのみ**(`card_defs.py`のdocstring参照。DailyConversation・
-習熟用は単純なフィールド値の詰め替えではない複雑な独自レンダリングロジックを
-持つため、この汎用システムにはまだ載せていない)。
+無しに直接編集・作成したい」との要望を受けて追加。当初は「単語」タブのみを
+対象にしていたが、同日中に「既存のタブに使用されるカードタイプを設定内で
+網羅してほしい」との追加要望を受け、DailyConversation・習熟用の定義も
+一覧に載せるよう拡張した。ただし**実際に編集して出力に反映できるのは
+「単語」のみ**で、DailyConversation・習熟用は`"editable": False`を持つ
+**参照専用**の定義として登録してある(単純なフィールド値の詰め替えでは
+ない複雑な独自レンダリングロジックを持つため、この汎用ビルダー
+(`card_def_builder.py`)経由の出力にはまだ移行していない。詳細は
+`card_defs.py`のdocstring参照)。
 
 - **一覧**(`self.carddef_listbox`): `card_defs.list_defs()`をkey順に表示
   (`refresh_carddef_listbox`)。選択すると`on_carddef_selected`→
-  `_load_carddef_into_form`でフォームに反映される。
+  `_load_carddef_into_form`でフォームに反映される。起動時に
+  `seed_default_word_def_if_missing`/`seed_default_daily_def_if_missing`/
+  `seed_default_shuujuku_def_if_missing`(いずれも`AnkiTTSApp.__init__`から
+  呼ばれる)が、未登録の定義があればそれぞれの`build_*.py`から一度だけ
+  自動シードする。
+- **参照専用(`editable: False`)の扱い**(2026-07-27追加): DailyConversation・
+  習熟用の定義を選択すると、キー欄の下に赤字の警告
+  (`self.carddef_readonly_warning`。「編集して保存しても、このタブの実際の
+  出力には反映されません」)が表示され、「保存」ボタン(`self.carddef_save_btn`)
+  も無効化される(`_load_carddef_into_form`)。`on_carddef_save_clicked`側にも
+  `self._carddef_current_editable`が`False`なら保存を拒否する二重チェックを
+  入れてある(ボタン無効化を過信しない防御的な実装)。新規作成・apkg読み込みで
+  作った定義は既定で`editable: True`。
 - **使用タブの明示**(2026-07-27追加): 「このカードタイプがどのタブの機能に
   属するか分かりにくい」という指摘への対応。一覧の各行に`[○○タブ]`または
   `[未接続]`を付記するほか(`refresh_carddef_listbox`)、フォーム上部のキー欄
@@ -814,9 +834,9 @@ example_ja/example_blank/noteの7キーを受け取る。
   実データでの検証は引き続き必要)
 - `PLACEHOLDER_TOKENS`の1項目の確認(上記「習熟用(ATSU方式)カード生成との関係」
   のローカルコピー注記を参照。低優先度)
-- exeの再ビルド: `README_BUILD.txt`/`AnkiTTSツール.spec`は`tts_gui.py`+
+- exeの再ビルド: `README_BUILD.txt`/`ANKI出力ツール.spec`は`tts_gui.py`+
   スプレッドシート連携対応に更新済みだが、実際のビルド・動作確認は未実施
-  (現状は`AnkiTTSツール.bat`からpythonw起動で運用中のため急ぎではない)
+  (現状は`ANKI出力ツール.bat`からpythonw起動で運用中のため急ぎではない)
 - サービスアカウントJSONキーの保管場所がGoogle Drive同期フォルダ内のまま
   (片桐いわく仮置き。ローカル専用フォルダへの移動と、移動後の
   `SHEETS_WRITER_CREDENTIALS`環境変数の更新が必要)

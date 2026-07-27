@@ -14,11 +14,19 @@ build_word_v1.pyのような「1notetype=1つのPythonファイル」方式だ�
 直接編集できるようにするためのデータ層。
 
 【対象範囲(重要)】
-2026-07-27時点では「単語」タブのみがこの仕組みを使う。DailyConversation
-(build_grammar_dailyconv_v1_final.py)・習熟用(build_shuujuku_v1.py)は
-単純なフィールド値の詰め替えではなく複雑な独自レンダリングロジックを
-持つため、この汎用システムには**まだ**載せていない(移行のリスクが
-見合わないため)。将来的に載せたくなった場合は個別に設計すること。
+「⚙設定→カード定義」の一覧に、既存タブが使うカードタイプを網羅する
+(2026-07-27、片桐の指示「既存のタブに使用されるカードタイプを設定内で
+網羅してください」への対応)。ただし実際に**編集して出力に反映できる**のは
+「単語」タブのみ。DailyConversation(build_grammar_dailyconv_v1_final.py)・
+習熟用(build_shuujuku_v1.py)は単純なフィールド値の詰め替えではなく複雑な
+独自レンダリングロジックを持つため、この汎用ビルダー(card_def_builder.py)
+経由の出力には**まだ**移行していない。この2つは`"editable": False`を
+持つ**参照専用**の定義として登録し(`seed_default_daily_def_if_missing`/
+`seed_default_shuujuku_def_if_missing`)、一覧・フォームには表示するが、
+tts_gui.py側でフォームの保存操作を無効化し、「このタブは編集を保存しても
+出力には反映されません」と警告する(移行のリスクが見合わないため、
+実データは今後もそれぞれのbuild_*.pyが正)。将来的に本当に統合したく
+なった場合は個別に設計すること。
 
 【定義(1件)のスキーマ】
 {
@@ -31,6 +39,8 @@ build_word_v1.pyのような「1notetype=1つのPythonファイル」方式だ�
     "deck_name": "02.単語・MindTips::単語",
     "dedup_key": "word",             # itemディクショナリのうち、guid生成・
                                       # 重複防止キーに使うキー名
+    "editable": True,                # Falseの場合、参照専用(フォームでの
+                                      # 保存は無効化される。省略時はTrue扱い)
     "fields": [                      # Ankiフィールドの並び順そのもの
         {"anki_name": "Word", "item_key": "word"},
         ...
@@ -118,6 +128,7 @@ def seed_default_word_def_if_missing(path: str = None) -> bool:
             "deck_id": bw.DECK_ID,
             "deck_name": bw.DECK_NAME,
             "dedup_key": "word",
+            "editable": True,
             "fields": [
                 {"anki_name": "Word", "item_key": "word"},
                 {"anki_name": "Reading", "item_key": "reading"},
@@ -141,6 +152,88 @@ def seed_default_word_def_if_missing(path: str = None) -> bool:
                 },
             ],
             "css": bw.BASE_CSS,
+        },
+        path,
+    )
+    return True
+
+
+def seed_default_daily_def_if_missing(path: str = None) -> bool:
+    """「DailyConversation」の定義が無い場合、build_grammar_dailyconv_v1_final.py
+    の内容を**参照専用**(editable=False)として登録する。一覧上で「このタブは
+    どんなカードタイプか」を確認できるようにするためのもので、実際の出力は
+    引き続きprocess_sheet_rows()/build_deck()が行う(このcard_defを編集して
+    保存しても出力には反映されない。tts_gui.py側でSaveを無効化してある)。
+    戻り値: 実際に登録したかどうか。"""
+    if get_def("daily", path) is not None:
+        return False
+
+    import build_grammar_dailyconv_v1_final as bg
+
+    upsert_def(
+        {
+            "key": "daily",
+            "label": "DailyConversation",
+            "notetype_name": "Grammar DailyConversation (日次英作文添削 v1)",
+            "model_id": bg.MODEL_ID,
+            "deck_id": bg.DECK_ID,
+            "deck_name": bg.DECK_NAME,
+            "dedup_key": "",
+            "editable": False,
+            "fields": [
+                {"anki_name": "Pattern", "item_key": "pattern"},
+                {"anki_name": "Question", "item_key": "question"},
+                {"anki_name": "Choices", "item_key": "choices"},
+                {"anki_name": "Answer", "item_key": "answer"},
+                {"anki_name": "Example", "item_key": "example"},
+                {"anki_name": "ExampleJA", "item_key": "example_ja"},
+                {"anki_name": "Why", "item_key": "why"},
+                {"anki_name": "WhyNot", "item_key": "why_not"},
+                {"anki_name": "Score", "item_key": "score"},
+            ],
+            "templates": [
+                {
+                    "name": "1. 添削問題",
+                    "qfmt": bg.QUESTION_TEMPLATE_FRONT,
+                    "afmt": bg.QUESTION_TEMPLATE_BACK,
+                },
+            ],
+            "css": bg.CSS,
+        },
+        path,
+    )
+    return True
+
+
+def seed_default_shuujuku_def_if_missing(path: str = None) -> bool:
+    """「習熟用(音読)」の定義が無い場合、build_shuujuku_v1.pyの内容を
+    **参照専用**(editable=False)として登録する。理由・注意はseed_default_
+    daily_def_if_missingと同じ(実際の出力はrender_item()/build_deck()が
+    行い、card_defとしての保存は出力に反映されない)。
+    戻り値: 実際に登録したかどうか。"""
+    if get_def("shuujuku", path) is not None:
+        return False
+
+    import build_shuujuku_v1 as bs
+
+    upsert_def(
+        {
+            "key": "shuujuku",
+            "label": "習熟用(音読)",
+            "notetype_name": "ATSU方式 (PDF再現・音読用)",
+            "model_id": bs.MODEL_ID,
+            "deck_id": bs.DECK_ID,
+            "deck_name": bs.DECK_NAME,
+            "dedup_key": "",
+            "editable": False,
+            "fields": [
+                {"anki_name": "Num", "item_key": "num"},
+                {"anki_name": "Content", "item_key": "content"},
+            ],
+            "templates": [
+                {"name": "カード 1", "qfmt": bs.FRONT_TMPL, "afmt": bs.BACK_TMPL},
+            ],
+            "css": bs.BASE_CSS,
         },
         path,
     )

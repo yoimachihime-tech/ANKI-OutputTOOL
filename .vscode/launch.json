@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Anki TTS ツール (デバッグ)",
+      "name": "ANKI出力ツール (デバッグ)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/tts_gui.py",

@@ -1,4 +1,4 @@
-Anki TTS 音声追加ツール - Windows .exe 化の手順
+ANKI出力ツール - Windows .exe 化の手順
 ==================================================
 
 前提: Windows PC に Python がインストールされていること
@@ -26,7 +26,7 @@ tts_gui.py があるフォルダに移動してから(例: cd C:\Users\自分の
 以下を1行でそのまま実行してください(PowerShellでもコマンドプロンプトでも
 そのまま動きます):
 
-    python -m PyInstaller --onefile --windowed --name AnkiTTSツール --collect-all anki --collect-all tkinterdnd2 --collect-all lameenc --collect-all googleapiclient tts_gui.py
+    python -m PyInstaller --onefile --windowed --name ANKI出力ツール --collect-all anki --collect-all tkinterdnd2 --collect-all lameenc --collect-all googleapiclient tts_gui.py
 
 (同じフォルダにある sheets_reader.py / sheets_writer.py / deck_builder.py /
 build_grammar_dailyconv_v1_final.py は、tts_gui.py がimportしているため
@@ -41,7 +41,7 @@ build_grammar_dailyconv_v1_final.py は、tts_gui.py がimportしているため
   PATH(コマンド検索対象のフォルダ一覧)に含まれていない環境でも確実に
   動くようにするためです。
 - 以前のバージョンの手順では単純に
-    pyinstaller --onefile --windowed --name AnkiTTSツール anki_tts_gui.py
+    pyinstaller --onefile --windowed --name ANKI出力ツール anki_tts_gui.py
   としていましたが、この書き方だと ankiパッケージ内のRust製バイナリや
   tkinterdnd2の付属ファイルがexeに含まれず、実行時にエラーになることが
   あります。上記の --collect-all オプション付きコマンドを使ってください。
@@ -51,7 +51,7 @@ build_grammar_dailyconv_v1_final.py は、tts_gui.py がimportしているため
 
 初回はビルドに数分かかります。完了すると、同じフォルダの中に
 
-    dist\AnkiTTSツール.exe
+    dist\ANKI出力ツール.exe
 
 が生成されます。この .exe **単体**を他のPCにコピーすれば、
 Pythonが入っていないPCでも動きます。
@@ -59,7 +59,7 @@ Pythonが入っていないPCでも動きます。
 --------------------------------------------------------------
 別PCへのコピーに関する注意
 --------------------------------------------------------------
-- コピーするのは dist フォルダの中の AnkiTTSツール.exe 1つだけでOKです
+- コピーするのは dist フォルダの中の ANKI出力ツール.exe 1つだけでOKです
   (tts_gui.py や config.json は不要です)
 - スプレッドシート連携を別PCでも使う場合は、そのPCにもサービスアカウントの
   JSONキーを配置し、環境変数 SHEETS_WRITER_CREDENTIALS にパスを設定して

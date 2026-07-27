@@ -2,9 +2,11 @@
 """
 tts_gui.py
 ----------
-apkgにGoogle Cloud TTS(Chirp 3: HD対応)で音声を自動追加するGUIツール。
-バックエンド処理は tts_core.py に分離されており、このファイルは
-tkinterウィジェットの構築・イベント処理・見た目(テーマ)だけを担当する。
+「ANKI出力ツール」のGUI本体。スプレッドシート/AI生成によるAnkiカード作成
+(DailyConversation・習熟用・単語)と、apkgへのGoogle Cloud TTS(Chirp 3: HD
+対応)音声自動追加、Ankiへの出力までをまとめて扱う。バックエンド処理は
+tts_core.py に分離されており、このファイルは tkinterウィジェットの構築・
+イベント処理・見た目(テーマ)だけを担当する。
 
 必要なライブラリ:
     pip install anki
@@ -21,8 +23,8 @@ tts_core.CONFIG_PATH (config.json) に保存され自動入力されます
 
 Windows用の.exeにする方法(README_BUILD.txtも参照):
     pip install pyinstaller
-    pyinstaller --onefile --windowed --name AnkiTTSツール tts_gui.py
-    -> dist フォルダの中に AnkiTTSツール.exe ができます
+    pyinstaller --onefile --windowed --name ANKI出力ツール tts_gui.py
+    -> dist フォルダの中に ANKI出力ツール.exe ができます
 """
 
 import datetime
@@ -92,7 +94,7 @@ _BaseTk = TkinterDnD.Tk if DND_AVAILABLE else tk.Tk
 class AnkiTTSApp(_BaseTk):
     def __init__(self):
         super().__init__()
-        self.title("Anki TTS 音声追加ツール")
+        self.title("ANKI出力ツール")
         self.geometry("1380x860")
         # ペイン縮小時はウィンドウ幅も連動して狭くなるため、最小幅は
         # 「設定列+縦タブ2本」が収まる程度まで許容する(この値がペイン両方を
@@ -163,9 +165,23 @@ class AnkiTTSApp(_BaseTk):
         # 「単語」タブのカード定義(card_defs.json)が無ければ、build_word_v1.pyの
         # 内容を初期値として一度だけ登録する(2026-07-27の統合当初はPython
         # ハードコードだったため。以降は⚙設定の「カード定義」タブで編集できる)。
+        # DailyConversation・習熟用も同様に登録するが、こちらは参照専用
+        # (editable=False)。実際の出力は引き続きそれぞれのbuild_*.pyが行う
+        # (「既存のタブに使用されるカードタイプを設定内で網羅してほしい」と
+        # いう要望への対応。card_defs.pyのモジュールdocstring参照)。
         if WORD_AVAILABLE:
             try:
                 card_defs.seed_default_word_def_if_missing()
+            except Exception:  # noqa: BLE001
+                pass
+        if deck_builder.DECK_BUILDER_AVAILABLE:
+            try:
+                card_defs.seed_default_daily_def_if_missing()
+            except Exception:  # noqa: BLE001
+                pass
+        if SHUUJUKU_AVAILABLE:
+            try:
+                card_defs.seed_default_shuujuku_def_if_missing()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -496,7 +512,7 @@ class AnkiTTSApp(_BaseTk):
         header = ttk.Frame(self)
         header.pack(fill="x", padx=14, pady=(12, 2))
         ttk.Label(
-            header, text="Anki TTS 音声追加ツール", font=("", 15, "bold")
+            header, text="ANKI出力ツール", font=("", 15, "bold")
         ).pack(side="left")
         ttk.Button(
             header,
@@ -1323,6 +1339,13 @@ class AnkiTTSApp(_BaseTk):
         # 一致しなければ「どのタブにも未接続」と表示する)
         self.carddef_tab_usage_label = ttk.Label(carddef_key_cell, text="", foreground="#888888")
         self.carddef_tab_usage_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        # editable=Falseの定義(DailyConversation/習熟用など)を選択したときの
+        # 警告表示。「編集して保存しても実際の出力には反映されない」ことを
+        # 明示しないと、片桐が編集したのに反映されず混乱する事故につながるため。
+        self.carddef_readonly_warning = ttk.Label(
+            carddef_key_cell, text="", foreground="#c94a3f", wraplength=hint_wrap - 40
+        )
+        self.carddef_readonly_warning.grid(row=2, column=0, sticky="w", pady=(2, 0))
         ttk.Label(tab_carddefs, text="表示名:").grid(row=5, column=0, sticky="w", **cpad)
         self.carddef_label_var = tk.StringVar()
         ttk.Entry(tab_carddefs, textvariable=self.carddef_label_var).grid(
@@ -1393,18 +1416,20 @@ class AnkiTTSApp(_BaseTk):
         self.carddef_css_text = tk.Text(tab_carddefs, height=6, wrap="none")
         self.carddef_css_text.grid(row=18, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
 
-        ttk.Button(
+        self.carddef_save_btn = ttk.Button(
             tab_carddefs,
             text="保存",
             command=self.on_carddef_save_clicked,
             style="Accent.TButton" if SV_TTK_AVAILABLE else "TButton",
-        ).grid(row=19, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 10))
+        )
+        self.carddef_save_btn.grid(row=19, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 10))
 
         self._carddef_templates = []
         self._carddef_current_template_idx = None
         self._carddef_model_id = None
         self._carddef_deck_id = None
         self._carddef_keys_in_list = []
+        self._carddef_current_editable = True
 
         ttk.Button(dlg, text="閉じる", command=dlg.withdraw).pack(pady=(6, 10))
 
@@ -1442,6 +1467,18 @@ class AnkiTTSApp(_BaseTk):
     def _load_carddef_into_form(self, card_def: dict):
         self.carddef_key_var.set(card_def.get("key", ""))
         self.carddef_tab_usage_label.configure(text=self._tab_usage_text_for_key(card_def.get("key", "")))
+        self._carddef_current_editable = card_def.get("editable", True)
+        if self._carddef_current_editable:
+            self.carddef_readonly_warning.configure(text="")
+            self.carddef_save_btn.configure(state="normal")
+        else:
+            self.carddef_readonly_warning.configure(
+                text=(
+                    "⚠ このカードタイプは参照専用です。編集して保存しても、"
+                    "このタブの実際の出力には反映されません。"
+                )
+            )
+            self.carddef_save_btn.configure(state="disabled")
         self.carddef_label_var.set(card_def.get("label", ""))
         self.carddef_notetype_var.set(card_def.get("notetype_name", ""))
         self.carddef_deckname_var.set(card_def.get("deck_name", ""))
@@ -1470,6 +1507,9 @@ class AnkiTTSApp(_BaseTk):
     def _clear_carddef_form(self):
         self.carddef_key_var.set("")
         self.carddef_tab_usage_label.configure(text="")
+        self.carddef_readonly_warning.configure(text="")
+        self.carddef_save_btn.configure(state="normal")
+        self._carddef_current_editable = True
         self.carddef_label_var.set("")
         self.carddef_notetype_var.set("")
         self.carddef_deckname_var.set("")
@@ -1571,6 +1611,7 @@ class AnkiTTSApp(_BaseTk):
             "deck_id": deck_id,
             "deck_name": "",
             "dedup_key": "",
+            "editable": True,
             "fields": [],
             "templates": [{"name": "カード 1", "qfmt": "", "afmt": ""}],
             "css": "",
@@ -1713,6 +1754,7 @@ class AnkiTTSApp(_BaseTk):
                 "deck_id": existing["deck_id"] if existing else deck_id,
                 "deck_name": deck_name or (existing["deck_name"] if existing else ""),
                 "dedup_key": existing["dedup_key"] if existing else "",
+                "editable": existing.get("editable", True) if existing else True,
                 "fields": [
                     {"anki_name": f["name"], "item_key": _default_item_key(f["name"])}
                     for f in chosen_model["flds"]
@@ -1743,6 +1785,13 @@ class AnkiTTSApp(_BaseTk):
                 "入力不足",
                 "キー(内部識別子)が設定されていません。「新規作成」または"
                 "「apkgから読み込む」から始めてください。",
+            )
+            return
+        if not self._carddef_current_editable:
+            # Saveボタンは既に無効化してあるが、念のための二重チェック
+            # (このカードタイプは参照専用で、編集しても出力には反映されない)。
+            messagebox.showwarning(
+                "参照専用", f"「{key}」は参照専用のカードタイプのため保存できません。"
             )
             return
 
@@ -1778,6 +1827,7 @@ class AnkiTTSApp(_BaseTk):
             "deck_id": self._carddef_deck_id or self._generate_new_ids()[1],
             "deck_name": self.carddef_deckname_var.get().strip(),
             "dedup_key": self.carddef_dedupkey_var.get().strip(),
+            "editable": True,
             "fields": fields,
             "templates": self._carddef_templates,
             "css": self.carddef_css_text.get("1.0", "end-1c"),
