@@ -16,10 +16,16 @@ shuujuku_stock.pyと同じ設計だが、**完全に別のファイル(word_stoc
 このフォルダの word_stock.json に保存する(アプリを閉じても消えない、
 shuujuku_stock.jsonと同じ方針)。
 
-【重複防止】
-item['word']を正規化(前後空白除去・小文字化)した文字列をキーに、
-(a)現在ストック中の項目、(b)過去に出力済みの項目、の両方と重複しない
-ようにする(build_word_v1.build_guid()と同じキーの作り方)。
+【重複の扱い(2026-07-27変更)】
+以前はitem['word']を正規化(前後空白除去・小文字化)した文字列をキーに、
+(a)現在ストック中の項目、(b)過去に出力済みの項目、と重複する場合は
+add_pending_itemsが黙ってスキップしていた。しかし「AIによる生成には成功した
+のにストックに増えない」という状態が分かりにくく誤解を招く(実際に2回
+問い合わせを受けた)ため、**重複していても常に追加し**、代わりに
+`find_duplicate_pending_indices()`で重複しているインデックスを検出できる
+ようにした。片桐が`tts_gui.py`側で重複を視覚的にハイライトし、
+`remove_pending_at()`で手動削除できるようにする想定(キー自体は
+build_word_v1.build_guid()と同じ作り方を踏襲)。
 
 【出力の流れ】
 `get_pending()`で読み取り→呼び出し側がbuild_deck()でapkgを実際に生成
@@ -64,23 +70,48 @@ def get_pending(path: str = None) -> list:
 
 
 def add_pending_items(new_items: list, path: str = None) -> int:
-    """new_itemsのうち、まだストックにも出力済みにも無いものだけを追加する。
-    戻り値: 実際に追加した件数。"""
+    """new_itemsを常にpendingへ追加する(重複していてもスキップしない、
+    2026-07-27変更)。戻り値: 追加した件数(= len(new_items))。
+    重複の検出・表示は find_duplicate_pending_indices() の責務とする。"""
+    if not new_items:
+        return 0
     stock = load_stock(path)
-    existing_keys = {_word_key(i) for i in stock["pending"]} | set(stock["exported_keys"])
+    stock["pending"].extend(new_items)
+    save_stock(stock, path)
+    return len(new_items)
 
-    added = 0
-    for item in new_items:
+
+def find_duplicate_pending_indices(path: str = None) -> set:
+    """現在のpendingのうち、(a)pending内に同じキーの項目が複数ある、
+    または(b)既にexported_keys(出力済み)と同じキーを持つ、のいずれかに
+    該当するインデックスの集合を返す。UI側でハイライト表示する用途。"""
+    stock = load_stock(path)
+    pending = stock["pending"]
+    exported = set(stock["exported_keys"])
+
+    key_counts = {}
+    for item in pending:
         key = _word_key(item)
-        if key in existing_keys:
-            continue
-        stock["pending"].append(item)
-        existing_keys.add(key)
-        added += 1
+        key_counts[key] = key_counts.get(key, 0) + 1
 
-    if added:
-        save_stock(stock, path)
-    return added
+    dup_indices = set()
+    for i, item in enumerate(pending):
+        key = _word_key(item)
+        if key_counts[key] > 1 or key in exported:
+            dup_indices.add(i)
+    return dup_indices
+
+
+def remove_pending_at(index: int, path: str = None):
+    """pendingの指定インデックスの項目を1件だけ破棄する(出力済みにはしない、
+    単純な削除)。範囲外のインデックスの場合は何もせずNoneを返す。
+    戻り値: 削除した項目のdict、またはNone。"""
+    stock = load_stock(path)
+    if index < 0 or index >= len(stock["pending"]):
+        return None
+    removed = stock["pending"].pop(index)
+    save_stock(stock, path)
+    return removed
 
 
 def mark_exported(items: list, path: str = None) -> None:

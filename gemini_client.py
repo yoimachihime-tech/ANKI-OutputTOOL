@@ -20,6 +20,7 @@ config.jsonの"gemini_api_key"に平文で保存する(既存のGoogle Cloud TTS
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -27,9 +28,71 @@ GEMINI_ENDPOINT_TMPL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 
+# 429(レート制限/無料枠の上限超過)時のリトライ回数。tts_core.call_google_tts
+# の3回リトライと同じ考え方(2026-07-27追加)。無料枠は「1日あたり」の上限
+# であることが多く、リトライしても解決しない場合があるため、無限リトライは
+# せずここで打ち切ってGeminiClientErrorとしてユーザーに伝える。
+_MAX_RETRIES = 3
+_DEFAULT_RETRY_DELAY_SECONDS = 5.0
+_MAX_RETRY_DELAY_SECONDS = 60.0
+
 
 class GeminiClientError(Exception):
     """Gemini API呼び出し・応答パースに失敗した場合の例外。"""
+
+
+def _extract_retry_delay_seconds(error_detail_text: str):
+    """429エラーのJSON本文から、Google側が示す`retryDelay`(例: "17s")を
+    秒数で取り出す。見つからなければNone。"""
+    try:
+        parsed = json.loads(error_detail_text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    for detail in parsed.get("error", {}).get("details", []):
+        retry_delay = detail.get("retryDelay")
+        if isinstance(retry_delay, str) and retry_delay.endswith("s"):
+            try:
+                return float(retry_delay[:-1])
+            except ValueError:
+                continue
+    return None
+
+
+def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> dict:
+    """Gemini APIへのPOSTリクエストを行い、レスポンスのJSONをdictで返す共通処理。
+    429(レート制限/無料枠上限)が返った場合は、Google側が示すretryDelay
+    (無ければ既定値)だけ待って最大_MAX_RETRIES回リトライする。"""
+    data = json.dumps(body).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Goog-Api-Key": api_key,
+    }
+    last_detail = None
+    for attempt in range(_MAX_RETRIES):
+        req = urllib.request.Request(url, data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            last_detail = detail
+            if e.code == 429:
+                if attempt < _MAX_RETRIES - 1:
+                    delay = _extract_retry_delay_seconds(detail) or _DEFAULT_RETRY_DELAY_SECONDS
+                    time.sleep(min(delay, _MAX_RETRY_DELAY_SECONDS))
+                    continue
+                raise GeminiClientError(
+                    "Gemini APIの利用上限(レート制限または無料枠の1日あたりの"
+                    "リクエスト数上限)に達しました。しばらく時間をおくか、"
+                    "⚙設定でモデルを変更する、または有料プランへの切り替えを"
+                    f"ご検討ください。\n詳細: {detail}"
+                ) from e
+            raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {detail}") from e
+        except Exception as e:  # noqa: BLE001
+            last_detail = str(e)
+            raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {e}") from e
+
+    raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {last_detail}")
 
 
 def call_gemini(prompt: str, api_key: str, model: str, timeout: int = 60) -> str:
@@ -39,23 +102,7 @@ def call_gemini(prompt: str, api_key: str, model: str, timeout: int = 60) -> str
 
     url = GEMINI_ENDPOINT_TMPL.format(model=model)
     body = {"contents": [{"parts": [{"text": prompt}]}]}
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-            "X-Goog-Api-Key": api_key,
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {detail}") from e
-    except Exception as e:  # noqa: BLE001
-        raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {e}") from e
+    result = _post_gemini_request(url, body, api_key, timeout)
 
     try:
         return result["candidates"][0]["content"]["parts"][0]["text"]
@@ -260,3 +307,113 @@ def generate_vocab_card_from_word(word: str, context_sentence: str, api_key: str
         "note": parsed.get("note", ""),
         "context_sentence": context_sentence.strip(),
     }
+
+
+# ---------------------------------------------------------------------------
+# 英文添削(DailyConversationタブへの直接入力、2026-07-27追加)
+# ---------------------------------------------------------------------------
+#
+# これまでDailyConversationの元データは、Googleフォーム→Apps Script
+# (Gemini呼び出し)→「添削結果」シート、という別プロジェクトの工程でしか
+# 作れなかった。片桐から実際のApps Scriptのコード(system_instruction・
+# responseSchema)の提供を受けたため、その内容をそのままこちらへ移植し、
+# アプリ内で直接英文添削→シート追記までできるようにした。
+# **system_instructionとresponseSchemaはApps Script側の実装と意味的に
+# 同一になるよう保つこと**(採点基準がズレると「添削結果」シート上でGoogle
+# フォーム経由の行とこのアプリ経由の行の基準が食い違ってしまうため)。
+
+CORRECTION_SYSTEM_INSTRUCTION = (
+    "あなたは英文添削者です。与えられた英文を文単位で確認し、誤りがあれば添削してください。"
+    "誤りがない時はcorrectedをoriginalと同一にしてください。解説は日本語で簡潔に書いてください。"
+    "さらに、correctedの文で使われている表現について、同じ意味・場面で使われる類似表現をより"
+    "自然な言い方で2〜3個挙げてください。各代替表現についてexpressionには英文の完成文1文のみ、"
+    "noteにはその表現の使い方やニュアンスの違いを日本語で書いてください。expressionフィールドに"
+    "日本語を含めないでください。特に無ければ配列を空にしてください。"
+    "加えて、入力された原文(original)そのものを以下3つの観点でそれぞれ0〜100点で評価してください。"
+    "1) grammar_score: 文法的な正確さ(誤りが多いほど低くなる) "
+    "2) naturalness_score: 母語話者から見た表現の自然さ(文法的に正しくても不自然な言い回しなら低くなる) "
+    "3) comprehensibility_score: 英語圏の人にどれだけ意味が伝わるか(全く伝わらない場合は0点付近、"
+    "多少不自然でも意味が通じるなら高くする) "
+    "score_commentには、なぜその点数になったか、原文中の具体的にどの言い回しが問題だったか、を"
+    "日本語で簡潔に説明してください。"
+)
+
+CORRECTION_RESPONSE_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "original": {"type": "STRING"},
+            "corrected": {"type": "STRING"},
+            "explanation": {"type": "STRING"},
+            "category": {"type": "STRING", "description": "文法 / 語彙 / 自然さ / 誤りなし のいずれか"},
+            "similar_expressions": {
+                "type": "ARRAY",
+                "description": "類似表現のリスト。無ければ空配列",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "expression": {"type": "STRING", "description": "英文の完成文1文のみ、日本語を含めない"},
+                        "note": {"type": "STRING", "description": "日本語のみ、使い方・ニュアンスの説明"},
+                    },
+                    "required": ["expression", "note"],
+                },
+            },
+            "grammar_score": {"type": "NUMBER", "description": "文法的正確さ 0〜100"},
+            "naturalness_score": {"type": "NUMBER", "description": "自然さ 0〜100"},
+            "comprehensibility_score": {"type": "NUMBER", "description": "伝わりやすさ 0〜100"},
+            "score_comment": {"type": "STRING", "description": "スコアの根拠。具体的な問題表現を含めて日本語で"},
+        },
+        "required": [
+            "original", "corrected", "explanation", "category", "similar_expressions",
+            "grammar_score", "naturalness_score", "comprehensibility_score", "score_comment",
+        ],
+    },
+}
+
+
+def correct_english_text(text: str, api_key: str, model: str, timeout: int = 60) -> list:
+    """英文(複数文・段落もまとめて可)をGeminiに添削・採点させる。
+
+    Googleフォーム経由のApps Script(callGeminiForCorrection)と同じ
+    system_instruction・responseSchema(構造化出力/JSON Mode)を使うため、
+    複数文をまとめて渡した場合はGemini側が文ごとに配列を自動分割して返す
+    (Apps Script側の1フォーム送信=1englishTextと同じ挙動)。
+
+    戻り値: dictのリスト。各dictのキーは sheets_reader.fetch_pending_rows()
+    が返す行の元になった、Apps Script「添削結果」シートの列と対応する
+    (original, corrected, explanation, category,
+    similar_expressions: list[{"expression": str, "note": str}],
+    grammar_score, naturalness_score, comprehensibility_score, score_comment)。
+    シートへの書き込みは行わない(sheets_writer.append_correction_rowsの責務)。
+    """
+    if not api_key:
+        raise GeminiClientError("Gemini APIキーが設定されていません。")
+    if not text.strip():
+        raise GeminiClientError("添削する英文が空です。")
+
+    url = GEMINI_ENDPOINT_TMPL.format(model=model)
+    body = {
+        "system_instruction": {"parts": [{"text": CORRECTION_SYSTEM_INSTRUCTION}]},
+        "contents": [{"parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": CORRECTION_RESPONSE_SCHEMA,
+        },
+    }
+    result = _post_gemini_request(url, body, api_key, timeout)
+
+    try:
+        text_result = result["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError) as e:
+        raise GeminiClientError(f"Gemini APIの応答形式が想定と異なります: {result}") from e
+
+    try:
+        corrections = json.loads(text_result)
+    except json.JSONDecodeError as e:
+        raise GeminiClientError(f"Gemini応答をJSONとして解析できませんでした: {text_result[:300]}") from e
+
+    if not isinstance(corrections, list):
+        raise GeminiClientError(f"Gemini応答が配列ではありません: {corrections}")
+
+    return corrections

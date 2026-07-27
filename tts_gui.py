@@ -105,6 +105,14 @@ class AnkiTTSApp(_BaseTk):
 
         self._config = tts_core.load_config()
 
+        # readonly Comboboxは、マウスホバー中にホイールスクロールすると選択値が
+        # 変わってしまうのがtkinterの既定動作。画面を上下スクロールしただけで
+        # ノートタイプやTTS対象フィールドの選択が意図せず変わってしまう事故を
+        # 防ぐため、"TCombobox"のクラスバインドを上書きしてホイール操作を
+        # 無効化する(2026-07-27追加)。クラスバインドなので、後から動的に
+        # 作成されるCombobox(TTS対象フィールドの行など)にも自動的に効く。
+        self.bind_class("TCombobox", "<MouseWheel>", lambda e: "break")
+
         # --- 見た目(テーマ) -------------------------------------------------
         self.theme_var = tk.StringVar(value=self._config.get("theme", "dark"))
         self._apply_theme(self.theme_var.get(), initial=True)
@@ -112,8 +120,11 @@ class AnkiTTSApp(_BaseTk):
         self.apkg_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.notetype_var = tk.StringVar()
-        self.source_field_var = tk.StringVar()
-        self.target_field_var = tk.StringVar()
+        # TTS対象フィールド(複数選択可、2026-07-27〜)。読み上げ元とタグ追加先は
+        # 常に同じフィールド(そのフィールド自身に[sound:...]タグを追記する)なので、
+        # 以前あったTarget(タグ追加先)の別選択は廃止した。
+        self.tts_field_vars = []  # list[tk.StringVar]
+        self._current_nt_fields = []  # 選択中ノートタイプのフィールド名一覧(コンボボックス用)
         self.api_key_var = tk.StringVar(value=self._config.get("api_key", ""))
         self.remember_key_var = tk.BooleanVar(value=self._config.get("remember_key", True))
         self.voice_var = tk.StringVar(
@@ -136,11 +147,38 @@ class AnkiTTSApp(_BaseTk):
         self._preview_source = None  # 右プレビュー欄の表示元({"kind": "note"|"shuujuku", ...})
 
         self.force_regen_var = tk.BooleanVar(value=self._config.get("force_regen", False))
+        # 日本語(ひらがな/カタカナ/漢字)を含む文をTTS対象から除外するか
+        # (2026-07-27追加)。習熟用ノート専用のextract_shuujuku_tts_textと違い、
+        # HTML構造に依存しない汎用フィルタ(tts_core.strip_japanese_sentences)
+        # なので、単語タブなど任意のノートタイプ・フィールドで有効化できる。
+        self.exclude_japanese_var = tk.BooleanVar(
+            value=self._config.get("exclude_japanese_sentences", False)
+        )
         self.auto_open_anki_var = tk.BooleanVar(value=self._config.get("auto_open_anki", False))
         self.auto_backup_var = tk.BooleanVar(value=self._config.get("auto_backup", True))
 
         self.row_map_path = tk.StringVar()
         self._current_row_map = None  # スプレッドシートから直接読み込んだ場合の {guid: シートのID} (メモリ上)
+        # 単語/習熟用ストックから「まとめて出力」した際、その時点ではまだ
+        # mark_exportedを呼ばず、④TTS生成・apkg出力が実際に成功した時点で
+        # まとめて出力済みにする(2026-07-27。デッキの骨組みを作っただけの
+        # 段階でストックから消してしまうと、②③④を完了しないままアプリを
+        # 再起動した場合にストックから消えたように見え、「Ankiに実際に
+        # 取り込めたのか」が分からなくなってしまうため)。
+        # 値は`(その時点のapkg_path, items)`のタプル、または未実行ならNone
+        # (2026-07-27にタプル化。「DailyConversationのTTS生成でストックの
+        # 単語が意図せず出力済みになった」という報告を受け、run_generate側で
+        # 自身のapkg_pathがこの記録と完全一致する場合だけmark_exportedを呼ぶ
+        # 安全策を追加した。`_set_apkg_path`が別のapkgに切り替わるたびにこの
+        # 変数をNoneに戻すため通常はこれで十分なはずだが、万一クリア漏れ・
+        # タイミングのズレがあっても、apkg_pathの完全一致を追加の必須条件に
+        # することで誤って別入力元のストックを出力済みにしないようにする)。
+        self._pending_word_stock_items = None
+        self._pending_shuujuku_stock_items = None
+        # 「AIに質問」タブの一覧(表示行→shuujuku_stock.pendingの実インデックス)
+        self._ai_ask_pending_indices = []
+        # DailyConversationタブの「シート上の未出力行」一覧のキャッシュ
+        self._daily_pending_rows_cache = []
         # ペイン縮小時に「表示に戻したときの幅」を覚えておく(configにも保存)
         self._mid_saved_width = int(self._config.get("notes_pane_width", 320))
         self._right_saved_width = int(self._config.get("preview_pane_width", 480))
@@ -637,6 +675,76 @@ class AnkiTTSApp(_BaseTk):
             variable=self.sheets_update_var,
         ).grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
 
+        # --- 英文の直接入力(2026-07-27追加) ---
+        # これまでDailyConversationの元データは、Googleフォーム→Apps Script
+        # (Gemini呼び出し)→「添削結果」シート書き込み、という別プロジェクトの
+        # 工程を経る必要があった。片桐から実際のApps Scriptの内容(採点プロンプト・
+        # 出力スキーマ)の提供を受け、同じ内容をgemini_client.correct_english_text()
+        # に移植したため、ここで直接英文を入力してもフォームと同じ形で
+        # 「添削結果」シートに追記できる。追記後は上の「シートから未出力行を
+        # 読み込んでデッキ生成」ボタンでそのまま拾えるため、②以降は共通。
+        ttk.Separator(tab_daily, orient="horizontal").grid(
+            row=3, column=0, sticky="ew", padx=8, pady=(4, 8)
+        )
+        ttk.Label(
+            tab_daily,
+            text="または、英文を直接入力してAIに添削させる(複数文・複数段落もまとめて可):",
+            wraplength=hint_wrap,
+            justify="left",
+        ).grid(row=4, column=0, sticky="w", padx=8, pady=(0, 2))
+        self.daily_input_text = tk.Text(tab_daily, height=5, wrap="word")
+        self.daily_input_text.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 4))
+        self.daily_correct_btn_label = "AIに添削させてシートに追加"
+        self.daily_correct_btn = ttk.Button(
+            tab_daily,
+            text=self.daily_correct_btn_label,
+            command=self.on_daily_correct_clicked,
+        )
+        self.daily_correct_btn.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 4))
+        ttk.Label(
+            tab_daily,
+            text=(
+                "AIによる添削・採点結果を「添削結果」シートに新規行として追加する"
+                "(Googleフォーム経由と同じ形式)。追加後、上の「シートから未出力行を"
+                "読み込んでデッキ生成」で続けてください。"
+            ),
+            wraplength=hint_wrap,
+            justify="left",
+        ).grid(row=7, column=0, sticky="w", padx=8, pady=(0, 8))
+
+        # --- シート上の未出力行の確認用一覧(2026-07-27追加) ---
+        # 単語/習熟用ストックと違い、DailyConversationの「候補」はこのソフト内の
+        # ローカルファイルではなく「添削結果」シート自体("Anki出力済み"列が
+        # 空の行)が実体。単語/AIに質問と同じ「生成した内容をすぐ確認したい」
+        # ニーズに対応するため、sheets_reader.fetch_pending_rows()の結果を
+        # そのまま一覧表示する(ローカルへの複製は行わない。シート側が
+        # 唯一の永続化先であり、Anki出力済み列がある限りソフトを再起動しても
+        # 自然に保持される)。ネットワークアクセスが要るため起動時には自動
+        # 実行せず、「更新」ボタンまたは直接入力の追加成功時にのみ取得する。
+        ttk.Separator(tab_daily, orient="horizontal").grid(
+            row=8, column=0, sticky="ew", padx=8, pady=(4, 8)
+        )
+        ttk.Label(tab_daily, text="シート上の未出力行:", font=("", 10, "bold")).grid(
+            row=9, column=0, sticky="w", padx=8, pady=(0, 2)
+        )
+        self.daily_pending_count_label = ttk.Label(tab_daily, text="(未取得。「更新」を押してください)")
+        self.daily_pending_count_label.grid(row=10, column=0, sticky="w", padx=8, pady=(0, 2))
+
+        daily_pending_list_frame = ttk.Frame(tab_daily)
+        daily_pending_list_frame.grid(row=11, column=0, sticky="ew", padx=8, pady=(0, 4))
+        self.daily_pending_listbox = tk.Listbox(daily_pending_list_frame, height=6, exportselection=False)
+        daily_pending_list_vsb = ttk.Scrollbar(
+            daily_pending_list_frame, orient="vertical", command=self.daily_pending_listbox.yview
+        )
+        self.daily_pending_listbox.configure(yscrollcommand=daily_pending_list_vsb.set)
+        self.daily_pending_listbox.pack(side="left", fill="both", expand=True)
+        daily_pending_list_vsb.pack(side="right", fill="y")
+        self.daily_pending_listbox.bind("<<ListboxSelect>>", self.on_daily_pending_item_selected)
+
+        ttk.Button(
+            tab_daily, text="更新", width=8, command=self.refresh_daily_pending_view
+        ).grid(row=12, column=0, sticky="w", padx=8, pady=(0, 8))
+
         # --- タブ: 習熟用(音読)(DailyConversation/AIに質問からのストックをまとめて出力) ---
         tab_shuujuku = ttk.Frame(self.source_tabs_container)
         tab_shuujuku.grid_columnconfigure(0, weight=1)
@@ -660,6 +768,11 @@ class AnkiTTSApp(_BaseTk):
         ttk.Button(shuujuku_btns, text="更新", width=8, command=self.refresh_shuujuku_stock_view).pack(
             side="left"
         )
+        ttk.Button(
+            shuujuku_btns,
+            text="選択項目を削除",
+            command=self.on_delete_selected_shuujuku_item_clicked,
+        ).pack(side="left", padx=6)
         ttk.Button(
             shuujuku_btns,
             text="ストックをクリア",
@@ -700,6 +813,42 @@ class AnkiTTSApp(_BaseTk):
             wraplength=hint_wrap,
             justify="left",
         ).pack(fill="x", padx=8, pady=(0, 8))
+
+        # --- 生成済み一覧(2026-07-27追加) ---
+        # 生成結果は即座に習熟用ストック(shuujuku_stock.json)へ追加されるが、
+        # 「AIに質問」タブ自体には中身を確認する手段が無く、確認するには
+        # DailyConversation由来の候補も混在した「習熟用(音読)」タブの一覧を
+        # 見に行く必要があった。ここでは同じshuujuku_stock.jsonから
+        # source_key[0]=="chat"(このタブ由来)のものだけを絞り込んで表示する
+        # (別ファイルに複製するのではなく、既存のストックを見た目だけ
+        # フィルタする設計。永続化・出力済み管理は習熟用ストックと共通)。
+        ttk.Label(tab_ai_ask, text="このタブで生成したカード:", font=("", 10, "bold")).pack(
+            anchor="w", padx=8, pady=(4, 2)
+        )
+        self.ai_ask_count_label = ttk.Label(tab_ai_ask, text="")
+        self.ai_ask_count_label.pack(anchor="w", padx=8, pady=(0, 2))
+
+        ai_ask_list_frame = ttk.Frame(tab_ai_ask)
+        ai_ask_list_frame.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        self.ai_ask_listbox = tk.Listbox(ai_ask_list_frame, height=6, exportselection=False)
+        ai_ask_list_vsb = ttk.Scrollbar(
+            ai_ask_list_frame, orient="vertical", command=self.ai_ask_listbox.yview
+        )
+        self.ai_ask_listbox.configure(yscrollcommand=ai_ask_list_vsb.set)
+        self.ai_ask_listbox.pack(side="left", fill="both", expand=True)
+        ai_ask_list_vsb.pack(side="right", fill="y")
+        self.ai_ask_listbox.bind("<<ListboxSelect>>", self.on_ai_ask_item_selected)
+
+        ai_ask_btns = ttk.Frame(tab_ai_ask)
+        ai_ask_btns.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(ai_ask_btns, text="更新", width=8, command=self.refresh_ai_ask_stock_view).pack(
+            side="left"
+        )
+        ttk.Button(
+            ai_ask_btns,
+            text="選択項目を削除",
+            command=self.on_delete_selected_ai_ask_item_clicked,
+        ).pack(side="left", padx=6)
 
         # --- タブ: 単語(読書中に出会った未学習の英単語をAIでカード化。2026-07-27追加) ---
         # 「習熟用(音読)」とは完全に別物: 文法パターンの音読練習ではなく、単語単体の
@@ -763,6 +912,11 @@ class AnkiTTSApp(_BaseTk):
         ttk.Button(word_btns, text="更新", width=8, command=self.refresh_word_stock_view).pack(
             side="left"
         )
+        ttk.Button(
+            word_btns,
+            text="選択項目を削除",
+            command=self.on_delete_selected_word_item_clicked,
+        ).pack(side="left", padx=6)
         ttk.Button(
             word_btns,
             text="ストックをクリア",
@@ -854,23 +1008,37 @@ class AnkiTTSApp(_BaseTk):
         self.notetype_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=5)
         self.notetype_combo.bind("<<ComboboxSelected>>", self.on_notetype_selected)
 
-        ttk.Label(frm_fields, text="読み上げ元 (Source):").grid(
-            row=1, column=0, sticky="w", padx=8, pady=5
+        ttk.Label(frm_fields, text="TTS対象フィールド:").grid(
+            row=1, column=0, sticky="nw", padx=8, pady=(5, 0)
         )
-        self.source_combo = ttk.Combobox(
-            frm_fields, textvariable=self.source_field_var, state="readonly"
+        # 読み上げ元とタグ追加先は常に同じフィールド(そのフィールド自身に
+        # [sound:...]タグを追記する)なので、Target(タグ追加先)の別選択は無い。
+        # 複数フィールドをTTS対象にしたい場合のため「＋」「－」で行を増減できる。
+        self.tts_fields_frame = ttk.Frame(frm_fields)
+        self.tts_fields_frame.grid(
+            row=1, column=1, sticky="ew", padx=(0, 8), pady=(5, 0)
         )
-        self.source_combo.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=5)
-        self.source_combo.bind("<<ComboboxSelected>>", self.update_preview)
+        self.tts_fields_frame.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(frm_fields, text="タグ追加先 (Target):").grid(
-            row=2, column=0, sticky="w", padx=8, pady=5
+        ttk.Button(
+            frm_fields, text="＋ フィールドを追加", command=self._add_tts_field_row
+        ).grid(row=2, column=1, sticky="w", padx=(0, 8), pady=(4, 8))
+
+        # 習熟用ノート選択時、フィールド選択が無視される(常にContentの例文
+        # ごとに個別処理される)ことを案内するラベル(2026-07-27追加)。
+        # on_notetype_selectedがノートタイプに応じて表示/非表示を切り替える。
+        self.shuujuku_tts_hint_label = ttk.Label(
+            frm_fields,
+            text=(
+                "※このノートタイプはフィールド選択に関わらず、Contentの例文ごとに"
+                "個別のMP3を生成し、各例文の直下にタグを配置します。"
+            ),
+            foreground="#c98a1f",
+            wraplength=hint_wrap,
+            justify="left",
         )
-        self.target_combo = ttk.Combobox(
-            frm_fields, textvariable=self.target_field_var, state="readonly"
-        )
-        self.target_combo.grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(5, 8))
-        self.target_combo.bind("<<ComboboxSelected>>", self.update_preview)
+        self.shuujuku_tts_hint_label.grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+        self.shuujuku_tts_hint_label.grid_remove()
 
         # TTS設定はヘッダーの「⚙ 設定」ダイアログに移設した(_build_settings_dialog)。
 
@@ -903,9 +1071,14 @@ class AnkiTTSApp(_BaseTk):
             text="生成完了後、出力apkgを自動でAnkiに渡す",
             variable=self.auto_open_anki_var,
         ).grid(row=4, column=0, sticky="w", padx=8, pady=2)
+        ttk.Checkbutton(
+            frm_out,
+            text="日本語(ひらがな/カタカナ/漢字)を含む文をTTS対象から除外する",
+            variable=self.exclude_japanese_var,
+        ).grid(row=5, column=0, sticky="w", padx=8, pady=2)
 
         out_btns = ttk.Frame(frm_out)
-        out_btns.grid(row=5, column=0, sticky="ew", padx=8, pady=(4, 8))
+        out_btns.grid(row=6, column=0, sticky="ew", padx=8, pady=(4, 8))
         ttk.Button(out_btns, text="ドライラン(件数確認)", command=self.on_dry_run_clicked).pack(
             side="left"
         )
@@ -1030,8 +1203,6 @@ class AnkiTTSApp(_BaseTk):
         dlg = tk.Toplevel(self)
         self.settings_dialog = dlg
         dlg.title("設定")
-        dlg.geometry("480x620")
-        dlg.minsize(440, 480)
         dlg.withdraw()
         dlg.protocol("WM_DELETE_WINDOW", dlg.withdraw)
 
@@ -1432,6 +1603,21 @@ class AnkiTTSApp(_BaseTk):
         self._carddef_current_editable = True
 
         ttk.Button(dlg, text="閉じる", command=dlg.withdraw).pack(pady=(6, 10))
+
+        # デフォルトサイズは、固定値の決め打ちではなく実際に組み立てた
+        # ウィジェットの要求サイズから動的に計算する(2026-07-27。固定値
+        # 480x620だと、横幅の広いTTSタブなどで文字が見切れることがあった
+        # ため)。全タブぶんの内容を一度も表示せず要求サイズを計算できるのは、
+        # 「カード定義」タブだけ専用のスクロール可能なCanvasに載せてあり、
+        # そちらは要求サイズがビューポート分に収まるため(上記の「カード定義
+        # エディタ」の項を参照)。画面サイズを超えないようクランプし、この
+        # サイズを下限(minsize)にもすることで、後から手動でウィンドウを
+        # 縮めても文字が見切れないようにする。
+        dlg.update_idletasks()
+        req_w = min(dlg.winfo_reqwidth() + 20, dlg.winfo_screenwidth() - 60)
+        req_h = min(dlg.winfo_reqheight() + 10, dlg.winfo_screenheight() - 100)
+        dlg.geometry(f"{req_w}x{req_h}")
+        dlg.minsize(req_w, req_h)
 
     def _open_settings_dialog(self):
         self.settings_dialog.deiconify()
@@ -2051,6 +2237,11 @@ class AnkiTTSApp(_BaseTk):
 
     def _set_apkg_path(self, path: str):
         self._current_row_map = None  # 手動で別のapkgに切り替えたら、メモリ上のrow_mapは破棄する
+        # 単語/習熟用ストックの「出力済みマーク待ち」も、別のapkgに切り替えたら
+        # 破棄する(呼び出し元がストック出力の場合は、このメソッドの直後に
+        # 自分で改めてセットし直す)。
+        self._pending_word_stock_items = None
+        self._pending_shuujuku_stock_items = None
         self.apkg_path.set(path)
         default_out = os.path.splitext(path)[0] + "_tts追加.apkg"
         self.output_path.set(default_out)
@@ -2139,6 +2330,189 @@ class AnkiTTSApp(_BaseTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def on_daily_correct_clicked(self):
+        """英文を直接入力してAIに添削・採点させ、「添削結果」シートに新規行
+        として追記する(Googleフォーム→Apps Script経由の行と同じ形式)。
+        追記した後の②以降(シートから読み込んでデッキ生成)は既存の
+        on_fetch_from_sheet_clickedと共通なので、ここでは呼ばない
+        (Sheets APIの反映タイミングとの競合を避けるため、片桐に改めて
+        「シートから読み込む」ボタンを押してもらう設計)。"""
+        text = self.daily_input_text.get("1.0", "end").strip()
+        if not text:
+            messagebox.showwarning("入力不足", "添削する英文を入力してください。")
+            return
+        api_key = self.gemini_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showwarning("入力不足", "Gemini APIキーを入力してください(⚙設定)。")
+            return
+        model = self.gemini_model_var.get().strip()
+        spreadsheet_id = self.sheets_spreadsheet_id_var.get().strip()
+        sheet_name = self.sheets_sheet_name_var.get().strip()
+        credentials_path = os.environ.get("SHEETS_WRITER_CREDENTIALS", "")
+
+        if not spreadsheet_id or not sheet_name:
+            messagebox.showwarning(
+                "入力不足", "スプレッドシートIDとシート(タブ)名を⚙設定の「スプレッドシート」タブで入力してください。"
+            )
+            return
+        if not credentials_path:
+            messagebox.showwarning(
+                "認証情報未設定",
+                "環境変数 SHEETS_WRITER_CREDENTIALS が設定されていません。\n"
+                "サービスアカウントのJSONキーのパスを設定してください。",
+            )
+            return
+
+        self.daily_correct_btn.configure(state="disabled", text="添削中...")
+
+        def worker():
+            try:
+                self.log(f"AIによる英文添削を実行中({len(text)}文字)...")
+                corrections = gemini_client.correct_english_text(text, api_key, model)
+                self.log(f"添削結果: {len(corrections)} 件")
+
+                new_ids = sheets_writer.append_correction_rows(
+                    spreadsheet_id, sheet_name, corrections, credentials_path, log=self.log
+                )
+                self.log(
+                    f"「添削結果」シートに {len(new_ids)} 行追加しました。"
+                    "「シートから未出力行を読み込んでデッキ生成」で続けてください。"
+                )
+                # 追加した内容をすぐ確認できるよう、下の一覧も更新する
+                # (シートAPIの反映タイミング待ちのため、②のデッキ生成へは
+                # 自動連鎖させないが、この一覧は読み取りだけなので問題ない)。
+                self.after(0, self.refresh_daily_pending_view)
+
+                def finish():
+                    self.daily_input_text.delete("1.0", "end")
+                    messagebox.showinfo(
+                        "完了",
+                        f"添削結果を {len(new_ids)} 件シートに追加しました。\n"
+                        "「シートから未出力行を読み込んでデッキ生成」で続けてください。",
+                    )
+
+                self.after(0, finish)
+            except (gemini_client.GeminiClientError, sheets_writer.SheetsWriterError) as e:
+                self.log(f"AI添削・シート追加に失敗しました: {e}")
+                self.after(
+                    0,
+                    lambda: messagebox.showerror("エラー", f"AI添削・シート追加に失敗しました:\n{e}"),
+                )
+            finally:
+                self.after(
+                    0,
+                    lambda: self.daily_correct_btn.configure(
+                        state="normal", text=self.daily_correct_btn_label
+                    ),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def refresh_daily_pending_view(self):
+        """「添削結果」シートの未出力行(sheets_reader.fetch_pending_rows)を
+        一覧表示する(2026-07-27追加)。単語/AIに質問の「生成した内容をすぐ
+        確認したい」ニーズと同じ理由だが、DailyConversationの場合は候補の
+        実体がローカルのストックファイルではなく「添削結果」シート自体
+        (Anki出力済み列が空の行)なので、ローカルへ複製せずシートから
+        都度読み直す(片桐が再起動しても、シート側にAnki出力済み列がある限り
+        自然に一覧へ復元される)。ネットワークアクセスが要るため、
+        「更新」ボタンまたは直接入力の追加成功時にのみ呼ばれる
+        (起動時に自動実行はしない)。"""
+        spreadsheet_id = self.sheets_spreadsheet_id_var.get().strip()
+        sheet_name = self.sheets_sheet_name_var.get().strip()
+        credentials_path = os.environ.get("SHEETS_WRITER_CREDENTIALS", "")
+
+        if not spreadsheet_id or not sheet_name:
+            messagebox.showwarning(
+                "入力不足", "スプレッドシートIDとシート(タブ)名を⚙設定の「スプレッドシート」タブで入力してください。"
+            )
+            return
+        if not credentials_path:
+            messagebox.showwarning(
+                "認証情報未設定",
+                "環境変数 SHEETS_WRITER_CREDENTIALS が設定されていません。\n"
+                "サービスアカウントのJSONキーのパスを設定してください。",
+            )
+            return
+
+        self.daily_pending_count_label.configure(text="取得中...")
+
+        def worker():
+            try:
+                rows = sheets_reader.fetch_pending_rows(spreadsheet_id, sheet_name, credentials_path)
+                self._daily_pending_rows_cache = rows
+
+                def finish():
+                    self.daily_pending_listbox.delete(0, "end")
+                    for row in rows:
+                        original = (row.get("original") or "").strip().replace("\n", " ")
+                        corrected = (row.get("corrected") or "").strip().replace("\n", " ")
+                        self.daily_pending_listbox.insert("end", f"{original[:30]} → {corrected[:30]}")
+                    self.daily_pending_count_label.configure(text=f"未出力: {len(rows)} 件")
+
+                self.after(0, finish)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"シート上の未出力行の取得に失敗しました: {e}")
+                self.after(
+                    0, lambda: self.daily_pending_count_label.configure(text="(取得に失敗しました)")
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_daily_pending_item_selected(self, event=None):
+        """一覧で選択した行の内容を、右のプレビューペインに表示する。"""
+        selection = self.daily_pending_listbox.curselection()
+        if not selection:
+            return
+        idx = selection[0]
+        rows = getattr(self, "_daily_pending_rows_cache", [])
+        if idx >= len(rows):
+            return
+        self._render_daily_row_preview(rows[idx])
+
+    def _render_daily_row_preview(self, row: dict):
+        """sheets_reader.fetch_pending_rows()の1行分(dict)を右のプレビュー
+        ペインに表示する。単語/習熟用の_render_*_fields_to_paneと同じ
+        構成(フィールド名+値を並べるだけ)。"""
+        pv = self.preview_text
+        pv.configure(state="normal")
+        pv.delete("1.0", "end")
+
+        def field(name, text):
+            pv.insert("end", name, "fieldname")
+            pv.insert("end", "\n")
+            if text:
+                pv.insert("end", str(text) + "\n")
+            else:
+                pv.insert("end", "(空欄)\n", "empty")
+
+        field("原文", row.get("original"))
+        field("添削後", row.get("corrected"))
+        field("解説", row.get("explanation"))
+        field("カテゴリ", row.get("category"))
+
+        similar_en = row.get("similar_en_list") or []
+        similar_ja = row.get("similar_ja_list") or []
+        similar_lines = []
+        for i, en in enumerate(similar_en):
+            ja = similar_ja[i] if i < len(similar_ja) else ""
+            similar_lines.append(en + (f"\n  └ {ja}" if ja else ""))
+        field("類似表現", "\n".join(similar_lines))
+
+        scores = []
+        if row.get("grammar_score") is not None:
+            scores.append(f"文法 {row['grammar_score']}")
+        if row.get("naturalness_score") is not None:
+            scores.append(f"自然さ {row['naturalness_score']}")
+        if row.get("comprehensibility_score") is not None:
+            scores.append(f"伝わりやすさ {row['comprehensibility_score']}")
+        field("スコア", " / ".join(scores))
+        field("スコア解説", row.get("score_comment"))
+        pv.configure(state="disabled")
+        # 「🔍 カードをプレビュー」対応は行わない(実カードテンプレートで
+        # レンダリングするにはdeck_builder経由のノート化が必要で、この
+        # 簡易確認用一覧の範囲を超えるため)。_preview_sourceは更新しない。
+
     def _generate_shuujuku_candidates_from_rows(self, rows: list, row_map: dict):
         """DailyConversationの読み込み(on_fetch_from_sheet_clicked)後に、
         実際にデッキへ採用された行(row_mapに含まれる行)ごとにGemini APIを
@@ -2182,10 +2556,20 @@ class AnkiTTSApp(_BaseTk):
         self.log(f"習熟用ストックに {added} 件追加しました(生成成功 {len(items)}/{len(target_rows)} 件)。")
         self.refresh_shuujuku_stock_view()
         if added:
+            # 2026-07-27〜、重複していても常にストックへ追加する仕様に変更した
+            # ため(以前は黙ってスキップしており「生成成功なのに増えない」という
+            # 分かりにくい状態を招いていた)、重複があれば一覧の⚠表示を見るよう
+            # 案内する。
+            dup_indices = shuujuku_stock.find_duplicate_pending_indices()
+            dup_note = (
+                f"\n(うち重複の可能性がある項目が{len(dup_indices)}件あります。"
+                "一覧の⚠表示を確認し、不要なら「選択項目を削除」で間引いてください)"
+                if dup_indices else ""
+            )
             messagebox.showinfo(
                 "習熟用ストックに追加",
                 f"習熟用ストックに {added} 件追加しました。\n"
-                "「習熟用(音読)」タブで確認できます。",
+                f"「習熟用(音読)」タブで確認できます。{dup_note}",
             )
         elif failed == len(target_rows):
             # 全件Gemini呼び出し失敗はログだけだと見落としやすいため、ログを
@@ -2194,11 +2578,6 @@ class AnkiTTSApp(_BaseTk):
                 "習熟用候補の生成に失敗",
                 f"対象 {len(target_rows)} 件すべてでAIによる習熟用候補の生成に"
                 "失敗しました。\n詳細はログを確認してください。",
-            )
-        elif items:
-            self.log(
-                "(生成には成功しましたが、すべて既存のストックまたは出力済みと"
-                "重複していたため追加されませんでした)"
             )
 
     # --- 入力元タブの切り替え(固定ヘッダーのボタン) -----------------------
@@ -2213,19 +2592,100 @@ class AnkiTTSApp(_BaseTk):
             btn.configure(style="Accent.TButton" if (k == key and SV_TTK_AVAILABLE) else "TButton")
 
     # --- 習熟用(音読)タブ -------------------------------------------------
+    # 重複候補のハイライト色(2026-07-27追加)。ライト/ダーク両テーマで
+    # 視認できるよう、あえてテーマに連動しない固定の警告色(琥珀色)にしている。
+    DUPLICATE_HIGHLIGHT_BG = "#e0a030"
+    DUPLICATE_HIGHLIGHT_FG = "#000000"
+
     def refresh_shuujuku_stock_view(self):
         pending = shuujuku_stock.get_pending()
+        dup_indices = shuujuku_stock.find_duplicate_pending_indices()
         self.shuujuku_count_label.configure(text=f"現在のストック: {len(pending)} 件")
         self.shuujuku_listbox.delete(0, "end")
-        for item in pending:
+        for i, item in enumerate(pending):
             label = item.get("pattern") or "(pattern未設定)"
             source = item.get("source_label") or ""
-            self.shuujuku_listbox.insert("end", f"{label}  {source}")
+            prefix = "⚠ [重複] " if i in dup_indices else ""
+            self.shuujuku_listbox.insert("end", f"{prefix}{label}  {source}")
+            if i in dup_indices:
+                self.shuujuku_listbox.itemconfig(
+                    i, {"bg": self.DUPLICATE_HIGHLIGHT_BG, "fg": self.DUPLICATE_HIGHLIGHT_FG}
+                )
 
         # タブボタンにストック件数のバッジを表示する
         base_label = self._source_tab_labels["shuujuku"]
         badge_label = f"{base_label} ({len(pending)})" if pending else base_label
         self._source_tab_buttons["shuujuku"].configure(text=badge_label)
+
+        # 「AIに質問」タブの一覧も同じshuujuku_stock.jsonを見ているため、
+        # 呼び出し元を増やさずに済むようここでまとめて同期する。
+        self.refresh_ai_ask_stock_view()
+
+    def refresh_ai_ask_stock_view(self):
+        """「AIに質問」タブの一覧を更新する。shuujuku_stock.jsonの中から
+        このタブ由来(source_key[0] == "chat")の項目だけを絞り込んで表示する
+        (DailyConversation由来の候補と混ざらないようにするため)。
+        永続化・重複判定・出力済み管理はすべてshuujuku_stock.py側と共通
+        (別ファイルには複製しない、見た目だけのフィルタ)。"""
+        pending = shuujuku_stock.get_pending()
+        dup_indices = shuujuku_stock.find_duplicate_pending_indices()
+
+        # 表示行(0始まり)→pending全体でのインデックスの対応表。
+        # 選択・削除時にshuujuku_stock.remove_pending_at()へ渡す実インデックスを
+        # 復元するために必要(一覧はchat由来だけに絞った部分集合のため)。
+        self._ai_ask_pending_indices = [
+            i for i, item in enumerate(pending) if (item.get("source_key") or ("",))[0] == "chat"
+        ]
+
+        self.ai_ask_count_label.configure(text=f"生成済み: {len(self._ai_ask_pending_indices)} 件")
+        self.ai_ask_listbox.delete(0, "end")
+        for row, i in enumerate(self._ai_ask_pending_indices):
+            item = pending[i]
+            label = item.get("pattern") or "(pattern未設定)"
+            prefix = "⚠ [重複] " if i in dup_indices else ""
+            self.ai_ask_listbox.insert("end", f"{prefix}{label}")
+            if i in dup_indices:
+                self.ai_ask_listbox.itemconfig(
+                    row, {"bg": self.DUPLICATE_HIGHLIGHT_BG, "fg": self.DUPLICATE_HIGHLIGHT_FG}
+                )
+
+    def on_ai_ask_item_selected(self, event=None):
+        """一覧で選択した候補の内容を、右のプレビューペインに表示する
+        (習熟用タブの一覧と同じ描画ロジックを共有)。"""
+        selection = self.ai_ask_listbox.curselection()
+        if not selection:
+            return
+        row = selection[0]
+        if row >= len(self._ai_ask_pending_indices):
+            return
+        pending = shuujuku_stock.get_pending()
+        i = self._ai_ask_pending_indices[row]
+        if i >= len(pending):
+            return
+        self._show_shuujuku_item_preview(pending[i])
+
+    def on_delete_selected_ai_ask_item_clicked(self):
+        """一覧で選択中の1件だけを削除する(習熟用タブの「選択項目を削除」と
+        同じshuujuku_stock.remove_pending_atを使う。出力済みにはせず、
+        単純にpendingから取り除くだけ)。"""
+        selection = self.ai_ask_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("未選択", "削除する項目を一覧から選択してください。")
+            return
+        row = selection[0]
+        if row >= len(self._ai_ask_pending_indices):
+            return
+        i = self._ai_ask_pending_indices[row]
+        pending = shuujuku_stock.get_pending()
+        if i >= len(pending):
+            return
+        item = pending[i]
+        label = item.get("pattern") or "(pattern未設定)"
+        if not messagebox.askyesno("確認", f"「{label}」をストックから削除します。よろしいですか？"):
+            return
+        shuujuku_stock.remove_pending_at(i)
+        self.log(f"習熟用ストックから「{label}」を削除しました。")
+        self.refresh_shuujuku_stock_view()
 
     def on_shuujuku_item_selected(self, event=None):
         """ストック一覧で選択した候補の内容を、右のプレビューペインに表示する。"""
@@ -2293,6 +2753,27 @@ class AnkiTTSApp(_BaseTk):
         self.log(f"習熟用ストックを {count} 件破棄しました。")
         self.refresh_shuujuku_stock_view()
 
+    def on_delete_selected_shuujuku_item_clicked(self):
+        """ストック一覧で選択中の1件だけを削除する(2026-07-27追加)。
+        重複していても常に追加する仕様に変更したため、不要な重複(⚠表示)を
+        片桐が見て判断し手動で間引けるようにするためのボタン。出力済みには
+        せず、単純にpendingから取り除くだけ(shuujuku_stock.remove_pending_at)。"""
+        selection = self.shuujuku_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("未選択", "削除する項目をストック一覧から選択してください。")
+            return
+        idx = selection[0]
+        pending = shuujuku_stock.get_pending()
+        if idx >= len(pending):
+            return
+        item = pending[idx]
+        label = item.get("pattern") or "(pattern未設定)"
+        if not messagebox.askyesno("確認", f"「{label}」をストックから削除します。よろしいですか？"):
+            return
+        shuujuku_stock.remove_pending_at(idx)
+        self.log(f"習熟用ストックから「{label}」を削除しました。")
+        self.refresh_shuujuku_stock_view()
+
     def on_export_shuujuku_stock_clicked(self):
         if not SHUUJUKU_AVAILABLE:
             messagebox.showerror(
@@ -2315,12 +2796,16 @@ class AnkiTTSApp(_BaseTk):
                 f"shuujuku_deck_{datetime.datetime.now():%Y%m%d_%H%M%S}.apkg",
             )
             deck.write_to_file(temp_path)
-            shuujuku_stock.mark_exported(pending)
             self.log(f"習熟用デッキを生成しました: {temp_path} ({len(pending)} ノート)")
             self._set_apkg_path(temp_path)
+            # ここではまだmark_exportedを呼ばない。④のTTS生成・apkg出力が
+            # 実際に成功した時点(run_generate)でまとめて出力済みにする。
+            # apkg_pathも一緒に記録し、run_generate側で完全一致を確認する
+            # (詳細は__init__のコメント参照)。
+            self._pending_shuujuku_stock_items = (temp_path, pending)
             self.sheets_update_var.set(False)  # 習熟用はスプレッドシート書き戻し対象外
-            self.refresh_shuujuku_stock_view()
-            self.log("生成したデッキを①以降に読み込みました。②③を確認して生成を実行してください(TTS設定は⚙から確認できます)。")
+            self.log("生成したデッキを①以降に読み込みました。②③を確認して生成を実行してください(TTS設定は⚙から確認できます)。"
+                      "④の生成が完了するまで、この候補はストックに残ります。")
         except Exception as e:  # noqa: BLE001
             self.log(f"習熟用デッキの生成に失敗しました: {e}")
             messagebox.showerror("エラー", f"習熟用デッキの生成に失敗しました:\n{e}")
@@ -2330,12 +2815,18 @@ class AnkiTTSApp(_BaseTk):
     # word_stock.py側だけで扱い、shuujuku_stock.pyには一切渡さないこと。
     def refresh_word_stock_view(self):
         pending = word_stock.get_pending()
+        dup_indices = word_stock.find_duplicate_pending_indices()
         self.word_count_label.configure(text=f"現在のストック: {len(pending)} 件")
         self.word_listbox.delete(0, "end")
-        for item in pending:
+        for i, item in enumerate(pending):
             label = item.get("word") or "(単語未設定)"
             meaning = item.get("meaning") or ""
-            self.word_listbox.insert("end", f"{label}  {meaning}")
+            prefix = "⚠ [重複] " if i in dup_indices else ""
+            self.word_listbox.insert("end", f"{prefix}{label}  {meaning}")
+            if i in dup_indices:
+                self.word_listbox.itemconfig(
+                    i, {"bg": self.DUPLICATE_HIGHLIGHT_BG, "fg": self.DUPLICATE_HIGHLIGHT_FG}
+                )
 
         base_label = self._source_tab_labels["word"]
         badge_label = f"{base_label} ({len(pending)})" if pending else base_label
@@ -2399,6 +2890,27 @@ class AnkiTTSApp(_BaseTk):
         self.log(f"単語ストックを {count} 件破棄しました。")
         self.refresh_word_stock_view()
 
+    def on_delete_selected_word_item_clicked(self):
+        """ストック一覧で選択中の1件だけを削除する(2026-07-27追加)。
+        重複していても常に追加する仕様に変更したため、不要な重複(⚠表示)を
+        片桐が見て判断し手動で間引けるようにするためのボタン。出力済みには
+        せず、単純にpendingから取り除くだけ(word_stock.remove_pending_at)。"""
+        selection = self.word_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("未選択", "削除する項目をストック一覧から選択してください。")
+            return
+        idx = selection[0]
+        pending = word_stock.get_pending()
+        if idx >= len(pending):
+            return
+        item = pending[idx]
+        label = item.get("word") or "(単語未設定)"
+        if not messagebox.askyesno("確認", f"「{label}」をストックから削除します。よろしいですか？"):
+            return
+        word_stock.remove_pending_at(idx)
+        self.log(f"単語ストックから「{label}」を削除しました。")
+        self.refresh_word_stock_view()
+
     def _word_deck_name_for_hint(self) -> str:
         card_def = card_defs.get_def("word")
         return card_def["deck_name"] if card_def else "不明"
@@ -2429,12 +2941,18 @@ class AnkiTTSApp(_BaseTk):
                 f"word_deck_{datetime.datetime.now():%Y%m%d_%H%M%S}.apkg",
             )
             deck.write_to_file(temp_path)
-            word_stock.mark_exported(pending)
             self.log(f"単語デッキを生成しました: {temp_path} ({len(pending)} ノート)")
             self._set_apkg_path(temp_path)
+            # ここではまだmark_exportedを呼ばない。④のTTS生成・apkg出力が
+            # 実際に成功した時点(run_generate)でまとめて出力済みにする
+            # (2026-07-27。骨組みのデッキを作った段階でストックから消すと、
+            # ②③④を完了しないまま再起動した場合に「出力できたのか」が
+            # 分からなくなってしまうため)。apkg_pathも一緒に記録し、
+            # run_generate側で完全一致を確認する(詳細は__init__のコメント参照)。
+            self._pending_word_stock_items = (temp_path, pending)
             self.sheets_update_var.set(False)  # 単語はスプレッドシート書き戻し対象外
-            self.refresh_word_stock_view()
-            self.log("生成したデッキを①以降に読み込みました。②③を確認して生成を実行してください(TTS設定は⚙から確認できます)。")
+            self.log("生成したデッキを①以降に読み込みました。②③を確認して生成を実行してください(TTS設定は⚙から確認できます)。"
+                      "④の生成が完了するまで、この候補はストックに残ります。")
         except Exception as e:  # noqa: BLE001
             self.log(f"単語デッキの生成に失敗しました: {e}")
             messagebox.showerror("エラー", f"単語デッキの生成に失敗しました:\n{e}")
@@ -2491,6 +3009,17 @@ class AnkiTTSApp(_BaseTk):
 
             added = word_stock.add_pending_items(items)
             self.log(f"単語ストックに {added} 件追加しました(生成成功 {len(items)}/{len(pairs)} 件)。")
+            # 2026-07-27〜、重複していても常にストックへ追加する仕様に変更した
+            # ため(以前は黙ってスキップしており「生成成功なのに増えない」という
+            # 分かりにくい状態を招いていた)、重複があれば一覧の⚠表示を見るよう
+            # ログで案内する。
+            dup_indices = word_stock.find_duplicate_pending_indices() if added else set()
+            if dup_indices:
+                self.log(
+                    f"(うち重複の可能性がある項目が{len(dup_indices)}件あります。"
+                    "ストック一覧の⚠表示を確認し、不要なら「選択項目を削除」で"
+                    "間引いてください)"
+                )
 
             def finish():
                 self.refresh_word_stock_view()
@@ -2528,11 +3057,8 @@ class AnkiTTSApp(_BaseTk):
             try:
                 self.log(f"AIに質問中: {question[:50]}...")
                 item = gemini_client.answer_question_as_shuujuku_item(question, api_key, model)
-                added = shuujuku_stock.add_pending_items([item])
-                if added:
-                    self.log(f"習熟用ストックに追加しました: {item['pattern']}")
-                else:
-                    self.log("(同じ質問が既にストックまたは出力済みのため、追加されませんでした)")
+                shuujuku_stock.add_pending_items([item])
+                self.log(f"習熟用ストックに追加しました: {item['pattern']}")
                 self.refresh_shuujuku_stock_view()
             except gemini_client.GeminiClientError as e:
                 self.log(f"AIへの質問に失敗しました: {e}")
@@ -2606,24 +3132,79 @@ class AnkiTTSApp(_BaseTk):
             self.notetype_combo["values"] = names
             if names:
                 self.notetype_var.set(names[0])
-                self.on_notetype_selected()
+            else:
+                # ノートが1件も無いapkg(誤りなし・重複除外で0件になった場合等)を
+                # 読み込んだ際、直前に選択されていた別のノートタイプ名が
+                # notetype_var/notetype_comboに残ったままになるのを防ぐ
+                # (2026-07-27。前回のapkgのノートタイプが選択されたまま
+                # 見えてしまい、④の対象を誤認する原因になっていた)。
+                self.notetype_var.set("")
+            self.on_notetype_selected()
             self.log(f"ノートタイプを {len(names)} 件検出しました。")
+            if not names:
+                self.log("(このapkgにはノートが1件もありません)")
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("読み込みエラー", str(e))
 
     def on_notetype_selected(self, event=None):
         nt_name = self.notetype_var.get()
         fields = self.notetype_fields.get(nt_name, [])
-        self.source_combo["values"] = fields
-        self.target_combo["values"] = fields
-        if fields:
-            # TTSで読み上げる対象は「Answer」フィールド(正解文)がある場合は
-            # それを既定にする(Grammar DailyConversationノートタイプでの
-            # 主な使い方に合わせたデフォルト)。無ければ先頭フィールド。
-            default_field = "Answer" if "Answer" in fields else fields[0]
-            self.source_field_var.set(default_field)
-            self.target_field_var.set(default_field)
+        self._current_nt_fields = fields
+        # TTSで読み上げる対象は「Answer」(正解文)と「Example」(類似表現/例文)の
+        # 両方がある場合はその2つを既定にする(Grammar DailyConversationノート
+        # タイプでの主な使い方に合わせたデフォルト。2026-07-27、Exampleも既定の
+        # TTS対象に追加)。習熟用ノート(Num/Contentのみ)では実際には
+        # SHUUJUKU_NOTETYPE_NAME分岐で常にContentが使われ、この選択自体は
+        # 無視されるが、プレビューの[TTS対象]バッジ表示が「Num」を指して
+        # 誤解を招かないよう、Contentも優先候補に加えておく。どれも無ければ
+        # 先頭フィールド。
+        default_fields = [f for f in ("Answer", "Example", "Content") if f in fields]
+        if not default_fields and fields:
+            default_fields = [fields[0]]
+        self.tts_field_vars = [tk.StringVar(value=f) for f in default_fields]
+        self._rebuild_tts_field_rows()
+        if nt_name == SHUUJUKU_NOTETYPE_NAME:
+            self.shuujuku_tts_hint_label.grid()
+        else:
+            self.shuujuku_tts_hint_label.grid_remove()
         self.populate_notes_tree(nt_name)
+
+    def _rebuild_tts_field_rows(self):
+        """self.tts_field_vars の内容に合わせて、TTS対象フィールドの行UIを
+        作り直す(ノートタイプ切替時・＋/－ボタン押下時に呼ばれる)。"""
+        for child in self.tts_fields_frame.winfo_children():
+            child.destroy()
+        for i, var in enumerate(self.tts_field_vars):
+            combo = ttk.Combobox(
+                self.tts_fields_frame, textvariable=var, state="readonly",
+                values=self._current_nt_fields,
+            )
+            combo.grid(row=i, column=0, sticky="ew", pady=2)
+            combo.bind("<<ComboboxSelected>>", self.update_preview)
+            remove_btn = ttk.Button(
+                self.tts_fields_frame, text="－", width=3,
+                command=lambda idx=i: self._remove_tts_field_row(idx),
+            )
+            remove_btn.grid(row=i, column=1, padx=(4, 0), pady=2)
+            if len(self.tts_field_vars) <= 1:
+                remove_btn.configure(state="disabled")
+        self.update_preview()
+
+    def _add_tts_field_row(self):
+        fields = self._current_nt_fields
+        if not fields:
+            return
+        used = {v.get() for v in self.tts_field_vars}
+        candidates = [f for f in fields if f not in used]
+        new_value = candidates[0] if candidates else fields[0]
+        self.tts_field_vars.append(tk.StringVar(value=new_value))
+        self._rebuild_tts_field_rows()
+
+    def _remove_tts_field_row(self, index):
+        if len(self.tts_field_vars) <= 1:
+            return
+        del self.tts_field_vars[index]
+        self._rebuild_tts_field_rows()
 
     def populate_notes_tree(self, nt_name: str):
         """ノート一覧をメール一覧風のコンパクトな2列(先頭2フィールドの要約)で表示する。
@@ -2685,7 +3266,7 @@ class AnkiTTSApp(_BaseTk):
 
     def update_preview(self, event=None):
         """右ペインに選択中ノートの全フィールドを表示する(Outlookの閲覧ウィンドウ風)。
-        Source/Targetに指定されているフィールドにはバッジを付ける。"""
+        TTS対象フィールドに指定されているものにはバッジを付ける。"""
         nt_name = self.notetype_var.get()
         fields, values, nid = self._get_selected_note_fields()
         pv = self.preview_text
@@ -2706,14 +3287,11 @@ class AnkiTTSApp(_BaseTk):
                 "kind": "note", "nt_name": nt_name, "fields": fields, "values": values, "nid": nid,
             }
         else:
-            src_name = self.source_field_var.get()
-            tgt_name = self.target_field_var.get()
+            selected_fields = {v.get() for v in self.tts_field_vars}
             for fname, fval in zip(fields, values):
                 pv.insert("end", fname, "fieldname")
-                if fname == src_name:
-                    pv.insert("end", "  [Source]", "badge")
-                if fname == tgt_name:
-                    pv.insert("end", "  [Target]", "badge")
+                if fname in selected_fields:
+                    pv.insert("end", "  [TTS対象]", "badge")
                 pv.insert("end", "\n")
                 text = tts_core.html_to_display_text(fval)
                 if text:
@@ -2811,6 +3389,7 @@ class AnkiTTSApp(_BaseTk):
             "mp3_bitrate": int(self.mp3_bitrate_var.get()),
             "volume_gain_db": self.volume_gain_db_var.get(),
             "force_regen": self.force_regen_var.get(),
+            "exclude_japanese_sentences": self.exclude_japanese_var.get(),
             "auto_open_anki": self.auto_open_anki_var.get(),
             "auto_backup": self.auto_backup_var.get(),
             "theme": self.theme_var.get(),
@@ -2971,10 +3550,19 @@ class AnkiTTSApp(_BaseTk):
         """習熟用(ATSU方式)ノートは、Contentフィールドに英語例文と日本語の
         意味・和訳・解説が混在しているため、フィールドをそのままTTSに
         かけると日本語部分まで英語音声で読み上げようとしてしまう。
-        該当notetypeの場合だけ、英語例文部分だけを抽出する変換関数を返す。"""
-        if nt_name == SHUUJUKU_NOTETYPE_NAME:
-            return tts_core.extract_shuujuku_tts_text
-        return None
+        該当notetypeの場合だけ、英語例文部分だけを抽出する変換関数を返す。
+
+        これに加えて、③の「日本語を含む文をTTS対象から除外する」
+        チェック(`self.exclude_japanese_var`)がONの場合、
+        `tts_core.strip_japanese_sentences`(HTML構造に依存しない文単位の
+        汎用フィルタ、2026-07-27追加)を後段に合成する。習熟用専用の抽出と
+        違い、単語タブなど任意のノートタイプ・フィールドに使える。"""
+        base = tts_core.extract_shuujuku_tts_text if nt_name == SHUUJUKU_NOTETYPE_NAME else None
+        if not self.exclude_japanese_var.get():
+            return base
+        if base is None:
+            return tts_core.strip_japanese_sentences
+        return lambda text: tts_core.strip_japanese_sentences(base(text))
 
     def on_dry_run_clicked(self):
         if not self.apkg_path.get():
@@ -2988,27 +3576,57 @@ class AnkiTTSApp(_BaseTk):
                 )
                 col = tts_core.load_collection(self.apkg_path.get(), work_col_path)
                 nt_name = self.notetype_var.get()
+                if not nt_name:
+                    raise ValueError("ノートタイプが選択されていません(このapkgにノートが無い可能性があります)。")
                 nt = col.models.by_name(nt_name)
                 field_names = [f["name"] for f in nt["flds"]]
-                src_idx = field_names.index(self.source_field_var.get())
-                tgt_idx = field_names.index(self.target_field_var.get())
 
-                to_process, skip_audio, skip_empty, total_chars = tts_core.analyze_targets(
-                    col, nt_name, src_idx, tgt_idx, self.force_regen_var.get(),
-                    source_transform=self._get_source_transform_for(nt_name),
-                )
-                col.close()
+                if nt_name == SHUUJUKU_NOTETYPE_NAME:
+                    # 習熟用ノートは、TTS対象フィールドの選択に関わらず常に
+                    # Contentフィールドの英語例文を1文ずつ処理する専用ロジックを
+                    # 使う(②のフィールド選択UIはこのノートタイプでは無視される)。
+                    content_idx = field_names.index("Content")
+                    to_process, skip_audio, skip_empty, total_chars = (
+                        tts_core.analyze_shuujuku_sentence_targets(
+                            col, nt_name, content_idx, self.force_regen_var.get()
+                        )
+                    )
+                    col.close()
+                    msg = (
+                        f"対象ノートタイプ: {nt_name}(例文ごとに個別のMP3を生成します)\n\n"
+                        f"新規生成予定: {len(to_process)} 件(例文単位)\n"
+                        f"スキップ(既に音声あり、ノート単位): {skip_audio} 件\n"
+                        f"スキップ(例文が空): {skip_empty} 件\n\n"
+                        f"生成予定の合計文字数: {total_chars:,} 文字\n\n"
+                        "※ Google Cloud Text-to-Speechの無料枠は音声の種類(Standard/"
+                        "WaveNet/Neural2/Chirp3-HDなど)によって異なります。正確な枠は"
+                        "Google Cloud Consoleの料金ページでご確認ください。"
+                    )
+                else:
+                    field_indices = [
+                        field_names.index(v.get()) for v in self.tts_field_vars if v.get() in field_names
+                    ]
+                    if not field_indices:
+                        raise ValueError("TTS対象フィールドが選択されていません。")
 
-                msg = (
-                    f"対象ノートタイプ: {nt_name}\n\n"
-                    f"新規生成予定: {len(to_process)} 件\n"
-                    f"スキップ(既に音声あり): {skip_audio} 件\n"
-                    f"スキップ(空欄): {skip_empty} 件\n\n"
-                    f"生成予定の合計文字数: {total_chars:,} 文字\n\n"
-                    "※ Google Cloud Text-to-Speechの無料枠は音声の種類(Standard/"
-                    "WaveNet/Neural2/Chirp3-HDなど)によって異なります。正確な枠は"
-                    "Google Cloud Consoleの料金ページでご確認ください。"
-                )
+                    to_process, skip_audio, skip_empty, total_chars = tts_core.analyze_targets(
+                        col, nt_name, field_indices, self.force_regen_var.get(),
+                        source_transform=self._get_source_transform_for(nt_name),
+                    )
+                    col.close()
+
+                    msg = (
+                        f"対象ノートタイプ: {nt_name}\n"
+                        f"TTS対象フィールド: {', '.join(v.get() for v in self.tts_field_vars)}\n\n"
+                        f"新規生成予定: {len(to_process)} 件(フィールド単位。1ノートで複数"
+                        "フィールドが対象の場合、その分だけ件数が増えます)\n"
+                        f"スキップ(既に音声あり): {skip_audio} 件\n"
+                        f"スキップ(空欄): {skip_empty} 件\n\n"
+                        f"生成予定の合計文字数: {total_chars:,} 文字\n\n"
+                        "※ Google Cloud Text-to-Speechの無料枠は音声の種類(Standard/"
+                        "WaveNet/Neural2/Chirp3-HDなど)によって異なります。正確な枠は"
+                        "Google Cloud Consoleの料金ページでご確認ください。"
+                    )
                 self.log("--- ドライラン結果 ---\n" + msg)
                 messagebox.showinfo("ドライラン結果", msg)
             except Exception as e:  # noqa: BLE001
@@ -3041,7 +3659,11 @@ class AnkiTTSApp(_BaseTk):
 
         nid = int(selected[0])
         current_fields = next((f for n, f in notes_data if n == nid), None)
-        src_name = self.source_field_var.get()
+        if not self.tts_field_vars:
+            messagebox.showwarning("未選択", "TTS対象フィールドを選択してください。")
+            return
+        # 複数フィールドを選択している場合、試聴は先頭のフィールドのみ対象にする。
+        src_name = self.tts_field_vars[0].get()
         if current_fields is None or src_name not in fields:
             return
 
@@ -3107,11 +3729,16 @@ class AnkiTTSApp(_BaseTk):
         thread.start()
 
     def run_generate(self):
+        # このrun_generate呼び出し全体で処理対象のapkgパスを固定する
+        # (self.apkg_pathはtk.StringVarなので、生成中に他の操作で値が
+        # 変わる可能性を排除するため、開始時点の値をローカル変数に固定する)。
+        # 単語/習熟用ストックの出力済みマーク判定にも使う(下記参照)。
+        generated_apkg_path = self.apkg_path.get()
         try:
             if self.auto_backup_var.get():
                 try:
-                    backup_path = tts_core.make_backup_path(self.apkg_path.get())
-                    shutil.copy2(self.apkg_path.get(), backup_path)
+                    backup_path = tts_core.make_backup_path(generated_apkg_path)
+                    shutil.copy2(generated_apkg_path, backup_path)
                     self.log(f"バックアップを作成しました: {backup_path}")
                 except Exception as e:  # noqa: BLE001
                     self.log(f"バックアップの作成に失敗しました(処理は続行します): {e}")
@@ -3119,60 +3746,94 @@ class AnkiTTSApp(_BaseTk):
             work_col_path = os.path.join(
                 os.environ.get("TEMP", tempfile.gettempdir()), "_anki_tts_gui_generate.anki2"
             )
-            col = tts_core.load_collection(self.apkg_path.get(), work_col_path)
+            col = tts_core.load_collection(generated_apkg_path, work_col_path)
 
             nt_name = self.notetype_var.get()
+            if not nt_name:
+                raise ValueError("ノートタイプが選択されていません(このapkgにノートが無い可能性があります)。")
             nt = col.models.by_name(nt_name)
             field_names = [f["name"] for f in nt["flds"]]
-            src_idx = field_names.index(self.source_field_var.get())
-            tgt_idx = field_names.index(self.target_field_var.get())
-
             force_regen = self.force_regen_var.get()
-            source_transform = self._get_source_transform_for(nt_name)
-            to_process, skipped_has_audio, skipped_empty, _total_chars = tts_core.analyze_targets(
-                col, nt_name, src_idx, tgt_idx, force_regen, source_transform=source_transform
-            )
-
-            self.progress["maximum"] = max(len(to_process), 1)
-            self.progress["value"] = 0
-
-            if (
-                not self.per_sentence_var.get()
-                and self.sentence_gap_var.get() > 0
-                and not tts_core.LAMEENC_AVAILABLE
-            ):
-                self.log(
-                    "注意: lameencが未インストールのため、結合音声はMP3ではなくWAVのまま出力されます。"
-                    "圧縮したい場合は `pip install lameenc` を実行してください。"
-                )
 
             def on_progress(done, total):
                 self.progress["value"] = done
                 self.update_idletasks()
 
-            result = tts_core.generate_tts_for_collection(
-                col,
-                nt_name,
-                src_idx,
-                tgt_idx,
-                to_process,
-                api_key=self.api_key_var.get(),
-                voice=self.voice_var.get(),
-                lang=self.lang_var.get(),
-                gap_seconds=self.sentence_gap_var.get(),
-                bitrate=int(self.mp3_bitrate_var.get()),
-                per_sentence=self.per_sentence_var.get(),
-                force_regen=force_regen,
-                volume_gain_db=self.volume_gain_db_var.get(),
-                source_transform=source_transform,
-                log=self.log,
-                on_progress=on_progress,
-                should_cancel=self._cancel_event.is_set,
-            )
+            is_shuujuku = nt_name == SHUUJUKU_NOTETYPE_NAME
+            if is_shuujuku:
+                # 習熟用ノートは、②のフィールド選択に関わらず常にContentの
+                # 英語例文を1文ずつ個別のMP3として生成し、各例文の直下にタグを
+                # 挿入する専用ロジックを使う(2026-07-27追加、片桐の要望による)。
+                content_idx = field_names.index("Content")
+                to_process, skipped_has_audio, skipped_empty, _total_chars = (
+                    tts_core.analyze_shuujuku_sentence_targets(col, nt_name, content_idx, force_regen)
+                )
+                self.progress["maximum"] = max(len(to_process), 1)
+                self.progress["value"] = 0
+                result = tts_core.generate_shuujuku_sentence_tts_for_collection(
+                    col,
+                    nt_name,
+                    content_idx,
+                    to_process,
+                    api_key=self.api_key_var.get(),
+                    voice=self.voice_var.get(),
+                    lang=self.lang_var.get(),
+                    bitrate=int(self.mp3_bitrate_var.get()),
+                    force_regen=force_regen,
+                    volume_gain_db=self.volume_gain_db_var.get(),
+                    log=self.log,
+                    on_progress=on_progress,
+                    should_cancel=self._cancel_event.is_set,
+                )
+            else:
+                field_indices = [
+                    field_names.index(v.get()) for v in self.tts_field_vars if v.get() in field_names
+                ]
+                if not field_indices:
+                    raise ValueError("TTS対象フィールドが選択されていません。")
+
+                source_transform = self._get_source_transform_for(nt_name)
+                to_process, skipped_has_audio, skipped_empty, _total_chars = tts_core.analyze_targets(
+                    col, nt_name, field_indices, force_regen, source_transform=source_transform
+                )
+
+                self.progress["maximum"] = max(len(to_process), 1)
+                self.progress["value"] = 0
+
+                if (
+                    not self.per_sentence_var.get()
+                    and self.sentence_gap_var.get() > 0
+                    and not tts_core.LAMEENC_AVAILABLE
+                ):
+                    self.log(
+                        "注意: lameencが未インストールのため、結合音声はMP3ではなくWAVのまま出力されます。"
+                        "圧縮したい場合は `pip install lameenc` を実行してください。"
+                    )
+
+                result = tts_core.generate_tts_for_collection(
+                    col,
+                    nt_name,
+                    to_process,
+                    api_key=self.api_key_var.get(),
+                    voice=self.voice_var.get(),
+                    lang=self.lang_var.get(),
+                    gap_seconds=self.sentence_gap_var.get(),
+                    bitrate=int(self.mp3_bitrate_var.get()),
+                    per_sentence=self.per_sentence_var.get(),
+                    force_regen=force_regen,
+                    volume_gain_db=self.volume_gain_db_var.get(),
+                    source_transform=source_transform,
+                    log=self.log,
+                    on_progress=on_progress,
+                    should_cancel=self._cancel_event.is_set,
+                )
 
             matched_sheet_ids = []
             if self.sheets_update_var.get():
-                processed_note_ids = to_process[: result.processed]
+                # to_process は (note_id, field_idx) のペアなので、1ノートが
+                # 複数フィールドで処理されていても重複しないようnote_idだけを抽出する。
+                processed_pairs = to_process[: result.processed]
+                processed_note_ids = list(dict.fromkeys(nid for nid, _ in processed_pairs))
                 row_map = None
                 if self._current_row_map:
                     row_map = self._current_row_map  # スプレッドシートから直接読み込んだ場合
@@ -3196,6 +3857,41 @@ class AnkiTTSApp(_BaseTk):
 
             tts_core.export_collection(col, self.output_path.get())
             col.close()
+
+            # 単語/習熟用ストックから「まとめて出力」した直後の場合、apkgの
+            # 出力がここまで成功して初めて出力済みにする(骨組みのデッキを
+            # 作った段階では消さない。on_export_word_stock_clicked/
+            # on_export_shuujuku_stock_clickedの項を参照)。
+            # **安全策(2026-07-27)**: 記録されているapkg_pathが、今まさに
+            # 処理していたapkg_path(generated_apkg_path)と完全一致する場合
+            # だけmark_exportedを呼ぶ。DailyConversation等、別の入力元を
+            # 処理した際に誤って無関係なストックを出力済みにしてしまう事故を
+            # 防ぐための二重チェック(「DailyConversationのTTS生成でストックの
+            # 単語が意図せず出力済みになった」という報告への対応)。
+            if self._pending_word_stock_items:
+                tracked_path, tracked_items = self._pending_word_stock_items
+                if tracked_path == generated_apkg_path:
+                    word_stock.mark_exported(tracked_items)
+                    self.log(f"単語ストックの {len(tracked_items)} 件を出力済みにしました。")
+                    self.refresh_word_stock_view()
+                else:
+                    self.log(
+                        "(単語ストックの出力済みマークは対象外です: "
+                        "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
+                    )
+                self._pending_word_stock_items = None
+            if self._pending_shuujuku_stock_items:
+                tracked_path, tracked_items = self._pending_shuujuku_stock_items
+                if tracked_path == generated_apkg_path:
+                    shuujuku_stock.mark_exported(tracked_items)
+                    self.log(f"習熟用ストックの {len(tracked_items)} 件を出力済みにしました。")
+                    self.refresh_shuujuku_stock_view()
+                else:
+                    self.log(
+                        "(習熟用ストックの出力済みマークは対象外です: "
+                        "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
+                    )
+                self._pending_shuujuku_stock_items = None
 
             status = "キャンセルにより途中まで" if result.cancelled else "完了"
             self.log(

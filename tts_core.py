@@ -108,17 +108,33 @@ def strip_html_for_tts(raw: str) -> str:
 
 
 def strip_sound_tags(text: str) -> str:
-    """既存の [sound:xxx] タグと、それに伴う末尾の余分な<br>を取り除く
-    (強制再生成時に <br><br> のような重複を残さないため)。"""
-    text = SOUND_TAG_RE.sub("", text)
-    text = re.sub(r"(<br\s*/?>\s*)+$", "", text, flags=re.IGNORECASE)
+    """[sound:xxx] タグを、直前にある<br>も含めて出現位置を問わず取り除く
+    (強制再生成時に古い音声タグ・余分な<br>を残さないため)。フィールド末尾に
+    まとめて追記する従来方式だけでなく、習熟用ノートで例文ごとにインライン
+    挿入する方式(2026-07-27追加、generate_shuujuku_sentence_tts_for_collection
+    参照)にも対応するため、文字列中のどこにあっても除去できるようにしている
+    (以前は末尾の<br>しか除去できなかった)。"""
+    text = re.sub(r"(<br\s*/?>\s*)?\[sound:[^\]]+\]", "", text, flags=re.IGNORECASE)
     return text.strip()
+
+
+# 「Ex1.」「2.」「Q1.」のような短い見出しラベル1つだけの断片を検出する
+# (英字0〜6文字+数字1〜3文字+句点)。少なくとも1桁の数字を要求することで、
+# "Yes." "No." のような正当な短文をラベルと誤認して結合してしまうのを防ぐ。
+_LABEL_ONLY_RE = re.compile(r"^[A-Za-z]{0,6}\d{1,3}\.$")
 
 
 def split_into_sentences(html_text: str) -> list:
     """フィールドのHTMLを、文ごとの読み上げ単位に分割する。
     <br>や</div>による改行はそのまま文の区切りとして扱い、
-    1行に複数文が「. 」で連続している場合も追加で分割する。"""
+    1行に複数文が「. 」で連続している場合も追加で分割する。
+
+    「Ex1.」「2.」のような短い見出しラベルは、この単純な句点分割だと
+    それ単体で1文として切り出されてしまい、TTS生成時にラベルだけの
+    極小音声ファイルが大量発生してAnkiコレクションを圧迫する原因になる
+    (2026-07-27修正)。そのため、分割結果が`_LABEL_ONLY_RE`にマッチする
+    (英字0〜6文字+数字1〜3文字+句点、のような短いラベルのみ)場合は、
+    次の断片に結合してから返す。"""
     normalized = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
     normalized = re.sub(r"</div>", "\n", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"<[^>]+>", "", normalized)
@@ -129,11 +145,17 @@ def split_into_sentences(html_text: str) -> list:
         line = line.strip()
         if not line:
             continue
-        parts = re.split(r"(?<=[.!?])\s+", line)
+        raw_parts = re.split(r"(?<=[.!?])\s+", line)
+        parts = [re.sub(r"\s+", " ", p).strip() for p in raw_parts]
+        parts = [p for p in parts if p]
+
+        merged = []
         for p in parts:
-            p = re.sub(r"\s+", " ", p).strip()
-            if p:
-                sentences.append(p)
+            if merged and _LABEL_ONLY_RE.match(merged[-1]):
+                merged[-1] = f"{merged[-1]} {p}"
+            else:
+                merged.append(p)
+        sentences.extend(merged)
     return sentences
 
 
@@ -207,6 +229,175 @@ def extract_shuujuku_tts_text(content_html: str) -> str:
     読み上げ対象からは除外する。"""
     parsed = parse_shuujuku_content_html(content_html)
     return "<br>".join(en for en, _ja in parsed["examples"] if en)
+
+
+# ---------------------------------------------------------------------------
+# 習熟用ノートの英語例文を1文ずつ個別にTTS化する(2026-07-27追加)
+# ---------------------------------------------------------------------------
+#
+# 通常のanalyze_targets/generate_tts_for_collectionは、1フィールドの内容を
+# まとめて1つの音声(またはper_sentence指定時は別々の音声だがタグはフィールド
+# 末尾にまとめて追記)にする設計。習熟用ノートでは「例文ごとに個別のMP3を
+# 生成し、タグをその例文の直下(<div class="ex-en">...</div>の直後)に
+# 配置してほしい」という要望に対応するため、専用の関数を用意する
+# (Contentフィールドの構造そのものを書き換える必要があり、通常のフィールド
+# 末尾追記方式では実現できないため)。
+
+
+def analyze_shuujuku_sentence_targets(col, nt_name: str, field_idx: int, force_regen: bool):
+    """習熟用ノートのContentフィールド(field_idx)を走査し、英語例文(ex-en)を
+    1文ずつ処理対象にする。戻り値は(処理対象(note_id, 例文の連番)ペアのリスト,
+    音声済みスキップ数, 空欄スキップ数, 合計文字数)で、analyze_targets()と
+    互換の形にしている。「音声済みスキップ」はノート単位の判定(フィールド
+    全体に既に[sound:...]が1つでもあれば、そのノートの全例文をまとめて
+    スキップする。force_regen時は全て再生成する)。"""
+    note_ids = col.find_notes(f'note:"{nt_name}"')
+    to_process = []
+    skip_has_audio = 0
+    skip_empty = 0
+    total_chars = 0
+
+    for nid in note_ids:
+        note = col.get_note(nid)
+        content_html = note.fields[field_idx]
+        has_audio = bool(SOUND_TAG_RE.search(content_html))
+        if has_audio and not force_regen:
+            skip_has_audio += 1
+            continue
+
+        sentences = [
+            strip_html_for_tts(html_to_display_text(m))
+            for m in _SHUUJUKU_EX_EN_RE.findall(content_html)
+        ]
+        sentences = [s for s in sentences if s]
+        if not sentences:
+            skip_empty += 1
+            continue
+
+        for i in range(len(sentences)):
+            to_process.append((nid, i))
+        total_chars += sum(len(s) for s in sentences)
+
+    return to_process, skip_has_audio, skip_empty, total_chars
+
+
+def generate_shuujuku_sentence_tts_for_collection(
+    col,
+    nt_name: str,
+    field_idx: int,
+    to_process: list,
+    *,
+    api_key: str,
+    voice: str,
+    lang: str,
+    bitrate: int,
+    force_regen: bool,
+    volume_gain_db: float = 0.0,
+    log=lambda msg: None,
+    on_progress=lambda done, total: None,
+    should_cancel=lambda: False,
+) -> GenerateResult:
+    """習熟用ノートの英語例文(ex-en)を1文ずつ個別にTTS生成し、それぞれの
+    タグを対応する例文の直下(<div class="ex-en">...</div>の内側、文の直後)に
+    挿入する。通常のgenerate_tts_for_collectionと違い、フィールド全体に
+    1つのタグを追記するのではなく、re.subのコールバックで各ex-en divを
+    順番に処理しながらタグを埋め込む。
+
+    to_process: analyze_shuujuku_sentence_targets()の戻り値をそのまま渡す
+    想定((note_id, 例文の連番)のペア)。実際の処理はノート単位で行うため、
+    同じnote_idのエントリはまとめて1回のcol.update_noteで反映する。
+    """
+    processed = 0
+    cancelled = False
+    total = len(to_process)
+    progress_done = 0
+
+    notes_order = []
+    seen = set()
+    for nid, _ in to_process:
+        if nid not in seen:
+            notes_order.append(nid)
+            seen.add(nid)
+    counts_by_note = {}
+    for nid, _ in to_process:
+        counts_by_note[nid] = counts_by_note.get(nid, 0) + 1
+
+    for nid in notes_order:
+        if should_cancel():
+            cancelled = True
+            log(f"\nキャンセルされました。{processed} 件処理した時点で中断します。")
+            break
+
+        note = col.get_note(nid)
+        content_html = note.fields[field_idx]
+        if force_regen:
+            old_filenames = re.findall(r"\[sound:([^\]]+)\]", content_html)
+            if old_filenames:
+                try:
+                    col.media.trash_files(old_filenames)
+                except Exception as e:  # noqa: BLE001
+                    log(f"  (旧音声ファイルの削除に失敗: {e})")
+            content_html = strip_sound_tags(content_html)
+
+        sentence_counter = [0]
+
+        def _insert_tag(match, _nid=nid):
+            inner_html = match.group(1)
+            text = strip_html_for_tts(html_to_display_text(inner_html))
+            idx = sentence_counter[0]
+            sentence_counter[0] += 1
+            if not text:
+                return match.group(0)
+            log(f"生成中 (note {_nid}, 例文 #{idx + 1}): {text[:40]}...")
+            audio_bytes, ext = synthesize_with_gaps(
+                text, voice, lang, api_key, gap_seconds=0, mp3_bitrate_kbps=bitrate,
+                volume_gain_db=volume_gain_db,
+            )
+            fname = f"tts_{_nid}_{field_idx}_{idx}.{ext}"
+            stored_name = col.media.write_data(fname, audio_bytes)
+            return f'<div class="ex-en">{inner_html}<br>[sound:{stored_name}]</div>'
+
+        new_content = _SHUUJUKU_EX_EN_RE.sub(_insert_tag, content_html)
+        note.fields[field_idx] = new_content
+        col.update_note(note)
+
+        note_count = counts_by_note.get(nid, 0)
+        processed += note_count
+        progress_done += note_count
+        on_progress(progress_done, total)
+
+    return GenerateResult(processed=processed, cancelled=cancelled)
+
+
+# ---------------------------------------------------------------------------
+# 日本語文の汎用除外フィルタ(source_transform用、2026-07-27追加)
+# ---------------------------------------------------------------------------
+#
+# extract_shuujuku_tts_text は習熟用ノートのHTML構造(class="ex-en"等)に
+# 依存した抽出であり、単語タブの Example フィールドのようにそうした構造を
+# 持たないフィールドには使えない。こちらはHTML構造に依存せず、文単位で
+# ひらがな・カタカナ・漢字の有無を判定して除外するだけの汎用フィルタ。
+# 1文の中に英語と日本語が混在している場合は、その文ごと除外する
+# (部分的に日本語だけを取り除くことはしない)。
+
+_JAPANESE_CHAR_RE = re.compile(
+    r"[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ]"
+)
+
+
+def contains_japanese(text: str) -> bool:
+    """テキストにひらがな・カタカナ・漢字(半角カタカナ含む)が含まれるかを判定する。"""
+    return bool(_JAPANESE_CHAR_RE.search(text))
+
+
+def strip_japanese_sentences(raw_field_text: str) -> str:
+    """フィールドの生テキスト(HTML)を文単位に分割し、日本語(ひらがな/
+    カタカナ/漢字)を含む文を除外して再結合する。analyze_targets /
+    generate_tts_for_collection の source_transform 引数にそのまま渡せる形
+    (戻り値はstrip_html_for_tts側でさらに整形される前提のHTML文字列)。"""
+    sentences = split_into_sentences(raw_field_text)
+    kept = [s for s in sentences if not contains_japanese(s)]
+    return "<br>".join(kept)
 
 
 # ---------------------------------------------------------------------------
@@ -340,12 +531,18 @@ def load_collection(apkg_path: str, work_col_path: str) -> Collection:
 
 
 def analyze_targets(
-    col, nt_name: str, src_idx: int, tgt_idx: int, force_regen: bool, source_transform=None
+    col, nt_name: str, field_indices: list, force_regen: bool, source_transform=None
 ):
-    """対象ノートを走査し、(処理対象note_idリスト, 音声済みスキップ数, 空欄スキップ数, 合計文字数)を返す。
-    実際の生成もドライランも、この関数の結果を共通で使う。
+    """対象ノートを走査し、(処理対象(note_id, field_idx)ペアのリスト, 音声済みスキップ数,
+    空欄スキップ数, 合計文字数)を返す。実際の生成もドライランも、この関数の結果を共通で使う。
 
-    source_transform: 指定すると、sourceフィールドの生テキスト(sound_tag除去後)に
+    field_indices: TTSを適用するフィールドのインデックスのリスト(複数フィールド対応、
+    2026-07-27)。各フィールドは読み上げ元とタグ追加先が同じ(そのフィールド自身に
+    [sound:...]タグを追記する)ため、旧バージョンにあったsrc_idx/tgt_idxの区別は無い。
+    1ノートにつき、field_indices内の各フィールドが独立に判定される
+    (例: Answerは既に音声ありでスキップ、Exampleは新規生成、ということもありうる)。
+
+    source_transform: 指定すると、各フィールドの生テキスト(sound_tag除去後)に
     対してTTS対象文字列を組み立てる前に適用する(例: 習熟用ノートで英語例文だけを
     抽出するextract_shuujuku_tts_text)。Noneならフィールドの内容をそのまま使う。
     """
@@ -357,23 +554,24 @@ def analyze_targets(
 
     for nid in note_ids:
         note = col.get_note(nid)
-        target_current = note.fields[tgt_idx]
-        has_audio = bool(SOUND_TAG_RE.search(target_current))
+        for field_idx in field_indices:
+            target_current = note.fields[field_idx]
+            has_audio = bool(SOUND_TAG_RE.search(target_current))
 
-        if has_audio and not force_regen:
-            skip_has_audio += 1
-            continue
+            if has_audio and not force_regen:
+                skip_has_audio += 1
+                continue
 
-        source_raw = strip_sound_tags(note.fields[src_idx])
-        if source_transform:
-            source_raw = source_transform(source_raw)
-        text = strip_html_for_tts(source_raw)
-        if not text:
-            skip_empty += 1
-            continue
+            source_raw = strip_sound_tags(note.fields[field_idx])
+            if source_transform:
+                source_raw = source_transform(source_raw)
+            text = strip_html_for_tts(source_raw)
+            if not text:
+                skip_empty += 1
+                continue
 
-        to_process.append(nid)
-        total_chars += len(text)
+            to_process.append((nid, field_idx))
+            total_chars += len(text)
 
     return to_process, skip_has_audio, skip_empty, total_chars
 
@@ -729,8 +927,6 @@ class GenerateResult:
 def generate_tts_for_collection(
     col,
     nt_name: str,
-    src_idx: int,
-    tgt_idx: int,
     to_process: list,
     *,
     api_key: str,
@@ -746,9 +942,13 @@ def generate_tts_for_collection(
     on_progress=lambda done, total: None,
     should_cancel=lambda: False,
 ) -> GenerateResult:
-    """to_process内のノートID全てに対してTTSを生成し、col側のノートを更新する。
-    col のエクスポートは呼び出し側(GUIやCLI)の責務とする(このモジュールは
-    col.export_anki_package を呼ばない)。
+    """to_process内の(note_id, field_idx)ペア全てに対してTTSを生成し、col側の
+    ノートを更新する。col のエクスポートは呼び出し側(GUIやCLI)の責務とする
+    (このモジュールは col.export_anki_package を呼ばない)。
+
+    to_process: analyze_targets()の戻り値をそのまま渡す想定。各フィールドは
+    読み上げ元とタグ追加先が同じ(そのフィールド自身に[sound:...]タグを追記する、
+    2026-07-27〜複数フィールド対応)。
 
     source_transform: analyze_targets()と同じ意味。TTSに渡す前にsourceの
     生テキストを変換する(習熟用ノートで英語例文だけを抽出する用途など)。
@@ -758,19 +958,18 @@ def generate_tts_for_collection(
     on_progress: (処理済み件数, 全体件数) を受け取るコールバック(プログレスバー更新用)
     should_cancel: 呼び出すたびにキャンセル要求の有無を返す関数
     """
-    same_field = src_idx == tgt_idx
     processed = 0
     cancelled = False
     total = len(to_process)
 
-    for i, nid in enumerate(to_process, start=1):
+    for i, (nid, field_idx) in enumerate(to_process, start=1):
         if should_cancel():
             cancelled = True
             log(f"\nキャンセルされました。{processed} 件処理した時点で中断します。")
             break
 
         note = col.get_note(nid)
-        target_current = note.fields[tgt_idx]
+        target_current = note.fields[field_idx]
         if force_regen:
             old_filenames = re.findall(r"\[sound:([^\]]+)\]", target_current)
             if old_filenames:
@@ -780,18 +979,18 @@ def generate_tts_for_collection(
                     log(f"  (旧音声ファイルの削除に失敗: {e})")
             target_current = strip_sound_tags(target_current)
 
-        source_raw = strip_sound_tags(note.fields[src_idx])
+        source_raw = strip_sound_tags(note.fields[field_idx])
         if source_transform:
             source_raw = source_transform(source_raw)
         preview_text = strip_html_for_tts(source_raw)
 
-        log(f"生成中 (note {nid}): {preview_text[:40]}...")
+        log(f"生成中 (note {nid}, field #{field_idx}): {preview_text[:40]}...")
 
         if per_sentence:
             audio_list = synthesize_per_sentence(source_raw, voice, lang, api_key, volume_gain_db)
             tags = []
             for idx, audio_bytes in enumerate(audio_list, start=1):
-                fname = f"tts_{nid}_{idx}.mp3"
+                fname = f"tts_{nid}_{field_idx}_{idx}.mp3"
                 stored_name = col.media.write_data(fname, audio_bytes)
                 tags.append(f"[sound:{stored_name}]")
             combined_tags = "<br>".join(tags)
@@ -799,18 +998,13 @@ def generate_tts_for_collection(
             audio_bytes, ext = synthesize_with_gaps(
                 source_raw, voice, lang, api_key, gap_seconds, bitrate, volume_gain_db
             )
-            fname = f"tts_{nid}.{ext}"
+            fname = f"tts_{nid}_{field_idx}.{ext}"
             stored_name = col.media.write_data(fname, audio_bytes)
             combined_tags = f"[sound:{stored_name}]"
 
-        if same_field:
-            note.fields[tgt_idx] = (
-                f"{target_current}<br>{combined_tags}" if target_current else combined_tags
-            )
-        else:
-            note.fields[tgt_idx] = (
-                f"{target_current} {combined_tags}".strip() if target_current else combined_tags
-            )
+        note.fields[field_idx] = (
+            f"{target_current}<br>{combined_tags}" if target_current else combined_tags
+        )
         col.update_note(note)
         processed += 1
         on_progress(i, total)

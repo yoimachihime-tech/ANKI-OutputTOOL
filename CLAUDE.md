@@ -23,6 +23,9 @@ Text-to-Speech(Chirp 3: HD対応)で音声を自動追加するデスクトッ�
 ```text
 ① Googleフォームで英文入力 → Apps Script → Gemini API で添削・採点
    (このプロジェクトの範囲外。「添削結果」シートに結果が書き込まれるだけ)
+   ※ 2026-07-27〜、DailyConversationタブに直接英文入力する代替経路も追加
+     (下記「① Googleフォームを介さない直接入力経路」を参照。Apps Scriptを
+     置き換えるものではなく、片桐の選択で使い分けられる並行経路)
 ② [このソフト] シートの「Anki出力済み」が空の行を読み込み、Ankiデッキを生成
 ③ [このソフト] TTS音声を追加
 ④ [このソフト] Ankiに直接インポート、成功した行をシートの「Anki出力済み」にマーク
@@ -32,6 +35,41 @@ Text-to-Speech(Chirp 3: HD対応)で音声を自動追加するデスクトッ�
 デッキ定義)は元々別のclaude.aiチャットで行われていたが、実体はLLMを使わない
 機械的な変換処理だったため、`build_grammar_dailyconv_v1_final.py`を移植して
 このソフトに組み込んだ(詳細は後述)。
+
+### ① Googleフォームを介さない直接入力経路(2026-07-27追加)
+
+DailyConversationタブに、英文を直接入力してAIに添削・採点させ、「添削結果」
+シートに新規行として追記できる機能を追加した(`on_daily_correct_clicked`、
+`self.daily_input_text`)。従来のGoogleフォーム経路を置き換えるものではなく、
+**並行して使える代替入力経路**という位置づけ(フォーム自体は今後も使える)。
+
+- 実現できた理由: 片桐からApps Script側の実際のコード(`onFormSubmit`→
+  `callGeminiForCorrection`→`writeToResultSheet`)の提供を受け、その
+  system_instruction・responseSchema(Gemini構造化出力/JSON Mode)を
+  そのまま`gemini_client.correct_english_text()`に移植できたため。
+  **採点基準を意図的にズラすと、Googleフォーム経由の行とこのアプリ経由の行で
+  「添削結果」シート上の評価基準が食い違ってしまうため、
+  `CORRECTION_SYSTEM_INSTRUCTION`/`CORRECTION_RESPONSE_SCHEMA`はApps Script側の
+  実装と意味的に同一になるよう保つこと**(Apps Script側が変更された場合は
+  片桐に確認の上、このコピーも追従させる。position的には
+  `build_grammar_dailyconv_v1_final.py`の「正典はclaude.ai側」と同種の
+  「正典は別システム側」パターン)。
+- `gemini_client.correct_english_text(text, api_key, model)`: 複数文・複数
+  段落をまとめて渡しても、Geminiの構造化出力(`responseSchema`が`ARRAY`)が
+  文ごとに自動分割して返す(Apps Scriptの「1フォーム送信=1englishText」でも
+  結果的に複数行に分かれるのと同じ挙動)。戻り値はcorrections(dictのリスト)で、
+  シートへの書き込みは行わない(責務分離)。
+- `sheets_writer.append_correction_rows(...)`: correctionsを「添削結果」
+  シートに新規行として追記する。ID列はuuid4で新規採番、日時列は
+  `valueInputOption="USER_ENTERED"`で書き込むことでApps ScriptのnewDate()と
+  同様にシート側で日時として認識される。**列の並びはシートの実ヘッダー行を
+  読み取って動的に対応させており、固定の列順を決め打ちしていない**(手元で
+  シートの列を並べ替えていても壊れない)。`mark_rows_as_exported`(既存行の
+  「Anki出力済み」列のみ書き込む)とは別関数で、互いの担当範囲(新規行追加/
+  既存行の特定列更新)には踏み込まない。
+- UI側は、追記後に自動で②の「シートから読み込む」処理へ連鎖させていない
+  (Sheets API反映タイミングとの競合を避けるため)。片桐が改めて
+  「シートから未出力行を読み込んでデッキ生成」ボタンを押す想定。
 
 ## ファイル構成と役割
 
@@ -70,6 +108,18 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
 - `generate_tts_for_collection(...)` が実際のTTS書き込みメインループ。
   `log` / `on_progress` / `should_cancel` をコールバックとして受け取る設計なので、
   将来CLI化する場合もこの関数をそのまま呼べばよい。
+- **TTS対象フィールドの複数化(2026-07-27)**: 従来の「読み上げ元(Source)」
+  「タグ追加先(Target)」という2つの別フィールド選択を廃止し、
+  `analyze_targets(col, nt_name, field_indices: list, force_regen, source_transform=None)`
+  / `generate_tts_for_collection(col, nt_name, to_process, *, ...)` の2関数とも
+  「TTSを適用するフィールドのインデックスのリスト」を受け取る形に変更した
+  (読み上げ元とタグ追加先は常に同じフィールドで、そのフィールド自身に
+  `[sound:...]`タグを追記する)。`to_process`の要素は`(note_id, field_idx)`の
+  ペアになり、1ノートに複数フィールドを指定した場合はフィールドごとに
+  独立して「音声済みスキップ」「空欄スキップ」が判定される。生成される
+  音声ファイル名も`tts_{note_id}_{field_idx}.mp3`のように`field_idx`を含める
+  よう変更した(同一ノートの複数フィールドを処理する際のファイル名衝突を
+  避けるため)。
 - `export_collection(col, output_path)` は col の状態をapkgとして書き出すだけ。
   ここでは Sheets 側の「Anki出力済み」マークなどは一切行わない(責務外)。
 - `load_row_map(path)` / `match_sheet_row_ids(col, note_ids, row_map)`:
@@ -90,6 +140,18 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
   習熟用ノートのようにフィールド内に英語例文と日本語(意味・解説)が混在する
   notetype向けに、TTSに渡す前だけテキストを絞り込むためのフック。
   `tts_gui.py`側の`_get_source_transform_for()`が実際の関数を選択する。
+- `contains_japanese(text)` / `strip_japanese_sentences(raw_field_text)`
+  (2026-07-27追加): `extract_shuujuku_tts_text`が習熟用ノート専用(CSSクラス名
+  への依存)なのに対し、こちらはHTML構造に一切依存しない**汎用**の
+  source_transform。`split_into_sentences`で文単位に分割し、ひらがな/
+  カタカナ/漢字(半角カタカナ含む、`_JAPANESE_CHAR_RE`)を含む文を丸ごと
+  除外して`<br>`で再結合するだけ(1文内の部分的な日本語だけを取り除くこと
+  はしない)。単語タブの`Example`フィールドのように、そもそも構造的に
+  英日混在しない設計のフィールドでも、AIがプロンプト指示に反して日本語を
+  混ぜて返してきた場合の保険として使える。`tts_gui.py`の
+  `self.exclude_japanese_var`(③のチェックボックス)がONの時だけ、
+  `_get_source_transform_for()`がノートタイプ固有の変換(習熟用の
+  `extract_shuujuku_tts_text`等、無ければNone)の後段にこれを合成して返す。
 - **音量ゲイン(`volume_gain_db`)**(2026-07-27追加): 「TTSの音声が小さい場合が
   ある」への対応。`call_google_tts` / `call_google_tts_wav` / `synthesize_per_sentence`
   / `synthesize_with_gaps` / `generate_tts_for_collection`すべてに
@@ -101,6 +163,41 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
   `config.json`の`"volume_gain_db"`キーに保存)が実際の値の起点で、
   ⚙設定「TTS」タブのスライダーと、`on_preview_play_clicked`(試聴)・
   `run_generate`(本番生成)の両方に同じ値が使われる。
+- **`split_into_sentences`の見出しラベル結合(2026-07-27修正)**: 「Ex1. ...」
+  「2. ...」のような見出しラベル付きの文(DailyConversationの類似表現、単語
+  タブのExample等で使われる形式)は、単純な句点区切りだと`"Ex1."`単体が
+  1つの「文」として切り出されてしまい、TTS生成時にラベルだけの極小mp3が
+  大量発生してAnkiコレクションを圧迫する原因になっていた。`_LABEL_ONLY_RE`
+  (英字0〜6文字+数字1〜3文字+句点)にマッチする断片は、次の断片(実際の
+  文)に結合してから返すよう修正した。少なくとも1桁の数字を要求している
+  ため、"Yes." "No."のような正当な短文をラベルと誤認して結合することはない。
+  `synthesize_per_sentence` / `synthesize_with_gaps`はどちらもこの関数を
+  内部で使っているため、per_sentence(文ごとにタグを分ける)・結合の
+  どちらのモードでも効果がある。
+- **習熟用ノートの例文ごと個別TTS+インラインタグ挿入(2026-07-27追加)**:
+  「習熟用タブで生成する場合は例文ごとに個別のMP3を作り、タグをその例文の
+  直下に配置してほしい」という要望への対応。通常のフィールド全体を1つの
+  音声にまとめる/タグをフィールド末尾に追記する方式(`analyze_targets`/
+  `generate_tts_for_collection`)とは別に、専用の
+  `analyze_shuujuku_sentence_targets(col, nt_name, field_idx, force_regen)` /
+  `generate_shuujuku_sentence_tts_for_collection(col, nt_name, field_idx,
+  to_process, ...)`を新設した。`to_process`は`(note_id, 例文の連番)`の
+  ペア(例文単位、フィールド単位ではない)。生成方式が根本的に異なる
+  (Contentフィールドの`<div class="ex-en">...</div>`の内側にタグを
+  `re.sub`のコールバックで直接埋め込む、`_SHUUJUKU_EX_EN_RE`を再利用)ため、
+  通常のフィールド末尾追記方式では実現できず別関数にした。「音声済み
+  スキップ」の判定はノート単位(フィールド全体に`[sound:...]`が1つでもあれば
+  そのノートの全例文をまとめてスキップ)。`tts_gui.py`側は
+  `nt_name == SHUUJUKU_NOTETYPE_NAME`の場合、②のTTS対象フィールド選択に
+  関わらず常にこの専用ロジックを使う(フィールド選択UIはこのノートタイプでは
+  実質無視される。②に案内ラベル`self.shuujuku_tts_hint_label`を表示して
+  その旨を明示する)。
+- **`strip_sound_tags`の汎用化(2026-07-27修正)**: 以前は文字列**末尾**の
+  `<br>[sound:...]`しか除去できなかったが、習熟用ノートの例文ごとインライン
+  タグ挿入方式(上記)ではタグがフィールドの途中(各`ex-en`divの中)に複数箇所
+  現れるため、出現位置を問わず`(<br>)?[sound:...]`を全て除去するよう
+  一般化した(`force_regen`時に古いタグ・余分な`<br>`を残さないため)。
+  従来の「フィールド末尾にまとめて追記」方式にも問題なく使える(後方互換)。
 - **テスト再生用の合成・波形計算関数**(2026-07-27追加、⚙設定「TTS」タブの
   「テスト再生」機能で使用):
   - `TEST_SAMPLE_SENTENCES`: 固定の短い英語サンプル文2つ(文と文の間隔設定を
@@ -127,10 +224,19 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
 tkinterウィジェットの構築・イベントハンドラ・見た目だけを担当する薄い層。
 ロジックは全て `tts_core` の関数を呼び出す形にする。
 
+- **readonly Comboboxのマウスホイール無効化(2026-07-27追加)**: tkinterの
+  既定動作では、readonly Comboboxにマウスホバー中にホイールスクロールすると
+  選択値が変わってしまう。画面を上下スクロールしただけでノートタイプや
+  TTS対象フィールドの選択が意図せず変わる事故を防ぐため、`__init__`で
+  `self.bind_class("TCombobox", "<MouseWheel>", lambda e: "break")`を1回
+  呼ぶだけで全Comboboxに適用している。クラスバインドなので、後から動的に
+  作成されるCombobox(TTS対象フィールドの行、カード定義エディタのテンプレート
+  選択等)にも自動的に効く。
 - **3ペインレイアウト**(Outlook風): 左=設定列(①入力元/①結果のapkg/②フィールド/
   ③出力・オプション/④実行、縦スクロール)、中央=ノート一覧(#+先頭2フィールドの
-  要約)、右=プレビューペイン(選択中ノートの全フィールドを縦に表示、Source/Target
-  にはバッジ付き)。下段に進捗バーとログ(トグルボタンで折りたたみ可)。
+  要約)、右=プレビューペイン(選択中ノートの全フィールドを縦に表示、TTS対象
+  フィールドには`[TTS対象]`バッジ付き)。下段に進捗バーとログ(トグルボタンで
+  折りたたみ可)。
   TTS設定・Gemini API設定は「一度設定したらそのまま」の性質なので、メイン画面
   常設ではなくヘッダーの「⚙ 設定」ボタンから開く独立ダイアログにまとめてある
   (詳細は後述)。
@@ -179,10 +285,44 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
   渡される。**理由**: `Content`フィールドには英語例文だけでなく日本語(Pattern名・
   Meaning・和訳・Explanation)も混在しており、そのままTTSに渡すと日本語部分まで
   英語音声で読み上げようとしてしまう懸念への対応。
-- ②のSource/Target(読み上げ元/タグ追加先)フィールドは、ノートタイプに
-  `Answer`フィールドがあればそれを既定選択にする(`on_notetype_selected`。
-  Grammar DailyConversationでの主な使い方に合わせた既定値)。無ければ従来通り
-  先頭フィールド。
+- **②のTTS対象フィールドは複数選択・可変(2026-07-27変更)**: 従来あった
+  「読み上げ元(Source)」「タグ追加先(Target)」という2つの別フィールド選択は
+  廃止した(読み上げ元とタグ追加先は常に同じフィールドで良いという指示による。
+  `tts_core.py`の項も参照)。代わりに`self.tts_field_vars`(`tk.StringVar`の
+  リスト)で複数フィールドを選択でき、`self.tts_fields_frame`内に1フィールド
+  1行のComboboxとして表示される。「＋ フィールドを追加」ボタン
+  (`_add_tts_field_row`)で行を増やし、各行の「－」ボタン(`_remove_tts_field_row`。
+  最後の1行は無効化され0件にはできない)で減らせる。`on_notetype_selected`が
+  ノートタイプ切替時の既定値を決める: `Answer`と`Example`の両方があれば
+  その2つ(Grammar DailyConversationでの主な使い方に合わせ、「類似表現」の
+  Exampleフィールドも既定でTTS対象にする)、どちらも無ければ先頭フィールド。
+  行のUI再構築は`_rebuild_tts_field_rows`が毎回`self.tts_field_vars`から
+  作り直す(差分更新ではない)。「🔊試聴」(`on_preview_play_clicked`)は
+  複数フィールド選択時でも先頭のフィールドのみを対象にする(簡易実装)。
+  デフォルト候補には`Content`も追加してある(習熟用ノート用、後述)。
+- **習熟用ノートは②のフィールド選択を無視する(2026-07-27追加)**:
+  `on_dry_run_clicked`/`run_generate`は、`nt_name == SHUUJUKU_NOTETYPE_NAME`
+  の場合、②で何が選択されていても常に`tts_core.analyze_shuujuku_sentence_
+  targets`/`generate_shuujuku_sentence_tts_for_collection`(Contentの
+  例文ごとに個別MP3+インラインタグ、詳細はtts_core.pyの項を参照)を使う。
+  この専用ロジックが動いていることを片桐に伝えるため、②に警告色の案内
+  ラベル`self.shuujuku_tts_hint_label`を表示し、`on_notetype_selected`が
+  ノートタイプに応じて`grid()`/`grid_remove()`で表示を切り替える。
+- **`load_fields`が0件のapkgを読み込んだ場合の`notetype_var`クリア
+  (2026-07-27修正)**: 以前は、読み込んだapkgにノートが1件も無い場合
+  (例: DailyConversationのシート取得結果が全て「誤りなし」/ID重複で
+  フィルタされ0件になった場合)、`self.notetype_var`を更新せず**直前に
+  選択していた別のノートタイプ名を残したまま**にしていた。そのため例えば
+  単語タブで作業した直後にこの状況が起きると、②のノートタイプ選択が
+  実際には無関係な「Vocab (単語 v1)」を指したまま残り、④のTTS生成が
+  誤ったノートタイプ・ストックに対して走ってしまう可能性があった
+  (「DailyConversationのTTS生成でストックの単語が意図せず出力済みになった」
+  という報告の一因と考えられる)。`names`が空の場合は`self.notetype_var.
+  set("")`で明示的にクリアするよう修正し、`on_dry_run_clicked`/
+  `run_generate`側にも`nt_name`が空文字の場合の明示的なエラー
+  (「ノートタイプが選択されていません」)を追加した(以前は`col.models.
+  by_name("")`がNoneを返し、その後の`nt["flds"]`で分かりにくい
+  `TypeError`になっていた)。
 - 見た目には `sv-ttk`(Windows 11 Fluent風の丸みのあるダーク/ライトテーマ)を採用。
   未インストールでも動作するようフォールバックあり(`SV_TTK_AVAILABLE`判定)。
 - テーマ(ダーク/ライト)切り替えは、⚙ 設定ダイアログの「全般」タブにある
@@ -254,10 +394,52 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
       **全件失敗**した場合(APIキー・モデル名の設定ミス、プロンプト精度の
       問題など)もログだけだと見落としやすいため、`messagebox.showwarning`
       でも通知するようにした。
+    - **英文の直接入力(2026-07-27追加)**: シート読み込みボタンの下に区切り線
+      を挟んで、英文を直接入力できるテキストボックス(`self.daily_input_text`)
+      +「AIに添削させてシートに追加」ボタン(`on_daily_correct_clicked`)を
+      追加した。Googleフォームを介さず、`gemini_client.correct_english_text()`
+      で添削・採点させた結果を`sheets_writer.append_correction_rows()`で
+      「添削結果」シートに新規行として追記する(詳細は各モジュールの項を参照)。
+      複数文・複数段落をまとめて入力してよい(Gemini側が自動で文ごとに分割)。
+      追記後に②の「シートから読み込む」処理へは自動連鎖させていない
+      (Sheets APIの反映タイミングとの競合を避けるため)。片桐が改めて
+      「シートから未出力行を読み込んでデッキ生成」ボタンを押す想定。
+    - **シート上の未出力行の確認用一覧(2026-07-27追加)**: 単語/AIに質問と
+      同じ「生成した内容をすぐ確認したい」ニーズへの対応。ただし
+      DailyConversationの候補の実体はローカルのストックファイルではなく
+      「添削結果」シート自体(Anki出力済み列が空の行)なので、ローカルに
+      複製せず`sheets_reader.fetch_pending_rows()`の結果をそのまま
+      `self.daily_pending_listbox`に表示する(`refresh_daily_pending_view`)。
+      ネットワークアクセスが要るため起動時には自動実行せず、「更新」ボタン
+      または`on_daily_correct_clicked`の追加成功時にのみ取得する。選択時は
+      `_render_daily_row_preview`で原文・添削後・解説・カテゴリ・類似表現・
+      スコアを右のプレビューペインに表示する(実カードテンプレートでの
+      レンダリングは行わない。deck_builder経由のノート化が必要になり
+      この簡易確認用一覧の範囲を超えるため、`_preview_source`は更新しない
+      = 「🔍 カードをプレビュー」ボタンはこの一覧の選択には対応しない)。
+      永続化はシート側の「Anki出力済み」列が唯一の実体のため、ソフトを
+      再起動しても自然に一覧へ復元される(ローカルの状態は一切持たない)。
   - **AIに質問タブ**(実装済み・仮実装): 質問を入力して「AIに生成させる」を押すと、
     `gemini_client.answer_question_as_shuujuku_item`がGemini APIで回答を生成し、
     その場でapkgは作らず**習熟用ストックに追加するだけ**(`on_ai_ask_clicked`)。
     実際のTTS→Anki出力は、習熟用タブの「まとめて出力」でまとめて行う設計。
+    **生成済み一覧(2026-07-27追加)**: 生成結果はshuujuku_stock.jsonへ即座に
+    追加されるが、このタブ自体には中身を確認する手段が無く、DailyConversation
+    由来の候補も混在した「習熟用(音読)」タブまで見に行かないと確認できない
+    という指摘への対応。`self.ai_ask_listbox`が、同じ`shuujuku_stock.
+    get_pending()`から`source_key[0] == "chat"`(このタブ由来)のものだけを
+    絞り込んで表示する(`refresh_ai_ask_stock_view`。別ファイルに複製するのでは
+    なく既存ストックを見た目だけフィルタする設計)。`refresh_shuujuku_stock_
+    view`の末尾から自動的に呼ばれるため、呼び出し元を個別に増やす必要はない。
+    選択時のプレビュー(`on_ai_ask_item_selected`→`_show_shuujuku_item_
+    preview`、習熟用タブと共通)・「選択項目を削除」
+    (`on_delete_selected_ai_ask_item_clicked`→`shuujuku_stock.remove_pending_
+    at`)も同様に習熟用タブと同じ実装を再利用する。表示行→pending全体での
+    実インデックスの対応表`self._ai_ask_pending_indices`を絞り込み時に
+    保持しておき、選択・削除時にはこれで実インデックスへ変換する(一覧が
+    部分集合のため、表示行番号とpendingのインデックスが一致しないため)。
+    永続化(ソフト再起動しても保持)・出力済み管理はshuujuku_stock.py側と
+    完全共通のため、他のストックと同様「apkg出力するまでは消えない」。
   - **習熟用(音読)タブ**(実装済み・仮実装): 下記「習熟用(ATSU方式)カード生成
     との関係」を参照。タブボタン自体に現在のストック件数がバッジ表示される
     (`refresh_shuujuku_stock_view`が`self._source_tab_buttons["shuujuku"]`の
@@ -266,13 +448,37 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
     `_show_shuujuku_item_preview`で右のプレビューペインにPattern/Meaning/
     Examples/Explanation/Sourceを表示する)・「まとめて習熟用として出力」
     (`on_export_shuujuku_stock_clicked`。`build_shuujuku_v1.build_deck()`で
-    一時.apkgを生成し`self.apkg_path`にセット、成功後に
-    `shuujuku_stock.mark_exported`。ボタン文言は2026-07-24に
+    一時.apkgを生成し`self.apkg_path`にセット。**`shuujuku_stock.mark_exported`は
+    ここでは呼ばない(2026-07-27変更)**。デッキの骨組み(音声無し)を作った
+    段階でストックから消してしまうと、②③④(TTS生成・apkg出力)を完了しない
+    まま片桐がアプリを再起動した場合に、実際にAnkiへ取り込めたのか・候補が
+    消えてしまっただけなのか区別が付かなくなる(「どこまでカード出力が
+    進んでいるか分からなくなる」)という指摘への対応。代わりに
+    `self._pending_shuujuku_stock_items`に候補を保持しておき、`run_generate`が
+    `tts_core.export_collection`(④の実際のapkg出力)まで成功した時点で
+    初めて`mark_exported`を呼ぶ。`_set_apkg_path`は(このタブ経由に限らず)
+    別のapkgに切り替えるたびにこの保留変数をクリアするため、④を経ずに
+    別の入力元へ切り替えた場合は、候補はストックに残ったままになる
+    (`self.apkg_path`自体はconfig.jsonに保存されず再起動で消えるが、それでも
+    候補はストック側に残っているため、改めて「まとめて出力」からやり直せる)。
+    **安全策(2026-07-27追加)**: 「DailyConversationのTTS生成でストックの
+    単語が意図せず出力済みになった」という報告を受け、`self._pending_
+    shuujuku_stock_items`(および`self._pending_word_stock_items`)の値を
+    `(その時点のapkg_path, items)`のタプルに変更した。`run_generate`は、
+    今回処理したapkg_path(実行開始時に`generated_apkg_path`としてローカル
+    変数に固定)がこの記録と完全一致する場合だけ`mark_exported`を呼ぶ。
+    `_set_apkg_path`のクリアだけでも通常は十分なはずだが、万一クリア漏れ・
+    タイミングのズレがあっても、apkg_pathの完全一致を追加の必須条件にする
+    ことで誤って無関係なストックを出力済みにしないようにする二重の安全策。
+    ボタン文言は2026-07-24に
     「まとめて習熟用として出力(下の①に自動入力)」から「まとめて習熟用として出力」
     へ修正済み — apkg欄が独立した「① 結果のapkg」セクションとして下に
     存在した頃の文言が、apkgインポートタブへの統合後も残っていたため)・
-    「ストックをクリア」
-    (`on_clear_shuujuku_stock_clicked`。出力済みにはせず破棄、要確認ダイアログ)。
+    「選択項目を削除」(`on_delete_selected_shuujuku_item_clicked`、
+    2026-07-27追加。一覧で選択した1件だけを`shuujuku_stock.remove_pending_at`で
+    削除する。重複していても常に追加する仕様に変更したため、⚠表示されている
+    不要な重複をここから間引く用途)・「ストックをクリア」
+    (`on_clear_shuujuku_stock_clicked`。出力済みにはせず全件破棄、要確認ダイアログ)。
   - **単語タブ**(実装済み、2026-07-27追加): 下記「単語カード生成との関係」を
     参照。UI構造・ハンドラ名は習熟用(音読)タブとほぼ同じパターン(入力欄→
     「AIに生成させる」→ストック一覧→「まとめて単語カードとして出力」)だが、
@@ -292,11 +498,28 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
     した場合だけ**入力欄をクリアする(一部失敗時は、どの行が失敗したか
     片桐が見て判断できるよう入力内容を残す)。対象行が全件失敗した場合は
     `_generate_shuujuku_candidates_from_rows`と同様に`messagebox.showwarning`
-    で通知する。「まとめて単語カードとして出力」(`on_export_word_stock_
+    で通知する。**生成には成功したのに追加件数が0件になるケース
+    (2026-07-27、片桐から「AIに生成させるボタンを押して成功してもストックに
+    上がってこない」と報告)**: `word_stock.add_pending_items`は、正規化した
+    単語キー(前後空白除去・小文字化)が既にpendingまたは`exported_keys`
+    (過去に出力済み)に存在する場合、黙ってスキップする仕様のため、
+    以前一度でも生成・出力したことのある単語を再度入力すると「生成成功」の
+    ログが出ても実際にはストックに何も増えない。原因が分からないと
+    バグに見えるため、`_generate_shuujuku_candidates_from_rows`と同様に
+    ログで通知する対応を入れたが、同日中にさらに「静かにスキップされて
+    気づけない」こと自体が問題だという指摘を受け、**重複していても常に
+    追加する仕様に変更**した(`add_pending_items`の項は`shuujuku_stock.py`の
+    項を参照。単語タブでも「選択項目を削除」ボタン
+    (`on_delete_selected_word_item_clicked`→`word_stock.remove_pending_at`)で
+    ⚠表示された重複を手動で間引ける)。「まとめて単語カードとして出力」(`on_export_word_stock_
     clicked`)は`card_defs.get_def("word")` + `card_def_builder.build_deck_
-    from_def()`で一時.apkgを生成し`self.apkg_path`にセット、成功後に
-    `word_stock.mark_exported`(下記「単語カード生成との関係」の
-    card_defs移行の項を参照)。タブボタンのバッジ表示・ストック一覧選択時の
+    from_def()`で一時.apkgを生成し`self.apkg_path`にセット(下記「単語カード
+    生成との関係」のcard_defs移行の項を参照)。**`word_stock.mark_exported`は
+    ここでは呼ばない(2026-07-27変更)**。習熟用タブの`on_export_shuujuku_
+    stock_clicked`と全く同じ理由・同じ設計で、`self._pending_word_stock_items`
+    に候補を保持しておき、`run_generate`が④のapkg出力まで成功した時点で
+    初めてmark_exportedを呼ぶ(詳細は習熟用タブの項を参照)。タブボタンの
+    バッジ表示・ストック一覧選択時の
     プレビュー(`_show_word_item_preview`/`_render_word_fields_to_pane`)・
     「🔍 カードをプレビュー」対応(`on_open_card_in_browser`の`kind == "word"`
     分岐)も習熟用タブと同じ構成で実装してある。
@@ -325,7 +548,15 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
 ③のチェックボックス類)だけをメイン画面に残すための独立`tk.Toplevel`。
 2026-07-27に、それまで縦積みだった2つのLabelFrame(TTS設定/Gemini API設定)を
 `ttk.Notebook`によるカテゴリ別の横タブに再構成し、他の画面から以下の項目も
-ここへ移動した(現在6タブ、`notebook.add()`の順が表示順):
+ここへ移動した(現在6タブ、`notebook.add()`の順が表示順)。
+**ウィンドウのデフォルトサイズは固定値の決め打ちではない(2026-07-27変更)**:
+以前は`480x620`を決め打ちしていたが、横幅の広いTTSタブなどで文字が見切れる
+ことがあったため、全タブを組み立てた後に`dlg.update_idletasks()` +
+`winfo_reqwidth()`/`winfo_reqheight()`で実際に必要なサイズを計算し、それを
+`geometry()`とminsize両方に使う方式に変更した(画面サイズは超えないよう
+クランプ)。「カード定義」タブだけ専用のスクロール可能なCanvasに載っている
+ため、このタブの内容がどれだけ長くても要求サイズはビューポート分に収まる
+(実際の高さはこのタブでは決まらない)。
 
 - **全般**タブ(2026-07-27新設): テーマ(ダーク/ライト)のRadiobutton
   (`self.theme_var`にvalue="light"/"dark"で直接バインド、
@@ -482,22 +713,36 @@ row_map生成に使っても問題ない。
 
 ### sheets_writer.py
 
-「添削結果」シートの「Anki出力済み」列への書き込み**だけ**を行うモジュール。
-`mark_rows_as_exported(spreadsheet_id, sheet_name, row_ids, credentials_path, ...)`
-を呼ぶと、ID列から対象行を特定し、「Anki出力済み」列に書き込み時刻
-(`YYYY-MM-DD HH:MM:SS`)を`batchUpdate`で書き込む(他の列には触れない)。
+「添削結果」シートへの書き込みを行うモジュール。もともとは「Anki出力済み」列
+への書き込みだけだったが、2026-07-27にDailyConversationタブの直接入力機能
+向けに新規行の追記も追加した。それぞれの関数は自分が担当する列・操作の範囲外
+には一切触れない。
 
+- `mark_rows_as_exported(spreadsheet_id, sheet_name, row_ids, credentials_path, ...)`
+  を呼ぶと、ID列から対象行を特定し、「Anki出力済み」列に書き込み時刻
+  (`YYYY-MM-DD HH:MM:SS`)を`batchUpdate`で書き込む(他の列には触れない)。
+- `append_correction_rows(spreadsheet_id, sheet_name, corrections, credentials_path, ...)`
+  (2026-07-27追加): `gemini_client.correct_english_text()`の戻り値(dictの
+  リスト)を、Apps Script(`writeToResultSheet`)と同じ列構成でシートに新規行
+  として追記する。ID列はuuid4で新規採番、日時列は現在時刻を
+  `valueInputOption="USER_ENTERED"`で書き込む(Apps ScriptのnewDate()と同様に
+  シート側で日時として認識される)。**列の並びはシートの実ヘッダー行
+  (`_fetch_headers`)を読み取って動的に対応させており、固定の列順を決め打ち
+  していない**(`_CORRECTION_COLUMN_BUILDERS`がヘッダー名→値の対応表)。
+  戻り値は追記した各行のID列の値のリスト。
 - 認証は**サービスアカウント**方式のみ(OAuthは未対応)。JSONキーのパスは
   `credentials_path` 引数で渡す。呼び出し側が環境変数
   (`SHEETS_WRITER_CREDENTIALS`)から読んで渡す想定で、このモジュール自体は
   `config.json` や特定の環境変数名に依存しない。`sheets_reader.py`も同じ
   環境変数・同じサービスアカウントJSON(編集者権限)を読み取り専用スコープで使う。
 - `dry_run=True` を渡すと実際には書き込まず、書き込み予定の行番号・値を
-  `log` コールバックに出すだけ。本番実行前に必ずこれで確認すること。
+  `log` コールバックに出すだけ。本番実行前に必ずこれで確認すること
+  (`append_correction_rows`も対応)。
 - 依存パッケージ: `google-api-python-client`, `google-auth`, `genanki`
   (インストール済み。未インストールの場合は各モジュールが専用の例外を送出)。
 - `tts_gui.py`の「スプレッドシート連携」セクションから呼ばれる
-  (`_update_sheets_export_status`)。
+  (`_update_sheets_export_status`)。`append_correction_rows`は
+  `on_daily_correct_clicked`から呼ばれる。
 
 ### gemini_client.py
 
@@ -515,6 +760,31 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
   ボタンから呼ばれる(`on_fetch_gemini_models`)。
 - どちらもプロンプトでJSON形式での出力を指示し、`_extract_json`で
   (` ```json ` フェンス付きでも)パースする。パース失敗時は`GeminiClientError`。
+- **429(レート制限/無料枠上限)時のリトライ**(2026-07-27追加): 実際に
+  「無料枠は1日20件まで」のような厳しいモデルで`RESOURCE_EXHAUSTED`が
+  頻発したことへの対応。`call_gemini`/`correct_english_text`は内部で共通の
+  `_post_gemini_request()`を通しており、429が返るとGoogle側が示す
+  `retryDelay`(無ければ既定5秒、上限60秒)だけ待って最大3回リトライする
+  (`tts_core.call_google_tts`の3回リトライと同じ考え方)。無料枠の上限は
+  「1日あたり」であることが多く、短いリトライでは解決しないことがあるため、
+  3回失敗した時点で「レート制限または無料枠の1日あたりのリクエスト数上限に
+  達しました」という分かりやすいメッセージの`GeminiClientError`にして
+  打ち切る(生のJSONエラーをそのまま見せない)。
+- `correct_english_text(text, api_key, model)`(2026-07-27追加): DailyConversation
+  タブへの直接入力機能向け。片桐から提供を受けたApps Script
+  (`onFormSubmit`→`callGeminiForCorrection`)の`system_instruction`・
+  `responseSchema`をそのまま移植した(`CORRECTION_SYSTEM_INSTRUCTION`/
+  `CORRECTION_RESPONSE_SCHEMA`)。他の関数と違い、プロンプトでJSON出力を
+  「指示」するのではなく、Geminiの`generationConfig.responseMimeType=
+  "application/json"` + `responseSchema`(構造化出力/JSON Mode)を使っており、
+  `_extract_json`によるフェンス除去は不要(`json.loads`に直接渡せる)。
+  `responseSchema`が`ARRAY`なので、複数文・複数段落をまとめて渡しても
+  Gemini側が文ごとに自動分割して配列で返す。**採点基準がApps Script側と
+  ズレると「添削結果」シート上でGoogleフォーム経由の行とこのアプリ経由の
+  行の基準が食い違ってしまうため、system_instruction/responseSchemaは
+  Apps Script側の実装と意味的に同一になるよう保つこと**(Apps Script側が
+  更新されたら片桐に確認の上、このコピーも追従させる)。戻り値のdictは
+  シートへの書き込みは行わない(`sheets_writer.append_correction_rows`の責務)。
 - **2026-07-24時点で「仮実装」**: AI APIはGemini APIを暫定選択(Claude APIも
   候補だったが未決定のため保留)。プロンプトの精度・モデル名(既定
   `gemini-2.0-flash`)は今後の調整が前提。
@@ -531,9 +801,18 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
 
 - 永続化先: このフォルダの`shuujuku_stock.json`(アプリを閉じても保持される。
   2026-07-24時点でのユーザー方針)。
-- 重複防止: `item['source_key']`(`("chat"|"dailyconv", 値)`)を文字列化した
-  ものをキーに、現在ストック中・過去に出力済み(`exported_keys`、無期限保持)の
-  両方と重複しないようにする。
+- **重複の扱い(2026-07-27変更)**: 以前は`item['source_key']`
+  (`("chat"|"dailyconv", 値)`)を文字列化したものをキーに、現在ストック中・
+  過去に出力済み(`exported_keys`、無期限保持)の両方と重複する場合は
+  `add_pending_items`が黙ってスキップしていた。しかし「AIによる生成には
+  成功したのにストックに増えない」状態が分かりにくく誤解を招く(実際に
+  複数回問い合わせを受けた)ため、**重複していても常に追加する**方式に変更。
+  代わりに`find_duplicate_pending_indices()`が重複しているインデックスの
+  集合を返し、`tts_gui.py`の`refresh_shuujuku_stock_view`が該当行を
+  `⚠ [重複]`表示+琥珀色ハイライト(`DUPLICATE_HIGHLIGHT_BG`)にする。
+  不要な重複は「選択項目を削除」ボタン(`on_delete_selected_shuujuku_item_
+  clicked`→`remove_pending_at(index)`)で1件ずつ手動削除できる
+  (出力済みにはせず、単純にpendingから取り除くだけ)。
 - `get_pending()`で読み取り→呼び出し側が`build_deck()`でapkgを実際に生成
   できた後に初めて`mark_exported(items)`を呼ぶ、という2段階设计にしてある
   (生成に失敗した場合にストックが消えないようにするため)。
@@ -687,16 +966,19 @@ AIに生成させず、入力された単語をそのまま使う(表記ゆれ�
 JSON形式(`_extract_json`と同じ抽出方式)でreading/pos/meaning/example/
 example_ja/example_blank/noteの7キーを受け取る。
 
-### ストックの重複防止・出力の流れ
+### ストックの重複の扱い・出力の流れ
 
 `word_stock.py`は`shuujuku_stock.py`と全く同じ設計(2段階の出力フロー、
-`path`引数の遅延解決パターンなど)を採用しているが、重複防止キーは
-単語テキスト(前後空白除去・小文字化)のみを使う。`card_def_builder.build_guid()`
-も同じキー生成ロジック(`genanki.guid_for(card_def["key"], 正規化した値)`。
-「単語」の場合`card_def["dedup_key"] == "word"`なので実質
-`genanki.guid_for('word', 正規化した単語)`となり、`build_word_v1.build_guid()`
-と完全に同じ結果になる)を使っており、同じ単語を複数回生成しても既存ノートの
-学習履歴を壊さない。
+`path`引数の遅延解決パターン、**重複していても常に追加しハイライト+手動削除で
+対応する方式**(2026-07-27変更、詳細は`shuujuku_stock.py`の項を参照)など)を
+採用しているが、重複判定キーは単語テキスト(前後空白除去・小文字化)のみを
+使う。`card_def_builder.build_guid()`も同じキー生成ロジック
+(`genanki.guid_for(card_def["key"], 正規化した値)`。「単語」の場合
+`card_def["dedup_key"] == "word"`なので実質`genanki.guid_for('word', 正規化した
+単語)`となり、`build_word_v1.build_guid()`と完全に同じ結果になる)を使っており、
+同じ単語を複数回生成して出力しても既存ノートの学習履歴を壊さない(重複を
+ストックに残す方式に変更しても、guidが同じなのでAnki側では上書き更新される
+だけであり問題ない)。
 
 ## カード定義エディタ(⚙設定「カード定義」タブ)
 
