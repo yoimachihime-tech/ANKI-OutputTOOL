@@ -22,21 +22,48 @@ build_shuujuku_v1.build_deck()に渡す。
 検出できるようにした。片桐が`tts_gui.py`側で重複を視覚的にハイライトし、
 `remove_pending_at()`で手動削除できるようにする想定。
 
+【patternの類似度による重複検出(2026-07-27追加)】
+「AIに質問」タブで似た内容の質問を言い回しを変えて複数回試した場合や、
+DailyConversationの同じ誤りパターンが複数行に分かれて習熟用候補化された
+場合など、`source_key`は互いに異なる(質問文・シート行IDが違う)のに、
+AIが生成した`pattern`(穴埋め形式の英語パターン)がほぼ同じ内容になる
+ケースがある。ATSU方式の音読練習としては同じパターンを2枚用意する意味が
+薄いため、`find_duplicate_pending_indices()`はsource_key完全一致だけでなく、
+pending内の他の項目と`pattern`が酷似している(`difflib.SequenceMatcher`の
+比率が`_PATTERN_SIMILARITY_THRESHOLD`以上)場合もまとめて重複候補として
+検出する。あくまで検出・ハイライトするだけで自動削除はしない
+(add_pending_itemsを黙ってスキップする方式に戻すと「生成成功なのに
+増えない」問題が再発するため)。
+
 【出力の流れ(重要)】
 `get_pending()`で読み取り→呼び出し側がbuild_deck()でapkgを実際に生成
 できた後に初めて`mark_exported(items)`を呼ぶ、という2段階にしてある。
 生成に失敗した場合にストックが消えてしまわないようにするため。
 """
 
+import difflib
 import json
 import os
 
 STOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shuujuku_stock.json")
 
+# pattern同士をほぼ同じ内容とみなす類似度の閾値(0.0〜1.0)。
+_PATTERN_SIMILARITY_THRESHOLD = 0.8
+
 
 def _source_key_str(item: dict) -> str:
     kind, key = item["source_key"]
     return f"{kind}:{key}"
+
+
+def _normalized_pattern(item: dict) -> str:
+    return " ".join((item.get("pattern") or "").casefold().split())
+
+
+def _patterns_similar(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= _PATTERN_SIMILARITY_THRESHOLD
 
 
 def load_stock(path: str = None) -> dict:
@@ -81,9 +108,14 @@ def add_pending_items(new_items: list, path: str = None) -> int:
 
 
 def find_duplicate_pending_indices(path: str = None) -> set:
-    """現在のpendingのうち、(a)pending内に同じsource_keyの項目が複数ある、
-    または(b)既にexported_keys(出力済み)と同じsource_keyを持つ、のいずれかに
-    該当するインデックスの集合を返す。UI側でハイライト表示する用途。"""
+    """現在のpendingのうち、以下いずれかに該当するインデックスの集合を返す
+    (UI側でハイライト表示する用途):
+    (a) pending内に同じsource_keyの項目が複数ある
+    (b) 既にexported_keys(出力済み)と同じsource_keyを持つ
+    (c) source_keyは異なるが、他のpending項目とpatternの内容がほぼ同じ
+        (2026-07-27追加。「AIに質問」で似た質問を言い回し違いで複数回試した
+        場合などに、source_key(質問文そのもの)は違ってもATSU方式としては
+        実質同じカードになってしまうケースへの対応)"""
     stock = load_stock(path)
     pending = stock["pending"]
     exported = set(stock["exported_keys"])
@@ -98,6 +130,18 @@ def find_duplicate_pending_indices(path: str = None) -> set:
         key = _source_key_str(item)
         if key_counts[key] > 1 or key in exported:
             dup_indices.add(i)
+
+    normalized = [_normalized_pattern(item) for item in pending]
+    for i in range(len(pending)):
+        if i in dup_indices:
+            continue
+        for j in range(len(pending)):
+            if i == j:
+                continue
+            if _patterns_similar(normalized[i], normalized[j]):
+                dup_indices.add(i)
+                dup_indices.add(j)
+                break
     return dup_indices
 
 

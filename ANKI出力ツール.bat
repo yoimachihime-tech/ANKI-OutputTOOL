@@ -1,3 +1,3 @@
 @echo off
 cd /d %~dp0
-start "" pythonw tts_gui.py
+start "" C:\Python314\pythonw.exe tts_gui.py

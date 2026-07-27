@@ -87,6 +87,21 @@ build_shuujuku_v1.py
                   「習熟用」ノートタイプ・デッキ定義の実体(コピー、下記「習熟用
                   (ATSU方式)カード生成との関係」参照)
 word_stock.py     「単語」候補のファイル永続化ストック(習熟用とは完全に別、実装済み)
+daily_pending_exclusions.py
+                  DailyConversationの「シート上の未出力行」一覧から、重複などの
+                  理由で出力対象外にしたい行IDをローカルに記録するモジュール
+                  (2026-07-27追加、実装済み)
+build_grammar_multi_v1_updated.py
+                  ノートタイプ「Grammar Multi (文法・複数出題形式)」の定義
+                  (CSS・カードテンプレート・choice()/whynot_item()/example_en()/
+                  example_ja()ヘルパー関数)の実体(コピー、下記「Grammar Multi
+                  カード生成との関係」参照)
+grammar_multi_builder.py
+                  grammar_multi_stockのitem→genankiデッキ生成の橋渡し
+                  (2026-07-27追加、実装済み)
+grammar_multi_stock.py
+                  「AIに質問」タブの候補のファイル永続化ストック(習熟用とは
+                  完全に別、2026-07-27追加、実装済み)
 build_word_v1.py  「単語」ノートタイプ・デッキ定義の実体(2026-07-27時点では
                   card_defs.jsonの初期シード元としてのみ使用。下記「単語カード
                   生成との関係」参照)
@@ -401,9 +416,13 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
       で添削・採点させた結果を`sheets_writer.append_correction_rows()`で
       「添削結果」シートに新規行として追記する(詳細は各モジュールの項を参照)。
       複数文・複数段落をまとめて入力してよい(Gemini側が自動で文ごとに分割)。
-      追記後に②の「シートから読み込む」処理へは自動連鎖させていない
-      (Sheets APIの反映タイミングとの競合を避けるため)。片桐が改めて
-      「シートから未出力行を読み込んでデッキ生成」ボタンを押す想定。
+      **2026-07-27に「Googleフォームはもう使わずこちらをメインで使う」運用へ
+      切り替えたのに合わせ、追記成功後は自動的に②の`on_fetch_from_sheet_
+      clicked`(シートから未出力行を読み込んでデッキ生成)まで連鎖実行する
+      よう変更した**(以前は「Sheets APIの反映タイミングとの競合を避ける」
+      理由で自動連鎖させず、片桐が改めてボタンを押す設計だったが、
+      「確認導線が上下バラバラになる」との指摘を受けての変更。Sheets APIの
+      追記は基本的に読み取り直後から反映されるため、通常は問題ない想定)。
     - **シート上の未出力行の確認用一覧(2026-07-27追加)**: 単語/AIに質問と
       同じ「生成した内容をすぐ確認したい」ニーズへの対応。ただし
       DailyConversationの候補の実体はローカルのストックファイルではなく
@@ -419,27 +438,40 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
       = 「🔍 カードをプレビュー」ボタンはこの一覧の選択には対応しない)。
       永続化はシート側の「Anki出力済み」列が唯一の実体のため、ソフトを
       再起動しても自然に一覧へ復元される(ローカルの状態は一切持たない)。
-  - **AIに質問タブ**(実装済み・仮実装): 質問を入力して「AIに生成させる」を押すと、
-    `gemini_client.answer_question_as_shuujuku_item`がGemini APIで回答を生成し、
-    その場でapkgは作らず**習熟用ストックに追加するだけ**(`on_ai_ask_clicked`)。
-    実際のTTS→Anki出力は、習熟用タブの「まとめて出力」でまとめて行う設計。
-    **生成済み一覧(2026-07-27追加)**: 生成結果はshuujuku_stock.jsonへ即座に
-    追加されるが、このタブ自体には中身を確認する手段が無く、DailyConversation
-    由来の候補も混在した「習熟用(音読)」タブまで見に行かないと確認できない
-    という指摘への対応。`self.ai_ask_listbox`が、同じ`shuujuku_stock.
-    get_pending()`から`source_key[0] == "chat"`(このタブ由来)のものだけを
-    絞り込んで表示する(`refresh_ai_ask_stock_view`。別ファイルに複製するのでは
-    なく既存ストックを見た目だけフィルタする設計)。`refresh_shuujuku_stock_
-    view`の末尾から自動的に呼ばれるため、呼び出し元を個別に増やす必要はない。
-    選択時のプレビュー(`on_ai_ask_item_selected`→`_show_shuujuku_item_
-    preview`、習熟用タブと共通)・「選択項目を削除」
-    (`on_delete_selected_ai_ask_item_clicked`→`shuujuku_stock.remove_pending_
-    at`)も同様に習熟用タブと同じ実装を再利用する。表示行→pending全体での
-    実インデックスの対応表`self._ai_ask_pending_indices`を絞り込み時に
-    保持しておき、選択・削除時にはこれで実インデックスへ変換する(一覧が
-    部分集合のため、表示行番号とpendingのインデックスが一致しないため)。
-    永続化(ソフト再起動しても保持)・出力済み管理はshuujuku_stock.py側と
-    完全共通のため、他のストックと同様「apkg出力するまでは消えない」。
+      **選択項目を削除(2026-07-27追加)**: Googleフォーム経由・直接入力経由で
+      同内容が重複してシートに追加されてしまった場合などに、一覧から選択して
+      「削除」できるようにした(`on_delete_selected_daily_pending_item_
+      clicked`)。ただし「添削結果」シート自体は`sheets_reader.py`(読み取り
+      専用)・`sheets_writer.py`(「Anki出力済み」列書き込みと新規行追記のみが
+      責務)のどちらからも直接削除できないため、実体はシートの削除ではなく
+      **`daily_pending_exclusions.py`(新設)による行IDのローカル除外登録**。
+      `refresh_daily_pending_view`のシート再取得時、および`on_fetch_from_
+      sheet_clicked`(②のデッキ生成)の両方で`daily_pending_exclusions.
+      filter_out_excluded()`を通すため、削除した行は一覧表示からもデッキ
+      生成対象からも外れる(シート上のデータそのものは一切変更されない)。
+  - **AIに質問タブ**(実装済み・仮実装、**2026-07-27に出力先変更**): 質問を
+    入力して「AIに生成させる(3問セットを生成)」を押すと、`gemini_client.
+    generate_grammar_multi_items_from_question`がGemini APIで独立ノート3件分
+    (出題形式を分散: 選択問題/誤り訂正問題/記述式・書き換え問題が基本)を生成し、
+    その場でapkgは作らず**grammar_multi_stock(独立ストック)に追加するだけ**
+    (`on_ai_ask_clicked`)。実際のTTS→Anki出力は、このタブ自身の
+    「まとめてGrammar Multiとして出力」(`on_export_grammar_multi_stock_
+    clicked`)で行う(単語/習熟用タブの「まとめて出力」と同じ2段階設計:
+    ④のapkg出力が実際に成功するまで`mark_exported`を呼ばない)。
+    **以前はshuujuku_stock.json(習熟用/ATSU方式、音読練習用)に追加していたが、
+    「習熟用タブに飛ぶ内容と同じでダブっている」との指摘を受けて変更した**。
+    習熟用は「音読による習熟」、Grammar Multiは「知識を深める」出題形式
+    (選択問題・誤り訂正問題・記述式)であり目的が異なるため、詳細は下記
+    「Grammar Multiカード生成との関係」を参照。
+    **生成済み一覧(2026-07-27追加)**: `self.ai_ask_listbox`が
+    `grammar_multi_stock.get_pending()`の全件をそのまま表示する
+    (以前のshuujuku_stock.jsonをsource_key[0]=="chat"で絞り込む方式と違い、
+    このストックの中身は全てこのタブ由来のため絞り込みは不要)。選択時の
+    プレビュー(`on_ai_ask_item_selected`→`_show_grammar_multi_item_preview`)・
+    「選択項目を削除」(`on_delete_selected_ai_ask_item_clicked`→
+    `grammar_multi_stock.remove_pending_at`)も専用実装を持つ。
+    永続化(ソフト再起動しても保持)・出力済み管理はgrammar_multi_stock.py側
+    完結のため、他のストックと同様「apkg出力するまでは消えない」。
   - **習熟用(音読)タブ**(実装済み・仮実装): 下記「習熟用(ATSU方式)カード生成
     との関係」を参照。タブボタン自体に現在のストック件数がバッジ表示される
     (`refresh_shuujuku_stock_view`が`self._source_tab_buttons["shuujuku"]`の
@@ -753,8 +785,12 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
 - `generate_shuujuku_item_from_row(row, api_key, model)`: DailyConversationの
   シート行から、文法パターンの抽象化・新規例文の創作をGeminiにやらせ、
   `build_shuujuku_v1.build_deck()`向けのitem dictを1つ返す。
-- `answer_question_as_shuujuku_item(question, api_key, model)`: 「AIに質問」タブの
-  質問文から、同じitem dict形式の回答を返す。
+- `generate_grammar_multi_items_from_question(question, api_key, model)`:
+  「AIに質問」タブの質問文から、Grammar Multi(文法・複数出題形式)の独立
+  ノート3件分のitem dictを返す(2026-07-27追加。以前あった
+  `answer_question_as_shuujuku_item`は、習熟用ストックとの内容重複を解消する
+  ためこの関数に置き換えて削除した。詳細は「Grammar Multiカード生成との
+  関係」を参照)。
 - `list_gemini_models(api_key)`: `generateContent`に対応しているモデル名一覧
   (`models/`プレフィックスは除去済み)を返す。`tts_gui.py`の「モデル一覧を取得」
   ボタンから呼ばれる(`on_fetch_gemini_models`)。
@@ -813,6 +849,17 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
   不要な重複は「選択項目を削除」ボタン(`on_delete_selected_shuujuku_item_
   clicked`→`remove_pending_at(index)`)で1件ずつ手動削除できる
   (出力済みにはせず、単純にpendingから取り除くだけ)。
+- **patternの類似度による重複検出(2026-07-27追加)**: 「AIに質問」タブで
+  似た内容の質問を言い回しを変えて複数回試した場合など、`source_key`
+  (質問文そのもの、またはシート行ID)は互いに異なるのに、AIが生成する
+  `pattern`(穴埋め形式の英語パターン)がほぼ同じ内容になり、ATSU方式の
+  音読カードとしては実質重複というケースが報告された。
+  `find_duplicate_pending_indices()`はsource_key完全一致だけでなく、
+  pending内の他の項目と`pattern`(大文字小文字・空白差を無視して正規化した
+  もの)が`difflib.SequenceMatcher`比率0.8以上で酷似している場合も重複候補
+  として検出するよう拡張した。exact重複と同じ扱いで一覧に⚠表示されるだけ
+  (自動削除はしない。黙ってスキップする方式へ戻すと「生成成功なのに
+  増えない」問題が再発するため)。
 - `get_pending()`で読み取り→呼び出し側が`build_deck()`でapkgを実際に生成
   できた後に初めて`mark_exported(items)`を呼ぶ、という2段階设计にしてある
   (生成に失敗した場合にストックが消えないようにするため)。
@@ -979,6 +1026,80 @@ example_ja/example_blank/noteの7キーを受け取る。
 同じ単語を複数回生成して出力しても既存ノートの学習履歴を壊さない(重複を
 ストックに残す方式に変更しても、guidが同じなのでAnki側では上書き更新される
 だけであり問題ない)。
+
+## Grammar Multiカード生成との関係(2026-07-27追加)
+
+「AIに質問」タブの出力先。**習熟用(音読・ATSU方式)とは目的が異なる**
+(習熟用は文法パターンの音読による習熟、Grammar Multiは選択問題・誤り訂正
+問題・記述式問題による「知識を深める」ための出題)。以前は「AIに質問」の
+回答も習熟用ストックに追加していたが、「習熟用タブに飛ぶ内容と同じで
+ダブっている」との指摘を受け出力先を分離した。
+
+- notetype: `Grammar Multi (文法・複数出題形式)` / MODEL_ID `1907250010123`
+  フィールド(8個、この順序): `Pattern` / `Question` / `Choices` / `Answer` /
+  `Example` / `ExampleJA` / `Why` / `WhyNot`
+- デッキ: `02.単語・MindTips::文法・用法`(固定、DECK_ID `1907231458999`)
+- カードテンプレートは**「1. 判断問題」の1つのみ**(片桐が既にAnki GUI側で
+  テンプレート2〜4「セルフチェック/理由想起/例文穴埋め」を削除済みのため。
+  以後、正典ファイルもテンプレート1つのみを定義する)
+- 正典ファイル: `build_grammar_multi_v1_updated.py`(claude.aiプロジェクト
+  「●ANKI出力」側からの2026-07-27時点のコピー。`build_grammar_dailyconv_v1_
+  final.py`/`build_shuujuku_v1.py`と同じ「正典は別環境」パターン)。
+  CSS・カードテンプレートHTML・`choice()`/`whynot_item()`/`core()`/
+  `example_en()`/`example_ja()`ヘルパー関数は記憶から再構築せずこのファイルの
+  定義をそのままインポートして使うこと。
+  **このファイルはModel定義・CSS・ヘルパー関数のみを提供し、Deck/Noteの
+  組み立て(genanki.Deck/genanki.Noteの生成)は呼び出し側の責務**(ファイル末尾に
+  「notes_data はこのファイルを流用する各バッチスクリプト側で定義し…」と
+  明記されている)。DECK_ID/DECK_NAMEもこのファイル自体には含まれておらず、
+  claude.aiプロジェクトのメモリー記録から補った値を`grammar_multi_builder.py`
+  側で持つ。
+
+### カード生成ルール(1ノート=1カード、独立ノート3枚が基本)
+
+- 1つの質問から複数の練習問題を作る場合も「1ノートから複数カードを生成する
+  方式」は禁止。必ず独立したノートを複数(既定3枚)作成する。
+- 3枚は出題形式を分散させる(選択問題/誤り訂正問題/記述式・書き換え問題が
+  基本、状況に応じて空所補充等に入れ替えてもよいが3問とも同じ形式にはしない)。
+- `Pattern`フィールドには出題形式のラベルのみ(例: 選択問題、誤り訂正問題)。
+  文法項目名や正解のヒントになる語は絶対に入れない。`Question`本文も、
+  選択肢が出る前に正解を示唆・特定できる書き方をしない。
+- 完全な日本語→英語の全文翻訳問題は禁止(パラフレーズのリスクがあるため)。
+  多肢選択の穴埋め・誤り訂正形式を優先する。
+
+### 実装
+
+- `gemini_client.generate_grammar_multi_items_from_question(question, api_key,
+  model)`: 1回のGemini呼び出しで、上記ルールに従った3ノート分のJSON配列を
+  生成させ(`_GRAMMAR_MULTI_PROMPT`、構造化出力ではなく他のgemini_client
+  関数と同じ「プロンプトでJSON指示+```json フェンス除去」方式)、
+  `choices`/`whynot`/`examples`は`build_grammar_multi_v1_updated`の
+  `choice()`/`whynot_item()`/`example_en()`/`example_ja()`でHTML化してから
+  item dictに詰める。各itemは`topic_key`(質問文を正規化したもの)・
+  `note_index`(0始まりの通し番号)・`source_key`(`("chat_grammar",
+  f"{topic_key}::{note_index}")`)を持ち、同じ質問を再度送信すると3件とも
+  同じキーになるため重複検出にかかる(`Pattern`フィールドは出題形式ラベルに
+  過ぎず内容の識別に使えないため、`shuujuku_stock.py`のようなpattern類似度に
+  よる重複検出はここでは行わない。詳細は`grammar_multi_stock.py`の項を参照)。
+- `grammar_multi_stock.py`: word_stock.py/shuujuku_stock.pyと全く同じ設計
+  (2段階の出力フロー、`path`引数の遅延解決パターン、重複していても常に追加し
+  ハイライト+手動削除で対応する方式)。重複判定キーは`topic_key::note_index`。
+- `grammar_multi_builder.py`: `build_grammar_multi_v1_updated.GRAMMAR_MODEL`と
+  DECK_ID/DECK_NAMEから`genanki.Deck`を組み立てる橋渡し役
+  (`deck_builder.py`/`build_shuujuku_v1.build_deck()`と同じ位置づけ)。
+  guidは`genanki.guid_for("grammar-multi-v1", topic_key, str(note_index))`。
+  `due`は既存デッキの最終due番号から連番、という運用ルールがclaude.ai側の
+  手動生成(サンドボックス実行)では使われていたが、このソフトは毎回新規の
+  一時apkgをバッチ生成する設計のため、実際のAnkiコレクションの現在のdue値を
+  参照する手段がなく、単純にitemsのリスト順(0始まり)を使う(既存の
+  word_stock/shuujuku_stockの出力も同様に単純な連番)。
+- `tts_gui.py`の「AIに質問」タブ: `on_ai_ask_clicked`→
+  `gemini_client.generate_grammar_multi_items_from_question`→
+  `grammar_multi_stock.add_pending_items`。「まとめてGrammar Multiとして
+  出力」(`on_export_grammar_multi_stock_clicked`)は単語/習熟用タブの
+  「まとめて出力」と同じ2段階設計(`self._pending_grammar_multi_stock_items`
+  に`(apkg_path, items)`を保持し、`run_generate`が④のapkg出力に成功して
+  初めて`mark_exported`を呼ぶ。apkg_pathの完全一致チェックも同様)。
 
 ## カード定義エディタ(⚙設定「カード定義」タブ)
 

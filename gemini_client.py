@@ -209,31 +209,152 @@ def generate_shuujuku_item_from_row(row: dict, api_key: str, model: str) -> dict
     )
 
 
-_QUESTION_TO_ITEM_PROMPT = """あなたは英語学習カード作成のアシスタントです。
-以下の質問に、英語学習者向けに回答してください。
+# ---------------------------------------------------------------------------
+# Grammar Multi (文法・複数出題形式) — 「AIに質問」タブの出力先(2026-07-27追加)
+# ---------------------------------------------------------------------------
+#
+# 以前は「AIに質問」タブの回答も習熟用(ATSU方式・音読練習用)ストックへ
+# 追加していたが、「習熟用タブに飛ぶ内容と同じでダブっている」との指摘を
+# 受けた。習熟用は「音読による習熟」が目的、Grammar Multiは「知識を深める」
+# ための出題形式であり、目的が異なるため出力先を分離した。
+#
+# 正典は`build_grammar_multi_v1_updated.py`(claude.aiプロジェクト側からの
+# 2026-07-27時点のコピー、MODEL_ID 1907250010123)。CSS・テンプレートHTML・
+# choice()/whynot_item()/example_en()/example_ja()ヘルパー関数は記憶から
+# 再構築せずこのファイルの定義をそのままインポートして使う。
+
+try:
+    import build_grammar_multi_v1_updated as _grammar_multi_canon
+    GRAMMAR_MULTI_CANON_AVAILABLE = True
+except ImportError:
+    GRAMMAR_MULTI_CANON_AVAILABLE = False
+
+
+_GRAMMAR_MULTI_PROMPT = """あなたは英文法学習カードの作成アシスタントです。
+以下の質問について、学習者の理解を深めるための練習問題を3問、
+独立したノートとして作成してください(1つの質問に対して複数の練習問題を
+作る場合も、1ノートに複数の出題形式を詰め込むのではなく、必ず独立した
+ノートを複数作成すること)。
 
 質問: {question}
 
-回答は、音読練習用のカードとして以下のJSON形式で、JSON以外の文字を含めずに出力してください:
-{{
-  "pattern": "質問の要点を表す短い英語パターンまたは見出し",
-  "meaning": "回答の要点の日本語説明",
-  "examples": [["English example sentence.", "日本語訳。"], ["English example sentence 2.", "日本語訳2。"]],
-  "expl": "補足説明があれば日本語で(無ければ空文字)"
-}}
+【出題ルールを厳守】
+1. 3問は出題形式を分散させ、同じ形式を繰り返さないこと。原則として以下の3形式:
+   (1) 選択問題: choicesにA/B/Cの3択を入れる。1つが正解、2つは誤答とし、
+       whynotに各誤答がなぜ誤りかを日本語で書く。
+   (2) 誤り訂正問題: choicesは空配列。questionに誤りを含む英文を提示し、
+       訂正させる問題文にする。
+   (3) 記述式・書き換え問題: choicesは空配列。2文や状況を与えて1文に
+       まとめさせる、または指定ニュアンスを含む文を組み立てさせる問題。
+   上記に限らず、その都度ふさわしい別形式があれば入れ替えてよい
+   (例: 空所補充の記述式など)。ただし3問とも同じ形式にはしないこと。
+2. 完全な日本語→英語の全文翻訳問題(パラフレーズのリスクがあるため)は禁止。
+   多肢選択の穴埋め・誤り訂正形式を優先すること。
+3. patternフィールドには出題形式のラベルのみを入れる
+   (例: "選択問題", "誤り訂正問題", "記述式・書き換え問題")。
+   文法項目名や正解のヒントになる語は絶対に入れないこと。
+4. questionフィールドの本文も、選択肢が示される前に正解を示唆・特定できる
+   書き方をしないこと。
+5. answerは正解の英文(または訂正後の英文・組み立てた英文)を1つ。
+6. examplesは、そのポイントを使った例文を1〜2個(英文と日本語訳のペア)。
+   不要なら空配列でよい。
+7. whyには、正解の理由・文法解説を日本語で。
+8. whynotは選択問題の場合のみ、各誤答について
+   {{"opt": "A", "reason": "..."}} 形式のオブジェクトの配列。
+   選択問題以外では空配列にすること。
+9. choicesは選択問題の場合のみ {{"opt": "A", "text": "..."}} 形式の
+   オブジェクトの配列(3択)。選択問題以外では空配列にすること。
+
+以下のJSON形式で、JSON以外の文字を含めずに出力してください(必ず3要素の配列):
+[
+  {{
+    "pattern": "選択問題",
+    "question": "...",
+    "choices": [{{"opt": "A", "text": "..."}}, {{"opt": "B", "text": "..."}}, {{"opt": "C", "text": "..."}}],
+    "answer": "...",
+    "examples": [["English sentence.", "日本語訳。"]],
+    "why": "...",
+    "whynot": [{{"opt": "B", "reason": "..."}}, {{"opt": "C", "reason": "..."}}]
+  }},
+  {{
+    "pattern": "誤り訂正問題",
+    "question": "...(誤りを含む英文を提示)",
+    "choices": [],
+    "answer": "...",
+    "examples": [],
+    "why": "...",
+    "whynot": []
+  }},
+  {{
+    "pattern": "記述式・書き換え問題",
+    "question": "...",
+    "choices": [],
+    "answer": "...",
+    "examples": [],
+    "why": "...",
+    "whynot": []
+  }}
+]
 """
 
 
-def answer_question_as_shuujuku_item(question: str, api_key: str, model: str) -> dict:
-    """「AIに質問」タブからの質問文を、build_shuujuku_v1向けのitem dictとして返す。"""
-    prompt = _QUESTION_TO_ITEM_PROMPT.format(question=question)
+def _extract_json_array(text: str) -> list:
+    """Gemini応答からJSON配列を抜き出す(```json ... ``` で囲まれる場合に対応)。"""
+    fence_match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
+    candidate = fence_match.group(1) if fence_match else text.strip()
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError as e:
+        raise GeminiClientError(f"Gemini応答をJSON配列として解析できませんでした: {text[:300]}") from e
+
+
+def generate_grammar_multi_items_from_question(question: str, api_key: str, model: str) -> list:
+    """「AIに質問」タブの質問文から、Grammar Multi(文法・複数出題形式)の
+    独立ノート3件分のitem dictを生成する(grammar_multi_builder.build_deck()
+    にそのまま渡せる形式)。
+
+    戻り値の各dictは、build_grammar_multi_v1_updated.GRAMMAR_MODELの
+    フィールド(pattern, question, choices, answer, example, example_ja,
+    why, whynot)に対応する値(choices/whynot/exampleはcanon側のヘルパー
+    関数でHTML化済み)に加え、guid計算・重複検出用のtopic_key/note_index/
+    source_keyを持つ。
+    """
+    if not GRAMMAR_MULTI_CANON_AVAILABLE:
+        raise GeminiClientError(
+            "build_grammar_multi_v1_updated.py が見つからないか、"
+            "genankiがインストールされていません。"
+        )
+    prompt = _GRAMMAR_MULTI_PROMPT.format(question=question)
     text = call_gemini(prompt, api_key, model)
-    parsed = _extract_json(text)
-    return _item_from_parsed(
-        parsed,
-        source_key=("chat", question.strip()),
-        source_label=None,
-    )
+    parsed = _extract_json_array(text)
+    if not parsed:
+        raise GeminiClientError(f"Gemini応答が空、または配列ではありません: {text[:300]}")
+
+    topic_key = " ".join(question.strip().casefold().split())
+    items = []
+    for i, note in enumerate(parsed):
+        choices = note.get("choices") or []
+        whynot = note.get("whynot") or []
+        examples = [tuple(ex) for ex in note.get("examples", [])]
+        items.append({
+            "pattern": note.get("pattern", ""),
+            "question": note.get("question", ""),
+            "choices": "".join(
+                _grammar_multi_canon.choice(c.get("opt", ""), c.get("text", "")) for c in choices
+            ),
+            "answer": note.get("answer", ""),
+            "example": _grammar_multi_canon.example_en(examples) if examples else "",
+            "example_ja": _grammar_multi_canon.example_ja(examples) if examples else "",
+            "why": note.get("why", ""),
+            "whynot": "".join(
+                _grammar_multi_canon.whynot_item(w.get("opt", ""), w.get("reason", "")) for w in whynot
+            ),
+            "topic_key": topic_key,
+            "note_index": i,
+            "source_key": ("chat_grammar", f"{topic_key}::{i}"),
+            "source_label": "由来: AIに質問",
+        })
+    return items
 
 
 _WORD_TO_ITEM_PROMPT = """あなたは、言語学習、特に読書を通じて遭遇した「未知の英単語の記憶定着」と

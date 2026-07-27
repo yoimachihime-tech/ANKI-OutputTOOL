@@ -36,12 +36,15 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import card_def_builder
 import card_defs
+import daily_pending_exclusions
 import deck_builder
 import gemini_client
+import grammar_multi_stock
 import sheets_reader
 import sheets_writer
 import shuujuku_stock
@@ -55,6 +58,12 @@ except ImportError:
     SHUUJUKU_AVAILABLE = False
 
 try:
+    import grammar_multi_builder
+    GRAMMAR_MULTI_AVAILABLE = True
+except ImportError:
+    GRAMMAR_MULTI_AVAILABLE = False
+
+try:
     import build_word_v1
     WORD_AVAILABLE = True
 except ImportError:
@@ -63,6 +72,13 @@ except ImportError:
 # 習熟用(ATSU方式)notetypeの正式名称。build_shuujuku_v1が無い環境でも
 # 判定(TTS対象の絞り込み・プレビュー構造化表示)ができるよう定数化しておく。
 SHUUJUKU_NOTETYPE_NAME = "ATSU方式 (PDF再現・音読用)"
+
+# UIフォントの候補(優先順)。コード中の font=("", ...) という書き方は
+# 「Tkの既定フォント family を継承する」のではなく実際には "Arial" に
+# 解決され、日本語部分はWindowsのフォントリンク機能でPCごとに異なる代替
+# フォントへ置き換わる(2026-07-27に発覚。PCによって見た目が違う原因)。
+# そのためこのリストから実在するフォントを1つ選び、全箇所で明示的に使う。
+UI_FONT_FAMILY_CANDIDATES = ["Yu Gothic UI", "Meiryo UI", "Meiryo", "Yu Gothic", "MS PGothic"]
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -102,6 +118,8 @@ class AnkiTTSApp(_BaseTk):
         # 広げられてしまい、縮小タブの幅がずれる原因になる)
         self.minsize(480, 640)
         self.resizable(True, True)
+
+        self._apply_consistent_font()
 
         self._config = tts_core.load_config()
 
@@ -175,8 +193,7 @@ class AnkiTTSApp(_BaseTk):
         # することで誤って別入力元のストックを出力済みにしないようにする)。
         self._pending_word_stock_items = None
         self._pending_shuujuku_stock_items = None
-        # 「AIに質問」タブの一覧(表示行→shuujuku_stock.pendingの実インデックス)
-        self._ai_ask_pending_indices = []
+        self._pending_grammar_multi_stock_items = None
         # DailyConversationタブの「シート上の未出力行」一覧のキャッシュ
         self._daily_pending_rows_cache = []
         # ペイン縮小時に「表示に戻したときの幅」を覚えておく(configにも保存)
@@ -226,6 +243,7 @@ class AnkiTTSApp(_BaseTk):
         self._build_widgets()
         self.refresh_shuujuku_stock_view()
         self.refresh_word_stock_view()
+        self.refresh_ai_ask_stock_view()
         self.refresh_carddef_listbox()
 
         # ペインのchrome(サッシ等の占有幅)を、まだ何もトグルしていない
@@ -297,6 +315,27 @@ class AnkiTTSApp(_BaseTk):
         self.gemini_api_key_var.trace_add("write", self._on_settings_changed)
         self.gemini_model_var.trace_add("write", self._on_settings_changed)
         self._on_per_sentence_toggled()  # 起動時の状態を反映
+
+    # --- フォント(PCによる表示ゆれ対策) -----------------------------------
+    def _apply_consistent_font(self):
+        """コード中の font=("", size, ...) は実際には family="Arial" に解決され、
+        日本語部分はWindowsのフォントリンク機能でPCごとに異なるフォントへ
+        置き換わる。そのためこの関数で実在するフォントを1つ選んで
+        self.ui_font_family に固定し、名前付きフォント(TkDefaultFont等、
+        font指定の無いttkウィジェット全般が使う)にも同じfamilyを適用する。
+        サイズは既存レイアウトを崩さないよう変更しない。"""
+        available = set(tkfont.families(self))
+        self.ui_font_family = next(
+            (f for f in UI_FONT_FAMILY_CANDIDATES if f in available),
+            "",
+        )
+        if not self.ui_font_family:
+            return
+        for name in tkfont.names(self):
+            try:
+                tkfont.nametofont(name, self).configure(family=self.ui_font_family)
+            except tk.TclError:
+                pass
 
     # --- テーマ(ダークモード/ライトモード) --------------------------------
     def _apply_theme(self, mode: str, initial: bool = False):
@@ -550,7 +589,7 @@ class AnkiTTSApp(_BaseTk):
         header = ttk.Frame(self)
         header.pack(fill="x", padx=14, pady=(12, 2))
         ttk.Label(
-            header, text="ANKI出力ツール", font=("", 15, "bold")
+            header, text="ANKI出力ツール", font=(self.ui_font_family, 15, "bold")
         ).pack(side="left")
         ttk.Button(
             header,
@@ -705,8 +744,8 @@ class AnkiTTSApp(_BaseTk):
             tab_daily,
             text=(
                 "AIによる添削・採点結果を「添削結果」シートに新規行として追加する"
-                "(Googleフォーム経由と同じ形式)。追加後、上の「シートから未出力行を"
-                "読み込んでデッキ生成」で続けてください。"
+                "(Googleフォーム経由と同じ形式)。追加後は自動的に上の"
+                "「シートから未出力行を読み込んでデッキ生成」まで実行される。"
             ),
             wraplength=hint_wrap,
             justify="left",
@@ -724,7 +763,7 @@ class AnkiTTSApp(_BaseTk):
         ttk.Separator(tab_daily, orient="horizontal").grid(
             row=8, column=0, sticky="ew", padx=8, pady=(4, 8)
         )
-        ttk.Label(tab_daily, text="シート上の未出力行:", font=("", 10, "bold")).grid(
+        ttk.Label(tab_daily, text="シート上の未出力行:", font=(self.ui_font_family, 10, "bold")).grid(
             row=9, column=0, sticky="w", padx=8, pady=(0, 2)
         )
         self.daily_pending_count_label = ttk.Label(tab_daily, text="(未取得。「更新」を押してください)")
@@ -741,9 +780,16 @@ class AnkiTTSApp(_BaseTk):
         daily_pending_list_vsb.pack(side="right", fill="y")
         self.daily_pending_listbox.bind("<<ListboxSelect>>", self.on_daily_pending_item_selected)
 
+        daily_pending_btns = ttk.Frame(tab_daily)
+        daily_pending_btns.grid(row=12, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Button(
-            tab_daily, text="更新", width=8, command=self.refresh_daily_pending_view
-        ).grid(row=12, column=0, sticky="w", padx=8, pady=(0, 8))
+            daily_pending_btns, text="更新", width=8, command=self.refresh_daily_pending_view
+        ).pack(side="left")
+        ttk.Button(
+            daily_pending_btns,
+            text="選択項目を削除",
+            command=self.on_delete_selected_daily_pending_item_clicked,
+        ).pack(side="left", padx=6)
 
         # --- タブ: 習熟用(音読)(DailyConversation/AIに質問からのストックをまとめて出力) ---
         tab_shuujuku = ttk.Frame(self.source_tabs_container)
@@ -795,34 +841,34 @@ class AnkiTTSApp(_BaseTk):
             justify="left",
         ).grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
 
-        # --- タブ: AIに質問(Gemini APIで回答生成→習熟用ストックへ追加。仮実装) ---
+        # --- タブ: AIに質問(Gemini APIでGrammar Multiカードを生成。仮実装) ---
+        # 2026-07-27〜: 習熟用(音読・ATSU方式)とは目的が違う(こちらは知識を
+        # 深めるための出題形式)ため、出力先をgrammar_multi_stock.json+
+        # 「Grammar Multi (文法・複数出題形式)」notetypeに変更した
+        # (以前は習熟用ストックに追加していたため内容が重複していた)。
         tab_ai_ask = ttk.Frame(self.source_tabs_container)
         ttk.Label(tab_ai_ask, text="質問・お題:").pack(anchor="w", padx=8, pady=(8, 2))
         self.ai_ask_text = tk.Text(tab_ai_ask, height=4, wrap="word")
         self.ai_ask_text.pack(fill="x", padx=8, pady=(0, 4))
         self.ai_ask_generate_btn = ttk.Button(
-            tab_ai_ask, text="AIに生成させる(習熟用ストックへ追加)", command=self.on_ai_ask_clicked
+            tab_ai_ask, text="AIに生成させる(3問セットを生成)", command=self.on_ai_ask_clicked
         )
         self.ai_ask_generate_btn.pack(anchor="w", padx=8, pady=(0, 4))
         ttk.Label(
             tab_ai_ask,
             text=(
-                "生成結果はそのまま「習熟用(音読)」タブのストックに追加される"
-                "(この場ではapkgを作らない)。仮実装としてGemini APIを使用。"
+                "1つの質問につき、出題形式の異なる独立したノートを3件"
+                "(選択問題/誤り訂正問題/記述式・書き換え問題が基本)生成し、"
+                "下のストックに追加する(習熟用(音読)タブとは別のノートタイプ"
+                "「Grammar Multi (文法・複数出題形式)」。仮実装としてGemini API使用)。"
             ),
             wraplength=hint_wrap,
             justify="left",
         ).pack(fill="x", padx=8, pady=(0, 8))
 
-        # --- 生成済み一覧(2026-07-27追加) ---
-        # 生成結果は即座に習熟用ストック(shuujuku_stock.json)へ追加されるが、
-        # 「AIに質問」タブ自体には中身を確認する手段が無く、確認するには
-        # DailyConversation由来の候補も混在した「習熟用(音読)」タブの一覧を
-        # 見に行く必要があった。ここでは同じshuujuku_stock.jsonから
-        # source_key[0]=="chat"(このタブ由来)のものだけを絞り込んで表示する
-        # (別ファイルに複製するのではなく、既存のストックを見た目だけ
-        # フィルタする設計。永続化・出力済み管理は習熟用ストックと共通)。
-        ttk.Label(tab_ai_ask, text="このタブで生成したカード:", font=("", 10, "bold")).pack(
+        # --- 生成済み一覧(2026-07-27追加、2026-07-27にgrammar_multi_stock.json
+        # 専用のストックへ変更) ---
+        ttk.Label(tab_ai_ask, text="このタブで生成したカード:", font=(self.ui_font_family, 10, "bold")).pack(
             anchor="w", padx=8, pady=(4, 2)
         )
         self.ai_ask_count_label = ttk.Label(tab_ai_ask, text="")
@@ -849,6 +895,11 @@ class AnkiTTSApp(_BaseTk):
             text="選択項目を削除",
             command=self.on_delete_selected_ai_ask_item_clicked,
         ).pack(side="left", padx=6)
+        ttk.Button(
+            tab_ai_ask,
+            text="まとめてGrammar Multiとして出力",
+            command=self.on_export_grammar_multi_stock_clicked,
+        ).pack(fill="x", padx=8, pady=(0, 8))
 
         # --- タブ: 単語(読書中に出会った未学習の英単語をAIでカード化。2026-07-27追加) ---
         # 「習熟用(音読)」とは完全に別物: 文法パターンの音読練習ではなく、単語単体の
@@ -1110,7 +1161,7 @@ class AnkiTTSApp(_BaseTk):
 
         mid_header = ttk.Frame(mid)
         mid_header.pack(fill="x", padx=(8, 0), pady=(4, 2))
-        ttk.Label(mid_header, text="ノート一覧", font=("", 11, "bold")).pack(side="left")
+        ttk.Label(mid_header, text="ノート一覧", font=(self.ui_font_family, 11, "bold")).pack(side="left")
         ttk.Button(mid_header, text="◀ 隠す", width=7, command=self._toggle_mid_pane).pack(
             side="right"
         )
@@ -1141,7 +1192,7 @@ class AnkiTTSApp(_BaseTk):
 
         right_header = ttk.Frame(right)
         right_header.pack(fill="x", padx=(8, 0), pady=(4, 2))
-        ttk.Label(right_header, text="プレビュー", font=("", 11, "bold")).pack(side="left")
+        ttk.Label(right_header, text="プレビュー", font=(self.ui_font_family, 11, "bold")).pack(side="left")
         ttk.Button(right_header, text="◀ 隠す", width=7, command=self._toggle_right_pane).pack(
             side="right"
         )
@@ -1156,8 +1207,8 @@ class AnkiTTSApp(_BaseTk):
         self.preview_text.pack(side="left", fill="both", expand=True)
         pv_vsb.pack(side="right", fill="y")
 
-        self.preview_text.tag_configure("fieldname", font=("", 10, "bold"), spacing1=10, spacing3=3)
-        self.preview_text.tag_configure("badge", foreground="#5c85cf", font=("", 9, "bold"))
+        self.preview_text.tag_configure("fieldname", font=(self.ui_font_family, 10, "bold"), spacing1=10, spacing3=3)
+        self.preview_text.tag_configure("badge", foreground="#5c85cf", font=(self.ui_font_family, 9, "bold"))
         self.preview_text.tag_configure("empty", foreground="#888888")
 
         # --- 縮小時に表示する縦タブ(クリックで再展開) ---
@@ -2242,6 +2293,7 @@ class AnkiTTSApp(_BaseTk):
         # 自分で改めてセットし直す)。
         self._pending_word_stock_items = None
         self._pending_shuujuku_stock_items = None
+        self._pending_grammar_multi_stock_items = None
         self.apkg_path.set(path)
         default_out = os.path.splitext(path)[0] + "_tts追加.apkg"
         self.output_path.set(default_out)
@@ -2292,6 +2344,14 @@ class AnkiTTSApp(_BaseTk):
                 self.log("スプレッドシートから「Anki出力済み」が空の行を読み込み中...")
                 rows = sheets_reader.fetch_pending_rows(spreadsheet_id, sheet_name, credentials_path)
                 self.log(f"未出力の行: {len(rows)} 件")
+
+                before_exclude = len(rows)
+                rows = daily_pending_exclusions.filter_out_excluded(rows)
+                if before_exclude != len(rows):
+                    self.log(
+                        f"(このソフト内で出力対象から除外設定した行が"
+                        f"{before_exclude - len(rows)} 件あるため、対象から除外しました)"
+                    )
                 if not rows:
                     messagebox.showinfo(
                         "該当なし", "「Anki出力済み」列が空の行が見つかりませんでした。"
@@ -2333,10 +2393,18 @@ class AnkiTTSApp(_BaseTk):
     def on_daily_correct_clicked(self):
         """英文を直接入力してAIに添削・採点させ、「添削結果」シートに新規行
         として追記する(Googleフォーム→Apps Script経由の行と同じ形式)。
-        追記した後の②以降(シートから読み込んでデッキ生成)は既存の
-        on_fetch_from_sheet_clickedと共通なので、ここでは呼ばない
-        (Sheets APIの反映タイミングとの競合を避けるため、片桐に改めて
-        「シートから読み込む」ボタンを押してもらう設計)。"""
+
+        **2026-07-27変更**: 以前は追記後の②以降(シートから読み込んでデッキ
+        生成)を自動連鎖させず、片桐が改めて「シートから未出力行を読み込んで
+        デッキ生成」ボタンを押す設計だった(Sheets APIの反映タイミングとの
+        競合を避けるため)。しかし「Googleフォームはもう使わずこちらを
+        メインで使う」運用に切り替えたところ、AI添削のたびに毎回そのボタンを
+        別途押す必要がある動線の分かりにくさ(確認導線が上下バラバラになる)
+        が問題になったため、追記が成功したら自動的に
+        on_fetch_from_sheet_clicked を呼ぶよう変更した。Sheets APIの
+        values.append/batchUpdateは基本的に読み取り直後から反映される
+        (結果整合ではない)ため、通常は問題なく直後のfetch_pending_rowsに
+        反映される想定。"""
         text = self.daily_input_text.get("1.0", "end").strip()
         if not text:
             messagebox.showwarning("入力不足", "添削する英文を入力してください。")
@@ -2376,20 +2444,18 @@ class AnkiTTSApp(_BaseTk):
                 )
                 self.log(
                     f"「添削結果」シートに {len(new_ids)} 行追加しました。"
-                    "「シートから未出力行を読み込んでデッキ生成」で続けてください。"
+                    "続けてシートから未出力行を読み込み、デッキを生成します..."
                 )
-                # 追加した内容をすぐ確認できるよう、下の一覧も更新する
-                # (シートAPIの反映タイミング待ちのため、②のデッキ生成へは
-                # 自動連鎖させないが、この一覧は読み取りだけなので問題ない)。
+                # 追加した内容をすぐ確認できるよう、下の一覧も更新する。
                 self.after(0, self.refresh_daily_pending_view)
 
                 def finish():
                     self.daily_input_text.delete("1.0", "end")
-                    messagebox.showinfo(
-                        "完了",
-                        f"添削結果を {len(new_ids)} 件シートに追加しました。\n"
-                        "「シートから未出力行を読み込んでデッキ生成」で続けてください。",
-                    )
+                    # 2026-07-27〜、ここで手動での「シートから読み込む」待ちに
+                    # せず、そのまま②のデッキ生成まで自動で連鎖させる
+                    # (on_fetch_from_sheet_clicked自体が未出力行を全件読み込む
+                    # ので、今回追加した分もまとめて拾われる)。
+                    self.on_fetch_from_sheet_clicked()
 
                 self.after(0, finish)
             except (gemini_client.GeminiClientError, sheets_writer.SheetsWriterError) as e:
@@ -2417,7 +2483,9 @@ class AnkiTTSApp(_BaseTk):
         都度読み直す(片桐が再起動しても、シート側にAnki出力済み列がある限り
         自然に一覧へ復元される)。ネットワークアクセスが要るため、
         「更新」ボタンまたは直接入力の追加成功時にのみ呼ばれる
-        (起動時に自動実行はしない)。"""
+        (起動時に自動実行はしない)。取得した行のうち
+        daily_pending_exclusions.jsonに除外登録済みのもの(重複行を
+        「選択項目を削除」で間引いた結果)はここで除いてから表示する。"""
         spreadsheet_id = self.sheets_spreadsheet_id_var.get().strip()
         sheet_name = self.sheets_sheet_name_var.get().strip()
         credentials_path = os.environ.get("SHEETS_WRITER_CREDENTIALS", "")
@@ -2440,6 +2508,7 @@ class AnkiTTSApp(_BaseTk):
         def worker():
             try:
                 rows = sheets_reader.fetch_pending_rows(spreadsheet_id, sheet_name, credentials_path)
+                rows = daily_pending_exclusions.filter_out_excluded(rows)
                 self._daily_pending_rows_cache = rows
 
                 def finish():
@@ -2469,6 +2538,40 @@ class AnkiTTSApp(_BaseTk):
         if idx >= len(rows):
             return
         self._render_daily_row_preview(rows[idx])
+
+    def on_delete_selected_daily_pending_item_clicked(self):
+        """一覧で選択した行を、以後「未出力行」として扱わないようローカルに
+        除外登録する(2026-07-27追加)。「添削結果」シート自体は
+        sheets_reader.py(読み取り専用)/sheets_writer.py(「Anki出力済み」列
+        書き込みと新規行追記のみが責務)のどちらからも直接削除できないため、
+        除外したい行のIDをdaily_pending_exclusions.jsonにローカル保存し、
+        以後このソフト内の一覧表示・②のデッキ生成の両方でその行を対象外に
+        する(シート自体は一切変更しない)。主にGoogleフォーム経由・直接入力
+        経由で同内容が重複してシートに追加された場合の間引き用途。"""
+        selection = self.daily_pending_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("未選択", "除外する行を一覧から選択してください。")
+            return
+        idx = selection[0]
+        rows = getattr(self, "_daily_pending_rows_cache", [])
+        if idx >= len(rows):
+            return
+        row = rows[idx]
+        original = (row.get("original") or "").strip().replace("\n", " ")
+        if not messagebox.askyesno(
+            "確認",
+            f"「{original[:40]}」をこのソフト内で出力対象から除外します。\n"
+            "スプレッドシート自体は変更されません"
+            "(このソフト内の一覧表示・デッキ生成の対象から外れるだけです)。\n"
+            "よろしいですか？",
+        ):
+            return
+        daily_pending_exclusions.add_excluded_id(row.get("id"))
+        self.log(f"「シート上の未出力行」から除外しました(ローカルのみ、シートは未変更): {original[:40]}")
+        del rows[idx]
+        self._daily_pending_rows_cache = rows
+        self.daily_pending_listbox.delete(idx)
+        self.daily_pending_count_label.configure(text=f"未出力: {len(rows)} 件")
 
     def _render_daily_row_preview(self, row: dict):
         """sheets_reader.fetch_pending_rows()の1行分(dict)を右のプレビュー
@@ -2617,75 +2720,136 @@ class AnkiTTSApp(_BaseTk):
         badge_label = f"{base_label} ({len(pending)})" if pending else base_label
         self._source_tab_buttons["shuujuku"].configure(text=badge_label)
 
-        # 「AIに質問」タブの一覧も同じshuujuku_stock.jsonを見ているため、
-        # 呼び出し元を増やさずに済むようここでまとめて同期する。
-        self.refresh_ai_ask_stock_view()
-
+    # --- 「AIに質問」タブ(2026-07-27〜: Grammar Multi専用ストックに変更) ---
+    # 以前はshuujuku_stock.json(習熟用/ATSU方式)へ追加し、source_key[0]=="chat"
+    # で絞り込んで表示する「見た目だけのフィルタ」方式だったが、「習熟用タブに
+    # 飛ぶ内容と同じでダブっている」との指摘を受け、grammar_multi_stock.json
+    # という完全に独立したストックに変更した(以後、一覧はこのストックの
+    # 全件をそのまま表示すればよく、部分集合の絞り込みは不要)。
     def refresh_ai_ask_stock_view(self):
-        """「AIに質問」タブの一覧を更新する。shuujuku_stock.jsonの中から
-        このタブ由来(source_key[0] == "chat")の項目だけを絞り込んで表示する
-        (DailyConversation由来の候補と混ざらないようにするため)。
-        永続化・重複判定・出力済み管理はすべてshuujuku_stock.py側と共通
-        (別ファイルには複製しない、見た目だけのフィルタ)。"""
-        pending = shuujuku_stock.get_pending()
-        dup_indices = shuujuku_stock.find_duplicate_pending_indices()
+        pending = grammar_multi_stock.get_pending()
+        dup_indices = grammar_multi_stock.find_duplicate_pending_indices()
 
-        # 表示行(0始まり)→pending全体でのインデックスの対応表。
-        # 選択・削除時にshuujuku_stock.remove_pending_at()へ渡す実インデックスを
-        # 復元するために必要(一覧はchat由来だけに絞った部分集合のため)。
-        self._ai_ask_pending_indices = [
-            i for i, item in enumerate(pending) if (item.get("source_key") or ("",))[0] == "chat"
-        ]
-
-        self.ai_ask_count_label.configure(text=f"生成済み: {len(self._ai_ask_pending_indices)} 件")
+        self.ai_ask_count_label.configure(text=f"生成済み: {len(pending)} 件")
         self.ai_ask_listbox.delete(0, "end")
-        for row, i in enumerate(self._ai_ask_pending_indices):
-            item = pending[i]
-            label = item.get("pattern") or "(pattern未設定)"
+        for i, item in enumerate(pending):
+            pattern = item.get("pattern") or "(形式未設定)"
+            question = (item.get("question") or "").strip().replace("\n", " ")
             prefix = "⚠ [重複] " if i in dup_indices else ""
-            self.ai_ask_listbox.insert("end", f"{prefix}{label}")
+            self.ai_ask_listbox.insert("end", f"{prefix}[{pattern}] {question[:40]}")
             if i in dup_indices:
                 self.ai_ask_listbox.itemconfig(
-                    row, {"bg": self.DUPLICATE_HIGHLIGHT_BG, "fg": self.DUPLICATE_HIGHLIGHT_FG}
+                    i, {"bg": self.DUPLICATE_HIGHLIGHT_BG, "fg": self.DUPLICATE_HIGHLIGHT_FG}
                 )
 
+        base_label = self._source_tab_labels["ai_ask"]
+        badge_label = f"{base_label} ({len(pending)})" if pending else base_label
+        self._source_tab_buttons["ai_ask"].configure(text=badge_label)
+
     def on_ai_ask_item_selected(self, event=None):
-        """一覧で選択した候補の内容を、右のプレビューペインに表示する
-        (習熟用タブの一覧と同じ描画ロジックを共有)。"""
+        """一覧で選択した候補(Grammar Multiの1ノート分)の内容を、
+        右のプレビューペインに表示する。"""
         selection = self.ai_ask_listbox.curselection()
         if not selection:
             return
-        row = selection[0]
-        if row >= len(self._ai_ask_pending_indices):
+        idx = selection[0]
+        pending = grammar_multi_stock.get_pending()
+        if idx >= len(pending):
             return
-        pending = shuujuku_stock.get_pending()
-        i = self._ai_ask_pending_indices[row]
-        if i >= len(pending):
-            return
-        self._show_shuujuku_item_preview(pending[i])
+        self._show_grammar_multi_item_preview(pending[idx])
 
     def on_delete_selected_ai_ask_item_clicked(self):
-        """一覧で選択中の1件だけを削除する(習熟用タブの「選択項目を削除」と
-        同じshuujuku_stock.remove_pending_atを使う。出力済みにはせず、
-        単純にpendingから取り除くだけ)。"""
+        """一覧で選択中の1件だけを削除する(出力済みにはせず、単純に
+        grammar_multi_stockのpendingから取り除くだけ)。"""
         selection = self.ai_ask_listbox.curselection()
         if not selection:
             messagebox.showinfo("未選択", "削除する項目を一覧から選択してください。")
             return
-        row = selection[0]
-        if row >= len(self._ai_ask_pending_indices):
+        idx = selection[0]
+        pending = grammar_multi_stock.get_pending()
+        if idx >= len(pending):
             return
-        i = self._ai_ask_pending_indices[row]
-        pending = shuujuku_stock.get_pending()
-        if i >= len(pending):
-            return
-        item = pending[i]
-        label = item.get("pattern") or "(pattern未設定)"
+        item = pending[idx]
+        label = f"[{item.get('pattern') or '(形式未設定)'}] {(item.get('question') or '')[:30]}"
         if not messagebox.askyesno("確認", f"「{label}」をストックから削除します。よろしいですか？"):
             return
-        shuujuku_stock.remove_pending_at(i)
-        self.log(f"習熟用ストックから「{label}」を削除しました。")
-        self.refresh_shuujuku_stock_view()
+        grammar_multi_stock.remove_pending_at(idx)
+        self.log(f"Grammar Multiストックから「{label}」を削除しました。")
+        self.refresh_ai_ask_stock_view()
+
+    def on_export_grammar_multi_stock_clicked(self):
+        """「AIに質問」タブのストックをまとめてGrammar Multiデッキとして
+        出力する(単語/習熟用タブの「まとめて出力」と同じ2段階の設計:
+        ④のapkg出力が実際に成功するまでmark_exportedを呼ばない)。"""
+        if not GRAMMAR_MULTI_AVAILABLE:
+            messagebox.showerror(
+                "エラー",
+                "grammar_multi_builder.py / build_grammar_multi_v1_updated.py が"
+                "見つからないか、genankiがインストールされていません。",
+            )
+            return
+        pending = grammar_multi_stock.get_pending()
+        if not pending:
+            messagebox.showinfo("該当なし", "ストックは空です。")
+            return
+        if not messagebox.askyesno(
+            "確認", f"ストック {len(pending)} 件をまとめてGrammar Multiデッキとして出力します。よろしいですか？"
+        ):
+            return
+        try:
+            deck = grammar_multi_builder.build_deck(pending)
+            temp_path = os.path.join(
+                tempfile.gettempdir(),
+                f"grammar_multi_deck_{datetime.datetime.now():%Y%m%d_%H%M%S}.apkg",
+            )
+            deck.write_to_file(temp_path)
+            self.log(f"Grammar Multiデッキを生成しました: {temp_path} ({len(pending)} ノート)")
+            self._set_apkg_path(temp_path)
+            # ここではまだmark_exportedを呼ばない。④のTTS生成・apkg出力が
+            # 実際に成功した時点(run_generate)でまとめて出力済みにする
+            # (単語/習熟用タブと同じ理由・同じ設計)。
+            self._pending_grammar_multi_stock_items = (temp_path, pending)
+            self.sheets_update_var.set(False)  # Grammar Multiはスプレッドシート書き戻し対象外
+            self.log("生成したデッキを①以降に読み込みました。②③を確認して生成を実行してください(TTS設定は⚙から確認できます)。"
+                      "④の生成が完了するまで、この候補はストックに残ります。")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"Grammar Multiデッキの生成に失敗しました: {e}")
+            messagebox.showerror("エラー", f"Grammar Multiデッキの生成に失敗しました:\n{e}")
+
+    def _show_grammar_multi_item_preview(self, item: dict):
+        pv = self.preview_text
+        pv.configure(state="normal")
+        pv.delete("1.0", "end")
+        self._render_grammar_multi_fields_to_pane(item)
+        pv.configure(state="disabled")
+        self._preview_source = {"kind": "grammar_multi", "item": item}
+
+    def _render_grammar_multi_fields_to_pane(self, item: dict):
+        """Pattern/Question/Choices/Answer/Example/ExampleJA/Why/WhyNotの
+        各フィールドを右のプレビューペインに書き込む(単語タブの
+        _render_word_fields_to_paneと同じ構成)。Choices/WhyNot/Exampleは
+        gemini_client側で既にHTML化済みのため、タグを除いた素のテキストで
+        簡易表示する。"""
+        pv = self.preview_text
+        tag_re = re.compile(r"<[^>]+>")
+
+        def field(name, html_text):
+            pv.insert("end", name, "fieldname")
+            pv.insert("end", "\n")
+            plain = tag_re.sub(" ", html_text or "").strip()
+            if plain:
+                pv.insert("end", plain + "\n")
+            else:
+                pv.insert("end", "(空欄)\n", "empty")
+
+        field("Pattern", item.get("pattern"))
+        field("Question", item.get("question"))
+        field("Choices", item.get("choices"))
+        field("Answer", item.get("answer"))
+        field("Example", item.get("example"))
+        field("ExampleJA", item.get("example_ja"))
+        field("Why", item.get("why"))
+        field("WhyNot", item.get("whynot"))
 
     def on_shuujuku_item_selected(self, event=None):
         """ストック一覧で選択した候補の内容を、右のプレビューペインに表示する。"""
@@ -3056,10 +3220,10 @@ class AnkiTTSApp(_BaseTk):
         def worker():
             try:
                 self.log(f"AIに質問中: {question[:50]}...")
-                item = gemini_client.answer_question_as_shuujuku_item(question, api_key, model)
-                shuujuku_stock.add_pending_items([item])
-                self.log(f"習熟用ストックに追加しました: {item['pattern']}")
-                self.refresh_shuujuku_stock_view()
+                items = gemini_client.generate_grammar_multi_items_from_question(question, api_key, model)
+                grammar_multi_stock.add_pending_items(items)
+                self.log(f"Grammar Multiストックに {len(items)} 件追加しました。")
+                self.refresh_ai_ask_stock_view()
             except gemini_client.GeminiClientError as e:
                 self.log(f"AIへの質問に失敗しました: {e}")
                 messagebox.showerror("エラー", f"AIへの質問に失敗しました:\n{e}")
@@ -3366,6 +3530,34 @@ class AnkiTTSApp(_BaseTk):
                     night_mode=self.theme_var.get() == "dark",
                 )
                 tmp_name = "word_card_preview.html"
+            elif source["kind"] == "grammar_multi":
+                if not GRAMMAR_MULTI_AVAILABLE:
+                    messagebox.showerror(
+                        "エラー",
+                        "build_grammar_multi_v1_updated.py が見つからないか、"
+                        "genankiがインストールされていません。",
+                    )
+                    return
+                item = source["item"]
+                canon = grammar_multi_builder.canon
+                template = canon.GRAMMAR_MODEL.templates[0]
+                html_doc = tts_core.render_card_preview_html(
+                    {
+                        "Pattern": item.get("pattern", ""),
+                        "Question": item.get("question", ""),
+                        "Choices": item.get("choices", ""),
+                        "Answer": item.get("answer", ""),
+                        "Example": item.get("example", ""),
+                        "ExampleJA": item.get("example_ja", ""),
+                        "Why": item.get("why", ""),
+                        "WhyNot": item.get("whynot", ""),
+                    },
+                    template["qfmt"],
+                    template["afmt"],
+                    canon.CSS,
+                    night_mode=self.theme_var.get() == "dark",
+                )
+                tmp_name = "grammar_multi_card_preview.html"
             else:
                 return
 
@@ -3892,6 +4084,18 @@ class AnkiTTSApp(_BaseTk):
                         "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
                     )
                 self._pending_shuujuku_stock_items = None
+            if self._pending_grammar_multi_stock_items:
+                tracked_path, tracked_items = self._pending_grammar_multi_stock_items
+                if tracked_path == generated_apkg_path:
+                    grammar_multi_stock.mark_exported(tracked_items)
+                    self.log(f"Grammar Multiストックの {len(tracked_items)} 件を出力済みにしました。")
+                    self.refresh_ai_ask_stock_view()
+                else:
+                    self.log(
+                        "(Grammar Multiストックの出力済みマークは対象外です: "
+                        "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
+                    )
+                self._pending_grammar_multi_stock_items = None
 
             status = "キャンセルにより途中まで" if result.cancelled else "完了"
             self.log(
