@@ -275,13 +275,25 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
     「AIに生成させる」→ストック一覧→「まとめて単語カードとして出力」)だが、
     **`word_stock.py`(word_stock.json)という完全に別のストックファイルを使い、
     `shuujuku_stock.py`には一切書き込まない**(片桐の明示的な指示)。
-    入力は単語(`self.word_input_var`)と文脈となる英文
-    (`self.word_context_text`)の2つ。`on_word_generate_clicked`が
-    `gemini_client.generate_vocab_card_from_word`を呼び、戻り値を
-    `word_stock.add_pending_items`でストックに追加する。「まとめて単語カード
-    として出力」(`on_export_word_stock_clicked`)は`build_word_v1.build_deck()`
-    で一時.apkgを生成し`self.apkg_path`にセット、成功後に
-    `word_stock.mark_exported`。タブボタンのバッジ表示・ストック一覧選択時の
+    入力は`self.word_pairs_text`(複数行テキスト)。**2026-07-27に単語1件ずつの
+    入力から、「単語 | 文脈」ペアを複数行まとめて入力できる形に変更**した
+    (読書中に複数の未知語をまとめて調べたいニーズへの対応)。1行1件、
+    `_parse_word_pairs`が`|`区切りでパースする(`|`が無ければ文脈は空文字、
+    空行はスキップ)。**文脈は完全な英文である必要はない**(句動詞や単語の
+    組み合わせのみでもよい。空欄も可。この方針は`gemini_client.py`の
+    プロンプト内でも明記してあり、AIが無理に1つの完全な文として解釈しよう
+    としないようにしてある)。`on_word_generate_clicked`が各ペアについて
+    順番に`gemini_client.generate_vocab_card_from_word`を呼び(DailyConversation
+    の複数行処理と同じ、直列でのAI呼び出しパターン)、生成できたものを
+    まとめて`word_stock.add_pending_items`でストックに追加する。**全件成功
+    した場合だけ**入力欄をクリアする(一部失敗時は、どの行が失敗したか
+    片桐が見て判断できるよう入力内容を残す)。対象行が全件失敗した場合は
+    `_generate_shuujuku_candidates_from_rows`と同様に`messagebox.showwarning`
+    で通知する。「まとめて単語カードとして出力」(`on_export_word_stock_
+    clicked`)は`card_defs.get_def("word")` + `card_def_builder.build_deck_
+    from_def()`で一時.apkgを生成し`self.apkg_path`にセット、成功後に
+    `word_stock.mark_exported`(下記「単語カード生成との関係」の
+    card_defs移行の項を参照)。タブボタンのバッジ表示・ストック一覧選択時の
     プレビュー(`_show_word_item_preview`/`_render_word_fields_to_pane`)・
     「🔍 カードをプレビュー」対応(`on_open_card_in_browser`の`kind == "word"`
     分岐)も習熟用タブと同じ構成で実装してある。
@@ -350,13 +362,37 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
   環境向けのフォールバックと同じパターンで`WINSOUND_AVAILABLE`判定を持ち、
   非Windows環境ではボタンを無効化するだけでアプリ自体は起動できる。
 - **波形は事前計算+経過時間アニメーション方式**(録音デバイスからのリアルタイム
-  解析は行わない): 合成したWAVから`tts_core.compute_amplitude_envelope()`で
-  振幅の推移(40バケット、0.0〜1.0正規化)を再生前に計算しておき、`winsound`で
-  再生開始した`time.monotonic()`を基準に`self.after(40, ...)`ループ
-  (`_animate_test_waveform`)で経過時間から再生位置の割合を求め、
-  そこまでのバーをアクセントカラーに塗り分ける(`_draw_test_waveform`)。
-  再生時間は`tts_core.wav_duration_seconds()`から求める(既知の固定値なので、
-  実際の音声デバイス側の遅延・ドリフトは考慮していない)。
+  解析は行わない): 合成したWAVから`tts_core.compute_waveform_minmax()`で
+  バケットごとの最小値・最大値(40バケット、-1.0〜+1.0正規化)を再生前に
+  計算しておき、`winsound`で再生開始した`time.monotonic()`を基準に
+  `self.after(40, ...)`ループ(`_animate_test_waveform`)で経過時間から
+  再生位置の割合を求め、そこまでのバーをアクセントカラーに塗り分ける
+  (`_draw_test_waveform`)。再生時間は`tts_core.wav_duration_seconds()`から
+  求める(既知の固定値なので、実際の音声デバイス側の遅延・ドリフトは
+  考慮していない)。
+  - **波形はbipolar表示**(2026-07-27変更。以前はRMSベースの棒グラフ
+    だったが、Audacity等の一般的な音声波形ビューアと同じ、中心(0点)を
+    挟んで上下に振れる表示に変更した。`compute_waveform_minmax`は
+    RMS(実効値)ではなく各バケットの実際のサンプル値の[最小値, 最大値]を
+    そのまま返す)。
+- **0dBクリッピング検出**(2026-07-27追加): `tts_core.compute_peak_amplitude()`
+  で合成音声の最大絶対振幅(0.0〜1.0、1.0=16bit PCMのフルスケール=0dBFS)を
+  測り、`tts_core.is_clipped()`(閾値`CLIPPING_THRESHOLD = 0.999`)で
+  0dBを超えた(音割れの可能性がある)かどうかを判定する。テスト再生中に
+  クリッピングを検出すると、ステータス表示(`self.test_play_status_label`)に
+  警告文を出し、波形も警告色(赤系)で描画する(`_draw_test_waveform`の
+  `clipped`引数)。
+- **音量の自動調整**(2026-07-27追加、「デフォルトで自動的に0dBを超えない
+  範囲までゲインを上げたい」という要望への対応): TTSタブの「自動調整」
+  ボタン(`self.auto_gain_btn` → `on_auto_gain_clicked`)が
+  `tts_core.find_safe_volume_gain_db()`を呼ぶ。この関数は、まずゲイン0.0dBで
+  テストサンプルを合成してベースのピーク振幅を測り、目標ピーク
+  (0dBFSから既定1.0dBの余裕を持たせた値)まで引き上げるのに必要なゲインを
+  20*log10比で計算した上で、実際にそのゲインで合成し直してまだ音割れして
+  いれば1dBずつ下げて再検証する(TTSエンジン内部のAGC等により、ゲインと
+  実際の振幅の関係が厳密に線形とは限らないための安全策。最大4回試行)。
+  結果は`self.volume_gain_db_var`にそのままセットされ、スライダー・
+  本番生成(`run_generate`)にも即座に反映される。
 - 音量ゲインはローカルでのPCM後処理ではなく、Google Cloud TTSの
   `audioConfig.volumeGainDb`に渡す合成時点のゲイン(上記tts_core.pyの項参照)。
   この設定はテスト再生だけでなく、🔊試聴・本番生成(`run_generate`)にも
@@ -670,6 +706,12 @@ example_ja/example_blank/noteの7キーを受け取る。
 - **一覧**(`self.carddef_listbox`): `card_defs.list_defs()`をkey順に表示
   (`refresh_carddef_listbox`)。選択すると`on_carddef_selected`→
   `_load_carddef_into_form`でフォームに反映される。
+- **使用タブの明示**(2026-07-27追加): 「このカードタイプがどのタブの機能に
+  属するか分かりにくい」という指摘への対応。一覧の各行に`[○○タブ]`または
+  `[未接続]`を付記するほか(`refresh_carddef_listbox`)、フォーム上部のキー欄
+  直下にも`self.carddef_tab_usage_label`で同じ内容を表示する
+  (`_tab_usage_text_for_key`。`card_def["key"]`が`self._source_tab_labels`の
+  キーと一致するかどうかで判定する単純なルックアップ)。
 - **フィールド編集**(`self.carddef_fields_text`): 1行1フィールドを
   「Ankiフィールド名 = 内部項目名」というテキスト形式で編集する(Treeview等の
   複雑な行編集UIを避け、テキストのparse/joinだけで済ませる設計)。内部項目名は
@@ -730,6 +772,36 @@ example_ja/example_blank/noteの7キーを受け取る。
 - Anki側のレンダリングエンジンは `[sound:]` タグをCSS/JSより先に処理するため、
   CSSで答えを隠していても音声で答えが漏れることがある(表示層での対策は不可)。
   音声が入るフィールドと、隠したい答えが入るフィールドは物理的に分離すること。
+
+## Gitリポジトリ・GitHub連携
+
+2026-07-27に`git init`してGitHub管理下に置いた。**このフォルダはGoogle Drive
+同期フォルダの中にある**ため、`.git`ディレクトリ自体もDrive同期対象になる点に
+注意(通常は問題ないが、大量の細かいファイルを含む`.git`をDrive側が同期し切る
+までに時間がかかることがある)。
+
+- `.gitignore`で以下を除外している(実行時に自動生成される・平文の秘密情報を
+  含む・個人の学習内容を含む、のいずれかに該当するため):
+  - `config.json`(Google Cloud TTS/Gemini APIキーを平文保存)
+  - `shuujuku_stock.json` / `word_stock.json` / `card_defs.json`
+    (実行時に生成される片桐の実データ)
+  - `*serviceaccount*.json` / `*credentials*.json` / `*-key.json`等の
+    認証情報っぽい命名パターン(サービスアカウントキーが万一このフォルダに
+    置かれた場合の保険。ただし2026-07-27時点で実際にはこのフォルダの外
+    (`【JSON-KEY】ANKI_TTS_GUI`フォルダ)に置かれていることを確認済み)
+  - `*.apkg` / `*.row_map.json`(個人の学習内容を含む生成物)
+  - `backup/`・`__pycache__/`・`*.anki2`系(作業用の一時ファイル)
+  - `.claude/settings.local.json`(Claude Codeのローカル権限設定。慣習的に
+    `.local.json`は個人環境向けのためコミット対象外)
+  - **意図的に`*.json`の一括除外はしていない**(将来Web版との共有プロンプト
+    ファイル等、正当にコミットしたいJSONが増える可能性があるため、上記の
+    具体的なファイル名/パターンだけを列挙する方式にしてある)。
+- コミットのauthor情報(`user.name`/`user.email`)は、このリポジトリの
+  ローカル設定(`git config`に`--global`を付けない)のみに設定してあり、
+  PC全体のgit設定は変更していない。
+- リモート(GitHub)へのpushはまだ手動("gh" CLIがこの環境に無いため、
+  片桐がブラウザ/GitHub Desktop等でリポジトリを作成し、そのURLを教えて
+  もらってから`git remote add`→`git push`する運用)。
 
 ## 今後の拡張候補(未着手)
 
