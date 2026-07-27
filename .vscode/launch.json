@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Anki TTS ツール (デバッグ)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tts_gui.py",
+      "python": "C:\\Python314\\python.exe",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}
