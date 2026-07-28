@@ -51,6 +51,39 @@ function isDailyQuotaError(detail) {
 }
 
 /**
+ * 403 などの失敗理由を、利用者が対処できる日本語の説明にする。
+ * 判定できない場合は null を返す(その場合は生のレスポンスをそのまま見せる)。
+ *
+ * 特に「本番用キー(ウェブサイト制限あり)を localhost で使ってしまった」は
+ * この構成では起こりやすいため、原因と対処が分かるようにしている。
+ */
+function describeError(status, detail) {
+  const n = (detail || '').replace(/[\s_-]/g, '').toLowerCase();
+
+  if (n.includes('referer') || n.includes('referrer')) {
+    return 'このAPIキーには「ウェブサイト(HTTPリファラー)」制限がかかっており、'
+      + '今開いているアドレスからは使えません。\n'
+      + 'localhost で動作確認する場合は、アプリケーションの制限が「なし」の'
+      + '開発用キーを使ってください(localhost はウェブサイト制限に登録できません)。';
+  }
+  if (n.includes('apikeyserviceblocked')) {
+    return 'このAPIキーの「APIの制限」で Gemini API が許可されていません。\n'
+      + 'キーの設定で対象APIに Gemini API を含めてください。';
+  }
+  if (n.includes('apikeyinvalid') || status === 401) {
+    return 'APIキーが無効です。⚙設定のキーを確認してください。';
+  }
+  if (n.includes('servicedisabled') || n.includes('hasnotbeenused')) {
+    return 'このプロジェクトで Gemini API が有効化されていません。\n'
+      + 'Google Cloud Console の「APIとサービス → ライブラリ」で有効にしてください。';
+  }
+  if (status === 403) {
+    return 'Gemini API へのアクセスが拒否されました(403)。APIキーの制限設定を確認してください。';
+  }
+  return null;
+}
+
+/**
  * Gemini にプロンプトを投げ、応答テキストを返す。
  * @param {string} prompt
  * @param {string} apiKey
@@ -97,7 +130,12 @@ export async function callGemini(prompt, apiKey, model) {
       throw new GeminiError(`Gemini APIの利用上限(レート制限)に達しました。\n詳細: ${lastDetail}`);
     }
 
-    throw new GeminiError(`Gemini API呼び出しに失敗しました(HTTP ${res.status}): ${lastDetail}`);
+    const described = describeError(res.status, lastDetail);
+    throw new GeminiError(
+      described
+        ? `${described}\n\n詳細: ${lastDetail}`
+        : `Gemini API呼び出しに失敗しました(HTTP ${res.status}): ${lastDetail}`,
+    );
   }
   throw new GeminiError(`Gemini API呼び出しに失敗しました: ${lastDetail}`);
 }
@@ -153,7 +191,13 @@ export async function listModels(apiKey) {
     headers: { 'x-goog-api-key': apiKey },
   });
   if (!res.ok) {
-    throw new GeminiError(`Geminiモデル一覧の取得に失敗しました: ${await res.text()}`);
+    const detail = await res.text();
+    const described = describeError(res.status, detail);
+    throw new GeminiError(
+      described
+        ? `${described}\n\n詳細: ${detail}`
+        : `Geminiモデル一覧の取得に失敗しました: ${detail}`,
+    );
   }
   const data = await res.json();
   return (data.models || [])
