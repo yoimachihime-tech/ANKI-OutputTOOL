@@ -154,6 +154,27 @@ const $ = (id) => window.document.getElementById(id);
 if ($('word-stock-empty').hidden === false) ok('起動直後は「カードがありません」を表示');
 else fail('起動直後の空表示がおかしい');
 
+if ($('settings').hidden === true && $('main-content').hidden === false) {
+  ok('起動直後は設定が隠れ、通常画面(タブ)が表示されている');
+} else {
+  fail('起動直後の設定/通常画面の表示状態がおかしい');
+}
+
+// --- 設定の開閉(2026-07-28追加: 開いている間は通常画面を隠す) ---
+console.log('\n[1.5] 設定の開閉');
+$('settings-toggle').click();
+if ($('settings').hidden === false && $('main-content').hidden === true) {
+  ok('設定を開くと、通常画面(タブバー+タブの中身)が隠れる');
+} else {
+  fail('設定を開いても通常画面が隠れない');
+}
+$('settings-toggle').click();
+if ($('settings').hidden === true && $('main-content').hidden === false) {
+  ok('設定を閉じると、通常画面が元通り表示される');
+} else {
+  fail('設定を閉じても通常画面が復帰しない');
+}
+
 // --- APIキーを入力 ---
 console.log('\n[2] APIキーの保存');
 $('api-key').value = 'DUMMY-KEY-FOR-TEST';

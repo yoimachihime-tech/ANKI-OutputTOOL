@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Web版: ローカルサーバー起動",
+      "detail": "docs/ を http://localhost:8000 で配信する(file://だとリファラーが送られずAPI呼び出しが失敗するため必須)",
+      "type": "shell",
+      "command": "python",
+      "args": ["-m", "http.server", "8000"],
+      "options": {
+        "cwd": "${workspaceFolder}/docs"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "____________________________________"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Serving HTTP on",
+          "endsPattern": "Serving HTTP on"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": true
+      }
+    }
+  ]
+}

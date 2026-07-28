@@ -43,6 +43,11 @@
   </div>
 </section>
 
+<!-- ⚙設定を開いている間は、これより下(タブバー+各タブの中身)をまとめて
+     隠す(2026-07-28追加)。設定と通常画面が同時に見えると、どちらが本来の
+     表示状態か分かりにくいという指摘への対応。 -->
+<div id="main-content">
+
 <!-- 入力元タブ(単語 / AIに質問。今後 習熟用・TTS試聴 を追加予定) -->
 <nav class="tabbar" role="tablist">
   <button type="button" class="tab-btn active" data-tab="word" role="tab" aria-selected="true">単語</button>
@@ -133,6 +138,8 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
   </section>
 
 </div>
+
+</div><!-- /#main-content -->
 
 <!-- カードプレビュー(全タブ共通) -->
 <dialog id="preview-dialog">

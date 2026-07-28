@@ -83,9 +83,7 @@ function bindEvents() {
   });
 
   // 設定(全タブ共通)
-  $('settings-toggle').addEventListener('click', () => {
-    $('settings').hidden = !$('settings').hidden;
-  });
+  $('settings-toggle').addEventListener('click', toggleSettings);
   $('toggle-key').addEventListener('click', () => {
     const el = $('api-key');
     el.type = el.type === 'password' ? 'text' : 'password';
@@ -124,6 +122,21 @@ function switchTab(key) {
   document.querySelectorAll('.tab-panel').forEach((panel) => {
     panel.hidden = panel.id !== `tab-${key}`;
   });
+}
+
+/**
+ * ⚙設定の開閉(2026-07-28追加)。設定を開いている間はタブバー+各タブの
+ * 中身(#main-content)をまとめて隠す。以前は設定を開いても下に通常画面が
+ * そのまま残っていたため、「今どちらの状態が正しい見た目なのか」分かり
+ * にくいという指摘への対応。#main-content側は個々のタブのhidden状態
+ * (switchTabが管理する)をそのまま保持するので、設定を閉じれば
+ * 開く前と同じタブ・同じ表示にそのまま戻る。
+ */
+function toggleSettings() {
+  const willOpen = $('settings').hidden;
+  $('settings').hidden = !willOpen;
+  $('main-content').hidden = willOpen;
+  $('settings-toggle').textContent = willOpen ? '✕ 設定を閉じる' : '⚙ 設定';
 }
 
 // ---------------------------------------------------------------------------

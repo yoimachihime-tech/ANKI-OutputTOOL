@@ -9,6 +9,22 @@
       "python": "C:\\Python314\\python.exe",
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "ANKI出力ツール Web版 (Edge)",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://localhost:8000",
+      "webRoot": "${workspaceFolder}/docs",
+      "preLaunchTask": "Web版: ローカルサーバー起動"
+    },
+    {
+      "name": "ANKI出力ツール Web版 (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:8000",
+      "webRoot": "${workspaceFolder}/docs",
+      "preLaunchTask": "Web版: ローカルサーバー起動"
     }
   ]
 }
