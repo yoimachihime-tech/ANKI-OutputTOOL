@@ -16,7 +16,7 @@
   <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
 </header>
 
-<!-- ⚙ 設定 -->
+<!-- ⚙ 設定(全タブ共通) -->
 <section id="settings" class="card" hidden>
   <h2>設定</h2>
   <p class="hint">
@@ -43,48 +43,98 @@
   </div>
 </section>
 
-<!-- ① 単語を入力 -->
-<section class="card">
-  <h2>① 単語を入力</h2>
-  <p class="hint">
-    1行に1件、「単語 | 文脈」の形式で入力します。文脈は省略可で、完全な文である必要も
-    ありません(句動詞や単語の組み合わせだけでも構いません)。
-  </p>
-  <textarea id="word-input" rows="6" spellcheck="false"
+<!-- 入力元タブ(単語 / AIに質問。今後 習熟用・TTS試聴 を追加予定) -->
+<nav class="tabbar" role="tablist">
+  <button type="button" class="tab-btn active" data-tab="word" role="tab" aria-selected="true">単語</button>
+  <button type="button" class="tab-btn" data-tab="ai_ask" role="tab" aria-selected="false">AIに質問</button>
+</nav>
+
+<!-- ============================= 単語タブ ============================= -->
+<div id="tab-word" class="tab-panel" role="tabpanel">
+
+  <section class="card">
+    <h2>① 単語を入力</h2>
+    <p class="hint">
+      1行に1件、「単語 | 文脈」の形式で入力します。文脈は省略可で、完全な文である必要も
+      ありません(句動詞や単語の組み合わせだけでも構いません)。
+    </p>
+    <textarea id="word-input" rows="6" spellcheck="false"
 placeholder="slated | The update is slated for release next month.
 give up
 resilient | She remained resilient."></textarea>
-  <button type="button" id="generate" class="primary">AIでカードを生成</button>
-  <p id="generate-status" class="status" role="status" aria-live="polite"></p>
-</section>
+    <button type="button" id="word-generate" class="primary">AIでカードを生成</button>
+    <p id="word-generate-status" class="status" role="status" aria-live="polite"></p>
+  </section>
 
-<!-- ② 生成結果 -->
-<section class="card">
-  <h2>② 生成結果 <span id="stock-count" class="count"></span></h2>
-  <p class="hint">
-    生成したカードはこのブラウザに保存され、再訪しても残ります。
-    不要なものは選んで削除できます。
-  </p>
-  <div id="stock-empty" class="empty">まだカードがありません。</div>
-  <ul id="stock-list" class="stock"></ul>
-  <div class="row">
-    <button type="button" id="delete-selected">選択項目を削除</button>
-    <button type="button" id="clear-stock" class="danger">すべて削除</button>
-  </div>
-</section>
+  <section class="card">
+    <h2>② 生成結果 <span id="word-stock-count" class="count"></span></h2>
+    <p class="hint">
+      生成したカードはこのブラウザに保存され、再訪しても残ります。
+      不要なものは選んで削除できます。
+    </p>
+    <div id="word-stock-empty" class="empty">まだカードがありません。</div>
+    <ul id="word-stock-list" class="stock"></ul>
+    <div class="row">
+      <button type="button" id="word-delete-selected">選択項目を削除</button>
+      <button type="button" id="word-clear-stock" class="danger">すべて削除</button>
+    </div>
+  </section>
 
-<!-- ③ Ankiに取り込む -->
-<section class="card">
-  <h2>③ Ankiに取り込む</h2>
-  <p class="hint">
-    .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
-    同じ単語のカードは既存のものが更新されるだけなので、学習履歴は失われません。
-  </p>
-  <button type="button" id="export" class="primary">.apkg をダウンロード</button>
-  <p id="export-status" class="status" role="status" aria-live="polite"></p>
-</section>
+  <section class="card">
+    <h2>③ Ankiに取り込む</h2>
+    <p class="hint">
+      .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
+      同じ単語のカードは既存のものが更新されるだけなので、学習履歴は失われません。
+    </p>
+    <button type="button" id="word-export" class="primary">.apkg をダウンロード</button>
+    <p id="word-export-status" class="status" role="status" aria-live="polite"></p>
+  </section>
 
-<!-- カードプレビュー -->
+</div>
+
+<!-- ============================= AIに質問タブ ============================= -->
+<div id="tab-ai_ask" class="tab-panel" hidden role="tabpanel">
+
+  <section class="card">
+    <h2>① 質問・お題を入力</h2>
+    <p class="hint">
+      文法に関する質問やお題を入力すると、AIが出題形式の異なる練習問題を3問
+      (選択問題・誤り訂正問題・記述式など)作成します。
+    </p>
+    <textarea id="ai-ask-input" rows="4" spellcheck="false"
+placeholder="例: patience と patient の使い分けを教えて"></textarea>
+    <button type="button" id="ai-ask-generate" class="primary">AIに質問して3問生成</button>
+    <p id="ai-ask-generate-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card">
+    <h2>② 生成結果 <span id="ai-ask-stock-count" class="count"></span></h2>
+    <p class="hint">
+      生成したカードはこのブラウザに保存され、再訪しても残ります。
+      同じ質問を複数回試した場合は重複として警告表示されます。
+    </p>
+    <div id="ai-ask-stock-empty" class="empty">まだカードがありません。</div>
+    <ul id="ai-ask-stock-list" class="stock"></ul>
+    <div class="row">
+      <button type="button" id="ai-ask-delete-selected">選択項目を削除</button>
+      <button type="button" id="ai-ask-clear-stock" class="danger">すべて削除</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>③ Ankiに取り込む</h2>
+    <p class="hint">
+      .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
+      同じ問題(同じ質問から生成された同じ番目のカード)は既存のものが更新されるだけなので、
+      学習履歴は失われません。
+    </p>
+    <button type="button" id="ai-ask-export" class="primary">.apkg をダウンロード</button>
+    <p id="ai-ask-export-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+</div>
+
+<!-- カードプレビュー(全タブ共通) -->
 <dialog id="preview-dialog">
   <div class="dialog-head">
     <strong id="preview-title">プレビュー</strong>

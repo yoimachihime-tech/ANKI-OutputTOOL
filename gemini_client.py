@@ -44,6 +44,37 @@ GEMINI_ENDPOINT_TMPL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 
+# プロンプトはWeb版(docs/)と共有するため外部ファイルに切り出してある
+# (2026-07-28、片桐の合意により実施)。プロンプトを改善したときに、
+# デスクトップ版とWeb版のどちらか片方だけ直して不一致になる事故を防ぐのが目的。
+#
+# 置き場所を`docs/shared/`にしているのは、GitHub Pagesが`docs/`配下しか
+# 配信しないため。リポジトリ直下の`prompts/`に置くとWeb版から`fetch()`できない。
+#   - Python側: _load_shared_prompt()が`open()`で読む
+#   - Web側   : `fetch('./shared/xxx.txt')`で読む
+#
+# プレースホルダは`str.format()`ではなく`{{name}}`形式の単純置換にしてある。
+# format()だとプロンプト内のJSON例の波括弧を`{{`にエスケープする必要があり、
+# JS側と文面が一致しなくなるため(共有ファイルの意味が薄れる)。
+SHARED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "shared")
+
+
+def _load_shared_prompt(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        raise GeminiClientError(
+            f"共有プロンプトファイルを読み込めませんでした: {path}\n{e}"
+        ) from e
+
+
+def _fill_placeholders(template: str, **values) -> str:
+    """`{{name}}`形式のプレースホルダを置換する(Web版のJSと同じ方式)。"""
+    for name, value in values.items():
+        template = template.replace("{{" + name + "}}", str(value))
+    return template
+
 # 429(レート制限/無料枠の上限超過)時のリトライ回数。tts_core.call_google_tts
 # の3回リトライと同じ考え方(2026-07-27追加)。無料枠は「1日あたり」の上限
 # であることが多く、リトライしても解決しない場合があるため、無限リトライは
@@ -298,77 +329,9 @@ except ImportError:
     GRAMMAR_MULTI_CANON_AVAILABLE = False
 
 
-_GRAMMAR_MULTI_PROMPT = """あなたは英文法学習カードの作成アシスタントです。
-以下の質問について、学習者の理解を深めるための練習問題を3問、
-独立したノートとして作成してください(1つの質問に対して複数の練習問題を
-作る場合も、1ノートに複数の出題形式を詰め込むのではなく、必ず独立した
-ノートを複数作成すること)。
-
-質問: {question}
-
-【出題ルールを厳守】
-1. 3問は出題形式を分散させ、同じ形式を繰り返さないこと。原則として以下の3形式:
-   (1) 選択問題: choicesにA/B/Cの3択を入れる。1つが正解、2つは誤答とし、
-       whynotに各誤答がなぜ誤りかを日本語で書く。
-   (2) 誤り訂正問題: choicesは空配列。questionに誤りを含む英文を提示し、
-       訂正させる問題文にする。
-   (3) 記述式・書き換え問題: choicesは空配列。2文や状況を与えて1文に
-       まとめさせる、または指定ニュアンスを含む文を組み立てさせる問題。
-   上記に限らず、その都度ふさわしい別形式があれば入れ替えてよい
-   (例: 空所補充の記述式など)。ただし3問とも同じ形式にはしないこと。
-2. 完全な日本語→英語の全文翻訳問題(パラフレーズのリスクがあるため)は禁止。
-   多肢選択の穴埋め・誤り訂正形式を優先すること。
-3. patternフィールドには出題形式のラベルのみを入れる
-   (例: "選択問題", "誤り訂正問題", "記述式・書き換え問題")。
-   文法項目名や正解のヒントになる語は絶対に入れないこと。
-4. questionフィールドの本文も、選択肢が示される前に正解を示唆・特定できる
-   書き方をしないこと。
-5. answerは正解の英文(または訂正後の英文・組み立てた英文)を1つ。
-6. examplesは、そのポイントを使った例文を1〜2個(英文と日本語訳のペア)。
-   不要なら空配列でよい。
-7. whyには、正解の理由・文法解説を日本語で。
-8. whynotは選択問題の場合のみ、各誤答について
-   {{"opt": "A", "reason": "..."}} 形式のオブジェクトの配列。
-   選択問題以外では空配列にすること。
-9. choicesは選択問題の場合のみ {{"opt": "A", "text": "..."}} 形式の
-   オブジェクトの配列(3択)。選択問題以外では空配列にすること。
-10. correct_optは選択問題の場合のみ、正解の選択肢のopt(例: "B")を
-    入れること。選択問題以外では空文字""にすること。
-
-以下のJSON形式で、JSON以外の文字を含めずに出力してください(必ず3要素の配列):
-[
-  {{
-    "pattern": "選択問題",
-    "question": "...",
-    "choices": [{{"opt": "A", "text": "..."}}, {{"opt": "B", "text": "..."}}, {{"opt": "C", "text": "..."}}],
-    "answer": "...",
-    "correct_opt": "B",
-    "examples": [["English sentence.", "日本語訳。"]],
-    "why": "...",
-    "whynot": [{{"opt": "B", "reason": "..."}}, {{"opt": "C", "reason": "..."}}]
-  }},
-  {{
-    "pattern": "誤り訂正問題",
-    "question": "...(誤りを含む英文を提示)",
-    "choices": [],
-    "answer": "...",
-    "correct_opt": "",
-    "examples": [],
-    "why": "...",
-    "whynot": []
-  }},
-  {{
-    "pattern": "記述式・書き換え問題",
-    "question": "...",
-    "choices": [],
-    "answer": "...",
-    "correct_opt": "",
-    "examples": [],
-    "why": "...",
-    "whynot": []
-  }}
-]
-"""
+# プロンプトはWeb版と共有するため外部ファイルに切り出してある
+# (2026-07-28、単語カードと同じ方式。docs/shared/grammar_multi_prompt.txt)。
+GRAMMAR_MULTI_PROMPT_PATH = os.path.join(SHARED_DIR, "grammar_multi_prompt.txt")
 
 
 def _extract_json_array(text: str) -> list:
@@ -450,7 +413,7 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
             "build_grammar_multi_v1_updated.py が見つからないか、"
             "genankiがインストールされていません。"
         )
-    prompt = _GRAMMAR_MULTI_PROMPT.format(question=question)
+    prompt = _fill_placeholders(_load_shared_prompt(GRAMMAR_MULTI_PROMPT_PATH), question=question)
     text = call_gemini(prompt, api_key, model)
     parsed = _extract_json_array(text)
     if not parsed:
@@ -538,37 +501,8 @@ def generate_shuujuku_item_from_question(question: str, api_key: str, model: str
     )
 
 
-# 単語カード生成プロンプトは、Web版と共有するため外部ファイルに切り出してある
-# (2026-07-28、片桐の合意により実施)。プロンプトを改善したときに、
-# デスクトップ版とWeb版のどちらか片方だけ直して不一致になる事故を防ぐのが目的。
-#
-# 置き場所を`docs/shared/`にしているのは、GitHub Pagesが`docs/`配下しか
-# 配信しないため。リポジトリ直下の`prompts/`に置くとWeb版から`fetch()`できない。
-#   - Python側: 下の_load_shared_prompt()が`open()`で読む
-#   - Web側   : `fetch('./shared/word_card_prompt.txt')`で読む
-#
-# プレースホルダは`str.format()`ではなく`{{word}}`形式の単純置換にしてある。
-# format()だとプロンプト内のJSON例の波括弧を`{{`にエスケープする必要があり、
-# JS側と文面が一致しなくなるため(共有ファイルの意味が薄れる)。
-SHARED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "shared")
+# 単語カード生成プロンプトも同じ方式で共有する。
 WORD_PROMPT_PATH = os.path.join(SHARED_DIR, "word_card_prompt.txt")
-
-
-def _load_shared_prompt(path: str) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError as e:
-        raise GeminiClientError(
-            f"共有プロンプトファイルを読み込めませんでした: {path}\n{e}"
-        ) from e
-
-
-def _fill_placeholders(template: str, **values) -> str:
-    """`{{name}}`形式のプレースホルダを置換する(Web版のJSと同じ方式)。"""
-    for name, value in values.items():
-        template = template.replace("{{" + name + "}}", str(value))
-    return template
 
 
 def generate_vocab_card_from_word(word: str, context_sentence: str, api_key: str, model: str) -> dict:

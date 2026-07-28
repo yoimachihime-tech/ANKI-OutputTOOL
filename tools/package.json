@@ -5,8 +5,9 @@
   "description": "Web版(docs/)が生成するapkgが、デスクトップ版(genanki)の出力と一致することを検証するためのテスト用パッケージ。アプリ本体はCDNから読み込むため、この依存関係は検証時にしか使わない。",
   "scripts": {
     "verify": "node verify_web_parity.mjs",
+    "verify:grammar-multi": "node verify_grammar_multi_parity.mjs",
     "test:ui": "node test_web_ui.mjs",
-    "test": "node verify_web_parity.mjs && node test_web_ui.mjs"
+    "test": "node verify_web_parity.mjs && node verify_grammar_multi_parity.mjs && node test_web_ui.mjs"
   },
   "dependencies": {
     "jszip": "3.10.1",

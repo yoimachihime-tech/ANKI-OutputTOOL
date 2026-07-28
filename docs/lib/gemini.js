@@ -178,6 +178,17 @@ export function extractJson(text) {
   }
 }
 
+/** 応答から JSON 配列を取り出す(gemini_client._extract_json_array と同じ)。 */
+export function extractJsonArray(text) {
+  const fence = text.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+  const candidate = fence ? fence[1] : text.trim();
+  try {
+    return JSON.parse(candidate);
+  } catch (e) {
+    throw new GeminiError(`Gemini応答をJSON配列として解析できませんでした: ${text.slice(0, 300)}`);
+  }
+}
+
 /** `{{name}}` 形式のプレースホルダを置換する(gemini_client._fill_placeholders と同じ)。 */
 export function fillPlaceholders(template, values) {
   let out = template;
@@ -209,6 +220,118 @@ export async function generateVocabCard({ word, contextSentence, apiKey, model, 
     note: parsed.note || '',
     context_sentence: (contextSentence || '').trim(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Grammar Multi (文法・複数出題形式) — 「AIに質問」タブ
+// gemini_client.py の同名関数群(_format_question_html /
+// _prefix_answer_with_correct_opt / generate_grammar_multi_items_from_question)
+// と処理内容を一致させてある。HTMLヘルパー(choice/whynotItem/exampleEn/
+// exampleJa)は build_grammar_multi_v1_updated.py の choice()/whynot_item()/
+// example_en()/example_ja() と同一の出力になるようにしている。
+// ---------------------------------------------------------------------------
+
+function gmChoice(opt, text) {
+  return `<div class="choice">(${opt}) ${text}</div>`;
+}
+
+function gmWhynotItem(opt, reason) {
+  return `<div class="whynot-item"><span class="opt">(${opt})</span> ${reason}</div>`;
+}
+
+function gmExampleEn(pairs) {
+  return pairs.map(([en], i) => `<span class="ex-num">Ex${i + 1}.</span> ${en}`).join('<br>');
+}
+
+function gmExampleJa(pairs) {
+  return pairs.map(([, ja]) => `└ ${ja}`).join('<br>');
+}
+
+// 日本語の指示文(「〜しなさい。」等)の直後に、改行なしで引用符付き英文が
+// 続く箇所を検出する。Grammar MultiのQuestionフィールドはGeminiが
+// 「指示文+英文」を1つの文字列として返すため、そのままでは
+// 「選びなさい。'She showed...'」のように改行なしで並んでしまい読みにくい
+// (Ankiフィールドはmustacheで生HTML展開されるため、改行させるには明示的な
+// <br>が必要)。
+const JA_EN_BOUNDARY_RE = /([。！？])\s*(?=["'“”‘’A-Za-z])/g;
+// 英文側が複数文にわたる場合、文末(.!?)+空白+次の文の頭(引用符/大文字)の
+// 境目でも改行する。
+const EN_SENTENCE_BREAK_RE = /(?<=[.!?])\s+(?=["'A-Z])/g;
+
+/** 日本語の指示文と英文の間、英文が複数文ある場合は文と文の間に<br>を挿入する。 */
+function formatQuestionHtml(text) {
+  if (!text) return text;
+  let out = text.replace(JA_EN_BOUNDARY_RE, '$1<br><br>');
+  // 既存の<br>を境に分割し、<br>以外の断片だけに文区切りの<br>を適用する
+  // (挿入済みの<br><br>自体を誤って再分割しないため)。
+  return out
+    .split(/(<br\s*\/?>)/i)
+    .map((part) => (/^<br\s*\/?>$/i.test(part) ? part : part.replace(EN_SENTENCE_BREAK_RE, '<br>')))
+    .join('');
+}
+
+/**
+ * 選択問題(choicesが空でない)の場合、Answerフィールドの先頭に正解の
+ * 選択肢ラベル(例: "(B) ")を付ける。誤り訂正・記述式問題(choicesが空)の
+ * 場合はanswerをそのまま返す。
+ *
+ * correctOpt(Geminiが返す正解のopt)がchoicesの実際のoptと一致しない・
+ * 空文字などの場合は、answerとchoicesの各textを突き合わせて(前後空白・
+ * 大小文字を無視)一致するものを探すフォールバックを行う。それでも
+ * 特定できなければ記号無しのまま返す(誤った記号を付けるより安全)。
+ */
+function prefixAnswerWithCorrectOpt(answer, choices, correctOpt) {
+  if (!choices || choices.length === 0 || !answer) return answer;
+  const validOpts = new Set(
+    choices.filter((c) => c.opt).map((c) => String(c.opt).trim().toUpperCase()),
+  );
+  let opt = String(correctOpt || '').trim().toUpperCase();
+  if (!validOpts.has(opt)) {
+    const normalizedAnswer = answer.trim().toLowerCase();
+    opt = '';
+    for (const c of choices) {
+      if (String(c.text || '').trim().toLowerCase() === normalizedAnswer) {
+        opt = String(c.opt || '').trim().toUpperCase();
+        break;
+      }
+    }
+  }
+  return opt ? `(${opt}) ${answer}` : answer;
+}
+
+/**
+ * 質問文から、Grammar Multi(文法・複数出題形式)の独立ノート3件分の
+ * item を生成する(gemini_client.generate_grammar_multi_items_from_question
+ * に対応)。戻り値の各itemはdocs/shared/card_defs.jsonの"grammar_multi"定義の
+ * fields(pattern/question/choices/answer/example/example_ja/why/whynot)に
+ * 加え、guid計算・重複検出用のtopic_key/note_indexを持つ。
+ */
+export async function generateGrammarMultiItems({ question, apiKey, model, promptTemplate }) {
+  const prompt = fillPlaceholders(promptTemplate, { question });
+  const text = await callGemini(prompt, apiKey, model);
+  const parsed = extractJsonArray(text);
+  if (!parsed || parsed.length === 0) {
+    throw new GeminiError(`Gemini応答が空、または配列ではありません: ${text.slice(0, 300)}`);
+  }
+
+  const topicKey = question.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  return parsed.map((note, i) => {
+    const choices = note.choices || [];
+    const whynot = note.whynot || [];
+    const examples = (note.examples || []).map((ex) => [ex[0], ex[1]]);
+    return {
+      pattern: note.pattern || '',
+      question: formatQuestionHtml(note.question || ''),
+      choices: choices.map((c) => gmChoice(c.opt || '', c.text || '')).join(''),
+      answer: prefixAnswerWithCorrectOpt(note.answer || '', choices, note.correct_opt || ''),
+      example: examples.length ? gmExampleEn(examples) : '',
+      example_ja: examples.length ? gmExampleJa(examples) : '',
+      why: note.why || '',
+      whynot: whynot.map((w) => gmWhynotItem(w.opt || '', w.reason || '')).join(''),
+      topic_key: topicKey,
+      note_index: i,
+    };
+  });
 }
 
 /** generateContent に対応しているモデル名の一覧を取得する。 */

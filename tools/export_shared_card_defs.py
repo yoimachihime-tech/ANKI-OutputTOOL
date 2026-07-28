@@ -39,6 +39,8 @@ import genanki.apkg_schema  # noqa: E402
 
 import card_def_builder  # noqa: E402
 import card_defs  # noqa: E402
+import build_grammar_multi_v1_updated as grammar_multi_canon  # noqa: E402
+import grammar_multi_builder  # noqa: E402
 
 SHARED_DIR = os.path.join(BASE_DIR, "docs", "shared")
 OUT_PATH = os.path.join(SHARED_DIR, "card_defs.json")
@@ -63,6 +65,56 @@ def build_anki_model_json(card_def: dict) -> dict:
     return model.to_json(0, card_def["deck_id"])
 
 
+def build_grammar_multi_def() -> dict:
+    """「Grammar Multi (文法・複数出題形式)」の共有定義を組み立てる。
+
+    word(card_defs.json + card_def_builder)と違い、grammar_multiはPython側でも
+    汎用ビルダーを経由せず、build_grammar_multi_v1_updated.py(正典)の
+    genanki.Modelと、grammar_multi_builder.py(deck_id/deck_name・guid計算)を
+    直接使う独立した実装になっている(CLAUDE.mdの「Grammar Multiカード生成
+    との関係」参照)。そのためこの関数もcard_defs.json経由ではなく、
+    2つのモジュールから直接組み立てる。
+
+    guidはword等の「1フィールドの正規化値」方式ではなく、
+    genanki.guid_for("grammar-multi-v1", topic_key, str(note_index))という
+    複合キー方式(grammar_multi_builder.build_guid()参照)。Web版
+    (docs/lib/gemini.js)もitemにtopic_key/note_indexを持たせ、同じguidを
+    計算する。
+    """
+    model = grammar_multi_canon.GRAMMAR_MODEL
+    return {
+        "key": "grammar_multi",
+        "label": "AIに質問(Grammar Multi)",
+        "notetype_name": model.name,
+        "model_id": model.model_id,
+        "deck_id": grammar_multi_builder.DECK_ID,
+        "deck_name": grammar_multi_builder.DECK_NAME,
+        # フィールド順はgrammar_multi_builder.build_deck()のfields=[...]と
+        # 一致させること(Ankiのnotetypeフィールド順そのもの)。
+        "fields": [
+            {"anki_name": "Pattern", "item_key": "pattern"},
+            {"anki_name": "Question", "item_key": "question"},
+            {"anki_name": "Choices", "item_key": "choices"},
+            {"anki_name": "Answer", "item_key": "answer"},
+            {"anki_name": "Example", "item_key": "example"},
+            {"anki_name": "ExampleJA", "item_key": "example_ja"},
+            {"anki_name": "Why", "item_key": "why"},
+            {"anki_name": "WhyNot", "item_key": "whynot"},
+        ],
+        # word用のdedup_key方式(genanki.guid_for(key, 正規化した1フィールド))
+        # では表現できないため、guidの組み立て方をWeb側へ明示的に伝える。
+        "guid_scheme": {
+            "type": "compound",
+            "prefix": "grammar-multi-v1",
+            "item_keys": ["topic_key", "note_index"],
+        },
+        # grammar_multi_builder.build_deck()はdue=itemsのリスト内インデックス
+        # を使う(word/card_def_builderのdue=0固定とは異なる)。
+        "due_scheme": "index",
+        "anki_model": model.to_json(0, grammar_multi_builder.DECK_ID),
+    }
+
+
 def main() -> int:
     exported = {}
     for key in EXPORT_KEYS:
@@ -79,9 +131,13 @@ def main() -> int:
             "deck_name": card_def["deck_name"],
             "dedup_key": card_def["dedup_key"],
             "fields": card_def["fields"],
+            "guid_scheme": {"type": "dedup_key", "prefix": card_def["key"], "dedup_key": card_def["dedup_key"]},
+            "due_scheme": "fixed_zero",
             # Ankiのcol.modelsへそのまま入れるJSON(genanki生成、上記docstring参照)
             "anki_model": build_anki_model_json(card_def),
         }
+
+    exported["grammar_multi"] = build_grammar_multi_def()
 
     os.makedirs(SHARED_DIR, exist_ok=True)
 

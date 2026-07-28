@@ -1277,8 +1277,8 @@ example_ja/example_blank/noteの7キーを受け取る。
 
 ## 次にやること(2026-07-28時点の引き継ぎ)
 
-Web版フェーズ1の**単語カード生成が一通し完成し、pushまで完了している**
-(コミット`82930c3`、および`b240ad8`)。次のセッションはここから再開する。
+Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)が一通し完成し、
+pushまで完了している**。次のセッションはここから再開する。
 
 ### 片桐側で完了済み
 
@@ -1286,22 +1286,24 @@ Web版フェーズ1の**単語カード生成が一通し完成し、pushまで�
   「アプリケーションの制限」「APIの制限」の設定
 - Cloud Text-to-Speech の割り当て(All requests per minute /
   Chirp3-HD voices per minute)の引き下げ
+- 単語カード生成の実機動作確認(生成→apkg出力→Ankiへの取り込みまで確認済み)
 
 ### 未実施(次にやること)
 
-1. **Web版の実機動作確認**(最優先)。`cd docs && python -m http.server 8000`
-   で配信し、⚙設定に開発用Gemini APIキーを入れて
-   「単語入力→AI生成→プレビュー→.apkgダウンロード」を通す。
-   **`file://`で直接開くと必ず失敗する**(リファラーが送られないため)。
-   生成した.apkgを実際にAnkiへ取り込み、既存カードが重複せず更新されるかまで
-   確認できると理想的。
+1. **AIに質問(Grammar Multi)の実機動作確認**(最優先。単語は片桐が確認済み
+   だが、AIに質問タブは検証ツール上でのみ確認できている状態)。
+   `cd docs && python -m http.server 8000`で配信し、⚙設定に開発用Gemini
+   APIキーを入れて「質問入力→AI生成(3問)→プレビュー→.apkgダウンロード→
+   Anki取り込み」を通す。
 2. **GitHub Pagesの有効化**(公開する場合)。Settings → Pages →
    Source「Deploy from a branch」、Branch `master` / `/docs`。
    公開後は本番用APIキー(ウェブサイト制限あり)に差し替える。
 3. その後の拡張候補(どれを先にやるかは片桐に確認すること):
-   - 習熟用(音読)・AIに質問(Grammar Multi)のWeb版対応。どちらも
-     `card_defs.json`への定義移行が前提になる(現状は`build_*.py`側にしか
-     定義が無く、`card_def_builder`の汎用パスに載っていない)
+   - 習熟用(音読)のWeb版対応。`card_defs.json`(または`build_shuujuku_v1.py`
+     を直接読む独立実装)への定義移行が前提になる(現状は`build_*.py`側にしか
+     定義が無く、`card_def_builder`の汎用パスに載っていない)。AIに質問
+     (grammar_multi)を追加した際に導入した`guid_scheme`/`due_scheme`の
+     仕組み(下記「Web版フェーズ1の実装状況」参照)がそのまま使えるはず
    - Web版へのTTS音声の埋め込み。`docs/lib/apkg.js`の`buildApkg()`は
      既に`media`引数を受け取れるようにしてあるので、Google Cloud TTSを
      呼んで`Map<ファイル名, Uint8Array>`を渡せばよい
@@ -1310,12 +1312,17 @@ Web版フェーズ1の**単語カード生成が一通し完成し、pushまで�
 
 ### 引き継ぎ時の注意
 
-- **`docs/`配下を変更したら必ず`cd tools && npm run verify`を通すこと**
+- **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
   (初回のみ`npm install`)。guidやフィールドがズレると、再インポート時に
   既存カードが更新されず重複が量産され、学習履歴が壊れる。
 - Cloud TTSの割り当ては**すべて「1分あたり」**で、総額の上限にはならない。
   「一定額で自動停止」を実現するには予算アラート+Cloud Functionで課金自体を
   切る構成が必要(未実施)。現状は予算アラートで気付く運用。
+- Gemini APIキーが「前払いクレジット(prepayment credits)」切れで429を
+  返すことがある(片桐の環境で実際に発生)。レート制限とは違い待っても
+  回復しない。デスクトップ版(`gemini_client._is_billing_error`)・Web版
+  (`docs/lib/gemini.js`の`isBillingError`)の両方で判定済みで、専用の
+  エラーメッセージ(AI Studioでのクレジット追加を促す)を表示する。
 
 ## 今後の拡張候補(未着手)
 
@@ -1361,59 +1368,97 @@ Web版フェーズ1の**単語カード生成が一通し完成し、pushまで�
     切り出し、Python側は`open()`で、Web側は`fetch()`で同じファイルを読む。
     プロンプトを改善したときに、片方だけ直して不一致になる事故を防ぐため。
 
-### Web版フェーズ1の実装状況(2026-07-28、単語カードの一通しが完成)
+### Web版フェーズ1の実装状況(2026-07-28、単語+AIに質問が完成)
 
 `docs/`配下に静的Webページとして実装済み。詳細は`docs/README.md`を参照。
-**単語入力→AI生成→プレビュー→apkgダウンロード**までブラウザだけで完結し、
-バックエンドは不要。
+**単語入力→AI生成→プレビュー→apkgダウンロード**、**AIに質問(3問生成)→
+プレビュー→apkgダウンロード**の両方がブラウザだけで完結し、バックエンドは
+不要。画面はタブ切り替え式(単語 / AIに質問。今後 習熟用・TTS試聴 を追加予定)。
 
 ```text
 docs/
-  index.html / style.css / app.js   画面・UI(ストックはlocalStorage)
-  lib/gemini.js                     Gemini呼び出し(gemini_client.pyのWeb版)
-  lib/guid.js                       genanki.guid_for()と同一のguid生成
-  lib/apkg.js                       .apkgの組み立て(sql.js + JSZip)
+  index.html / style.css / app.js   画面・UI(タブ切替、ストックはlocalStorage)
+  lib/gemini.js                     Gemini呼び出し(gemini_client.pyのWeb版)。
+                                     単語カード生成に加え、Grammar Multi
+                                     (3問生成)の後処理(改行整形・正解記号
+                                     付与・HTML化)も持つ
+  lib/guid.js                       genanki.guid_for()と同一のguid生成。
+                                     card_def.guid_scheme(dedup_key方式/
+                                     compound方式)を読んで計算方法を切り替える
+                                     (下記参照)
+  lib/apkg.js                       .apkgの組み立て(sql.js + JSZip)。
+                                     card_def.due_scheme(fixed_zero/index)も
+                                     データ駆動にしてある
   shared/                           デスクトップ版と共有する資産
 tools/
-  export_shared_card_defs.py        docs/shared/*.json を生成
+  export_shared_card_defs.py        docs/shared/*.json を生成(word/grammar_multi)
   dump_python_apkg.py               検証用にPython版のapkg中身を出力
-  verify_web_parity.mjs             両者の一致を検証(npm run verify)
+                                     (--card-def word|grammar_multi)
+  verify_web_parity.mjs             両者のapkgが一致するか検証(npm run verify)
+  verify_grammar_multi_parity.mjs   Grammar Multiの後処理(改行整形・正解記号)が
+                                     一致するか検証(npm run verify:grammar-multi)
+  test_web_ui.mjs                   jsdom上でUI操作を通しで検証(npm run test:ui)
 ```
 
 - **共有資産を`docs/shared/`に置いている理由**: GitHub Pagesは`docs/`配下
   しか配信しないため。リポジトリ直下の`prompts/`等に置くとWeb版から
-  `fetch()`できない。プロンプト(`word_card_prompt.txt`)はPython側の
-  `gemini_client._load_shared_prompt()`も同じファイルを読む。
-  プレースホルダは`str.format()`ではなく`{{word}}`形式の単純置換にしてある
-  (format()だとJSON例の波括弧を`{{`にエスケープする必要があり、JS側と
-  文面が一致しなくなるため)。
+  `fetch()`できない。プロンプト(`word_card_prompt.txt`/
+  `grammar_multi_prompt.txt`)はPython側の`gemini_client._load_shared_prompt()`
+  も同じファイルを読む。プレースホルダは`str.format()`ではなく`{{word}}`
+  形式の単純置換にしてある(format()だとJSON例の波括弧を`{{`にエスケープ
+  する必要があり、JS側と文面が一致しなくなるため)。
 - **`docs/shared/card_defs.json` / `anki_schema.json`は自動生成物**。
   ⚙設定「カード定義」タブでノートタイプを編集したら
   `python tools/export_shared_card_defs.py`を実行して再生成すること
   (でないとWeb版とデスクトップ版でカードの見た目がズレる)。
   ノートタイプJSON(`req`やfldsのord/font等を含む)はgenankiに組み立てさせた
   結果をそのまま運ぶ設計で、JS側では再構築しない。
+- **guid/dueの計算方法をカード種別ごとにハードコードせず、共有JSON側に
+  記述させる設計(2026-07-28、AIに質問追加時に導入)**: word(単語)は
+  `card_def_builder.build_guid()`(1フィールドの正規化値からguid、
+  due常に0)、grammar_multi(AIに質問)は`grammar_multi_builder.build_guid()`
+  (`topic_key`+`note_index`の複合キーからguid、dueはitemsのリスト内
+  インデックス)と、Python側の生成経路自体がカード種別ごとに異なる
+  (grammar_multiは`card_defs.json`を経由しない独立実装、
+  「Grammar Multiカード生成との関係」の項を参照)。この違いをWeb側の
+  `lib/guid.js`/`lib/apkg.js`が種別ごとに分岐するのではなく、
+  `card_def.guid_scheme`(`{"type": "dedup_key", ...}` または
+  `{"type": "compound", ...}`)・`card_def.due_scheme`
+  (`"fixed_zero"`または`"index"`)という形で`tools/export_shared_card_defs.py`
+  が共有JSONに埋め込み、Web側はそれを読んで計算する。新しいカード種別
+  (習熟用等)を追加する際も、この2ファイルを直接編集する必要は基本的にない。
 - **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
-  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は2本:
+  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は3本:
   - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
-    (genanki)とWeb版それぞれでapkgを生成し、guid・フィールド・カード構成・
-    ノートタイプ定義を突き合わせる。実装中に実際に2件の差異(cards.dueの
-    採番、models.modの扱い)を検出しており、これを省くと気付かないまま
-    学習履歴を壊す変更が入る。
+    (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multiの両方)、
+    guid・フィールド・カード構成・ノートタイプ定義を突き合わせる。実装中に
+    実際に複数の差異(cards.dueの採番、models.modの扱い)を検出しており、
+    これを省くと気付かないまま学習履歴を壊す変更が入る。
+  - `npm run verify:grammar-multi`(`verify_grammar_multi_parity.mjs`):
+    Grammar Multi固有の後処理(`_format_question_html`相当の改行整形、
+    `_prefix_answer_with_correct_opt`相当の正解記号付与、choices/whynot/
+    exampleのHTML化)が、固定した生のGemini応答JSONに対してPython版と
+    一致するかを検証する。
   - `npm run test:ui`(`test_web_ui.mjs`): jsdom上で`index.html`+`app.js`を
-    実際に動かし、単語入力→AI生成→一覧→プレビュー→apkg出力→削除の通し
-    動作を確認する。**Gemini APIはfetchをモックするのでAPIキー・割り当てを
-    消費しない**(その代わり、実際のGeminiが期待どおりのJSONを返すかは
-    このテストの対象外で、実機確認が必要)。
+    実際に動かし、単語タブ・AIに質問タブそれぞれで 生成→一覧→プレビュー→
+    apkg出力→削除 の通し動作を確認する(タブ切り替え自体も検証する)。
+    **Gemini APIはfetchをモックするのでAPIキー・割り当てを消費しない**
+    (その代わり、実際のGeminiが期待どおりのJSONを返すかはこのテストの
+    対象外で、実機確認が必要)。生成中のローディング表示(スピナー)は
+    fetchモックの応答が速すぎるため、`.click()`が同期的に実行する
+    最初のawait直前(showLoading呼び出し)の時点、つまりclick()直後に
+    確認する必要がある(sleepを挟むと生成そのものが終わってしまう)。
     sql.jsのwasmはブラウザではCDNから読むが、Nodeではローカルパスとして
     解決しようとして失敗するため、テスト側で`locateFile`を無視させている。
 - 実装時に判明した注意点:
   - `card_def_builder.build_deck_from_def()`は`due`を指定しないため、
-    全カードの`due`は0になる。Web版もこれに合わせている。
+    全カードの`due`は0になる(due_scheme: "fixed_zero")。
+  - `grammar_multi_builder.build_deck()`は`due`にitemsのリスト内インデックス
+    を使う(due_scheme: "index")。
   - `models.mod`はgenankiが書き出し時刻で埋める値。共有JSONには固定値
     (0)で入っているので、apkg生成時に現在時刻で上書きしている。
-  - 日本語Windowsでは標準入出力の既定がcp932になるため、
-    `verify_web_parity.mjs`はPython呼び出し時に`PYTHONUTF8=1`を渡している。
+  - 日本語Windowsでは標準入出力の既定がcp932になるため、検証スクリプトは
+    いずれもPython呼び出し時に`PYTHONUTF8=1`を渡している。
 
 ### ブラウザだけでのapkg生成(2026-07-28に実現可能と確認)
 

@@ -1,7 +1,8 @@
 // tools/test_web_ui.mjs
 // ---------------------------------------------------------------------------
 // docs/index.html + app.js を jsdom 上で実際に動かし、画面操作の一通り
-//   単語入力 → AI生成 → ストック表示 → プレビュー → .apkg 出力
+//   [単語タブ]     単語入力 → AI生成 → ストック表示 → プレビュー → .apkg 出力 → 削除
+//   [AIに質問タブ] 質問入力 → AI生成(3問) → ストック表示 → プレビュー → .apkg 出力 → 削除
 // が動くことを確認する。
 //
 // 【Gemini API は呼ばない】
@@ -28,7 +29,7 @@ const fail = (m) => { console.error(`  ❌ ${m}`); failures += 1; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // AI が返す想定の応答(実際の Gemini の出力形式に合わせている)
-const FAKE_CARD = {
+const FAKE_WORD_CARD = {
   reading: '/<b>ˈsleɪ</b>tɪd/',
   pos: 'adj. (Past Participle)',
   meaning: '予定されている',
@@ -37,6 +38,31 @@ const FAKE_CARD = {
   example_blank: 'The update is ------- for release.',
   note: '【語源】slate に由来する。',
 };
+
+const FAKE_GRAMMAR_MULTI_NOTES = [
+  {
+    pattern: '選択問題',
+    question: "空所に入る最も適切な語を選択肢から選びなさい。'She showed great ___.'",
+    choices: [{ opt: 'A', text: 'patient' }, { opt: 'B', text: 'patience' }, { opt: 'C', text: 'patiently' }],
+    answer: 'patience',
+    correct_opt: 'B',
+    examples: [['She has a lot of patience.', '彼女は忍耐力がある。']],
+    why: '空所には名詞が入ります。',
+    whynot: [{ opt: 'A', reason: 'patient は形容詞。' }, { opt: 'C', reason: 'patiently は副詞。' }],
+  },
+  {
+    pattern: '誤り訂正問題',
+    question: "次の英文を訂正してください。'I go to school yesterday.'",
+    choices: [], answer: 'I went to school yesterday.', correct_opt: '',
+    examples: [], why: '過去の出来事なので過去形にします。', whynot: [],
+  },
+  {
+    pattern: '記述式・書き換え問題',
+    question: '次の2文を1文にまとめてください。',
+    choices: [], answer: 'It was raining, but we went out anyway.', correct_opt: '',
+    examples: [], why: '逆接のbutで結びます。', whynot: [],
+  },
+];
 
 console.log('Web版UIの通し動作テスト(jsdom / Gemini APIはモック)\n');
 
@@ -80,6 +106,11 @@ dlg.showModal = () => { dialogOpened = true; };
 dlg.close = () => { dialogOpened = false; };
 
 // --- fetch のモック(共有アセットはローカルから、Gemini は固定応答) ---
+// 質問文に「選択問題」を含む場合はGrammar Multiの3問応答、それ以外は単語
+// カードの応答を返す(呼び出し元のプロンプトを見て判別するのではなく、
+// 単語タブ/AIに質問タブでそれぞれ別のテスト区間から呼ぶため、フラグで
+// 切り替える方が単純で確実)。
+let geminiMode = 'word';
 let geminiCalls = 0;
 globalThis.fetch = async (url) => {
   const u = String(url);
@@ -90,12 +121,13 @@ globalThis.fetch = async (url) => {
   }
   if (u.includes('generativelanguage.googleapis.com')) {
     geminiCalls += 1;
+    const text = geminiMode === 'grammar_multi'
+      ? JSON.stringify(FAKE_GRAMMAR_MULTI_NOTES)
+      : JSON.stringify(FAKE_WORD_CARD);
     return {
       ok: true,
       status: 200,
-      json: async () => ({
-        candidates: [{ content: { parts: [{ text: JSON.stringify(FAKE_CARD) }] } }],
-      }),
+      json: async () => ({ candidates: [{ content: { parts: [{ text }] } }] }),
     };
   }
   throw new Error(`想定外のfetch: ${u}`);
@@ -119,7 +151,7 @@ await sleep(300);
 
 const $ = (id) => window.document.getElementById(id);
 
-if ($('stock-empty').hidden === false) ok('起動直後は「カードがありません」を表示');
+if ($('word-stock-empty').hidden === false) ok('起動直後は「カードがありません」を表示');
 else fail('起動直後の空表示がおかしい');
 
 // --- APIキーを入力 ---
@@ -132,37 +164,83 @@ if (localStorage.getItem('anki_tool_gemini_api_key') === 'DUMMY-KEY-FOR-TEST') {
   fail('APIキーが保存されない');
 }
 
-// --- 単語を入力して生成 ---
-console.log('\n[3] 単語入力 → AI生成');
+async function dumpApkgAndCheck(blob, { expectedNoteCount, expectedCardCount, firstFieldEquals, tmpName }) {
+  const zip = await window.JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
+  const names = Object.keys(zip.files).sort();
+  if (names.join(',') === 'collection.anki2,media') ok(`zip の中身: ${names.join(', ')}`);
+  else fail(`zip の中身が想定外: ${names}`);
+
+  const { DatabaseSync } = await import('node:sqlite');
+  const { writeFileSync, unlinkSync } = await import('node:fs');
+  const tmp = join(HERE, tmpName);
+  writeFileSync(tmp, await zip.file('collection.anki2').async('nodebuffer'));
+  try {
+    const db = new DatabaseSync(tmp);
+    const notes = db.prepare('SELECT guid, flds FROM notes ORDER BY id').all();
+    const cards = db.prepare('SELECT COUNT(*) AS n FROM cards').get();
+    if (notes.length === expectedNoteCount) ok(`apkg 内のノートが ${notes.length} 件`);
+    else fail(`apkg 内のノート数: ${notes.length}(期待:${expectedNoteCount})`);
+    if (cards.n === expectedCardCount) ok(`カードが ${cards.n} 枚`);
+    else fail(`カード枚数: ${cards.n}(期待:${expectedCardCount})`);
+    if (notes[0].flds.split('\x1f')[0] === firstFieldEquals) ok('フィールドが正しい順で格納されている');
+    else fail(`フィールドの並びが想定外: ${notes[0].flds.split('\x1f')[0]}`);
+    db.close();
+  } finally {
+    try { unlinkSync(tmp); } catch { /* 残っても検証結果に影響しない */ }
+  }
+}
+
+// ===========================================================================
+// 単語タブ
+// ===========================================================================
+console.log('\n[3] 単語タブ: 単語入力 → AI生成');
+geminiMode = 'word';
+geminiCalls = 0;
 $('word-input').value = 'slated | The update is slated for release.\ngive up';
-$('generate').click();
+$('word-generate').click();
+
+// 生成中のローディング表示(スピナー)を確認する。fetchはモックのため即座に
+// 解決してしまうので、click()が同期的に実行する最初のawait直前
+// (showLoading呼び出し)の時点、つまりclick()直後に確認する必要がある
+// (sleepを挟むと、モックの高速な応答で生成そのものが終わってしまう)。
+if ($('word-generate-status').classList.contains('loading')) {
+  ok('生成中はローディング表示(スピナー)になる');
+} else {
+  fail('生成中にローディング表示が出ていない');
+}
+
 for (let i = 0; i < 100 && geminiCalls < 2; i += 1) await sleep(50);
 await sleep(200);
 
-if (geminiCalls === 2) ok(`2行の入力に対して Gemini を 2 回呼んだ(1件ずつ直列)`);
+if (geminiCalls === 2) ok('2行の入力に対して Gemini を 2 回呼んだ(1件ずつ直列)');
 else fail(`Gemini 呼び出し回数: ${geminiCalls}(期待:2)`);
 
-const items = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
-if (items.length === 2) ok('ストックに 2 件保存された');
-else fail(`ストック件数: ${items.length}(期待:2)`);
+if (!$('word-generate-status').classList.contains('loading')) {
+  ok('生成完了後はローディング表示が消える');
+} else {
+  fail('生成完了後もローディング表示が残っている');
+}
 
-if (items[0]?.word === 'slated' && items[1]?.word === 'give up') {
+const wordItems = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
+if (wordItems.length === 2) ok('ストックに 2 件保存された');
+else fail(`ストック件数: ${wordItems.length}(期待:2)`);
+
+if (wordItems[0]?.word === 'slated' && wordItems[1]?.word === 'give up') {
   ok('「単語 | 文脈」のパースが正しい(give up の空白も保持)');
 } else {
-  fail(`パース結果: ${JSON.stringify(items.map((i) => i.word))}`);
+  fail(`パース結果: ${JSON.stringify(wordItems.map((i) => i.word))}`);
 }
-if (items[0]?.meaning === FAKE_CARD.meaning) ok('AI応答の各フィールドが取り込まれている');
+if (wordItems[0]?.meaning === FAKE_WORD_CARD.meaning) ok('AI応答の各フィールドが取り込まれている');
 else fail('AI応答の取り込みに失敗');
 
 if ($('word-input').value === '') ok('全件成功したので入力欄がクリアされた');
 else fail('入力欄がクリアされていない');
 
-if ($('stock-list').children.length === 2) ok('一覧に 2 件描画された');
-else fail(`一覧の行数: ${$('stock-list').children.length}`);
+if ($('word-stock-list').children.length === 2) ok('一覧に 2 件描画された');
+else fail(`一覧の行数: ${$('word-stock-list').children.length}`);
 
-// --- プレビュー ---
-console.log('\n[4] カードプレビュー');
-$('stock-list').querySelector('button').click();
+console.log('\n[4] 単語タブ: カードプレビュー');
+$('word-stock-list').querySelector('button').click();
 await sleep(100);
 if (dialogOpened) {
   const srcdoc = $('preview-frame').srcdoc || '';
@@ -174,50 +252,130 @@ if (dialogOpened) {
 } else {
   fail('プレビューダイアログが開かない');
 }
+dlg.close();
 
-// --- apkg 出力 ---
-console.log('\n[5] .apkg の書き出し');
-$('export').click();
+console.log('\n[5] 単語タブ: .apkg の書き出し');
+downloaded = null;
+$('word-export').click();
 for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
-
 if (!downloaded) {
   fail('.apkg が生成されなかった');
 } else {
-  const zip = await window.JSZip.loadAsync(Buffer.from(await downloaded.arrayBuffer()));
-  const names = Object.keys(zip.files).sort();
-  if (names.join(',') === 'collection.anki2,media') ok(`zip の中身: ${names.join(', ')}`);
-  else fail(`zip の中身が想定外: ${names}`);
-
-  const { DatabaseSync } = await import('node:sqlite');
-  const { writeFileSync, unlinkSync } = await import('node:fs');
-  const tmp = join(HERE, '.uitest_tmp.anki2');
-  writeFileSync(tmp, await zip.file('collection.anki2').async('nodebuffer'));
-  try {
-    const db = new DatabaseSync(tmp);
-    const notes = db.prepare('SELECT guid, flds FROM notes ORDER BY id').all();
-    const cards = db.prepare('SELECT COUNT(*) AS n FROM cards').get();
-    if (notes.length === 2) ok('apkg 内のノートが 2 件');
-    else fail(`apkg 内のノート数: ${notes.length}`);
-    if (cards.n === 4) ok('カードが 4 枚(2ノート × テンプレート2種)');
-    else fail(`カード枚数: ${cards.n}(期待:4)`);
-    if (notes[0].flds.split('\x1f')[0] === 'slated') ok('フィールドが正しい順で格納されている');
-    else fail('フィールドの並びが想定外');
-    db.close();
-  } finally {
-    try { unlinkSync(tmp); } catch { /* 残っても検証結果に影響しない */ }
-  }
+  await dumpApkgAndCheck(downloaded, {
+    expectedNoteCount: 2,
+    expectedCardCount: 4, // 2ノート × テンプレート2種
+    firstFieldEquals: 'slated',
+    tmpName: '.uitest_word.anki2',
+  });
 }
 
-// --- 削除 ---
-console.log('\n[6] 選択削除');
-$('stock-list').querySelector('input[type="checkbox"]').checked = true;
-$('delete-selected').click();
+console.log('\n[6] 単語タブ: 選択削除');
+$('word-stock-list').querySelector('input[type="checkbox"]').checked = true;
+$('word-delete-selected').click();
 await sleep(100);
-const after = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
-if (after.length === 1 && after[0].word === 'give up') ok('選択した1件だけが削除された');
-else fail(`削除後のストック: ${JSON.stringify(after.map((i) => i.word))}`);
+const wordAfter = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
+if (wordAfter.length === 1 && wordAfter[0].word === 'give up') ok('選択した1件だけが削除された');
+else fail(`削除後のストック: ${JSON.stringify(wordAfter.map((i) => i.word))}`);
+
+// ===========================================================================
+// AIに質問タブ(Grammar Multi)
+// ===========================================================================
+console.log('\n[7] タブ切り替え: AIに質問');
+document.querySelector('[data-tab="ai_ask"]').click();
+if ($('tab-ai_ask').hidden === false && $('tab-word').hidden === true) {
+  ok('AIに質問タブに切り替わった');
+} else {
+  fail('タブ切り替えが機能していない');
+}
+
+console.log('\n[8] AIに質問タブ: 質問入力 → AI生成(3問)');
+geminiMode = 'grammar_multi';
+geminiCalls = 0;
+$('ai-ask-input').value = 'patience と patient の使い分けを教えて';
+$('ai-ask-generate').click();
+
+// click()直後(同期的に実行されるshowLoading呼び出しの直後)に確認する
+// (単語タブと同じ理由。sleepを挟むとモックの高速応答で生成が終わってしまう)。
+if ($('ai-ask-generate-status').classList.contains('loading')) {
+  ok('生成中はローディング表示(スピナー)になる');
+} else {
+  fail('生成中にローディング表示が出ていない');
+}
+
+for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
+await sleep(200);
+
+if (geminiCalls === 1) ok('1つの質問に対して Gemini を 1 回だけ呼んだ(3問まとめて1回のAPI呼び出し)');
+else fail(`Gemini 呼び出し回数: ${geminiCalls}(期待:1)`);
+
+const aiAskItems = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
+if (aiAskItems.length === 3) ok('ストックに 3 件(選択問題/誤り訂正問題/記述式)保存された');
+else fail(`ストック件数: ${aiAskItems.length}(期待:3)`);
+
+if (aiAskItems.every((it, i) => it.note_index === i && it.topic_key)) {
+  ok('topic_key・note_index が正しく付与されている(guid計算・重複検出に使う)');
+} else {
+  fail(`topic_key/note_index: ${JSON.stringify(aiAskItems.map((i) => [i.topic_key, i.note_index]))}`);
+}
+if (aiAskItems[0]?.answer === '(B) patience') {
+  ok('選択問題のAnswerに正解記号 "(B) " が付与されている');
+} else {
+  fail(`選択問題のanswer: ${JSON.stringify(aiAskItems[0]?.answer)}`);
+}
+if (aiAskItems[0]?.question.includes('<br><br>')) {
+  ok('日本語指示文と英文の間に<br><br>が挿入されている');
+} else {
+  fail(`questionの整形結果: ${JSON.stringify(aiAskItems[0]?.question)}`);
+}
+
+if ($('ai-ask-input').value === '') ok('生成成功後、質問欄がクリアされた');
+else fail('質問欄がクリアされていない');
+
+if ($('ai-ask-stock-list').children.length === 3) ok('一覧に 3 件描画された');
+else fail(`一覧の行数: ${$('ai-ask-stock-list').children.length}`);
+
+console.log('\n[9] AIに質問タブ: カードプレビュー');
+$('ai-ask-stock-list').querySelector('button').click();
+await sleep(100);
+if (dialogOpened) {
+  const srcdoc = $('preview-frame').srcdoc || '';
+  if (srcdoc.includes('patience') && srcdoc.includes('.card')) {
+    ok('実テンプレート + CSS でレンダリングされた');
+  } else {
+    fail('プレビュー内容が想定と異なる');
+  }
+} else {
+  fail('プレビューダイアログが開かない');
+}
+dlg.close();
+
+console.log('\n[10] AIに質問タブ: .apkg の書き出し');
+downloaded = null;
+$('ai-ask-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (!downloaded) {
+  fail('.apkg が生成されなかった');
+} else {
+  await dumpApkgAndCheck(downloaded, {
+    expectedNoteCount: 3,
+    expectedCardCount: 3, // 3ノート × テンプレート1種(判断問題のみ)
+    firstFieldEquals: '選択問題',
+    tmpName: '.uitest_ai_ask.anki2',
+  });
+}
+
+console.log('\n[11] AIに質問タブ: 選択削除');
+$('ai-ask-stock-list').querySelector('input[type="checkbox"]').checked = true;
+$('ai-ask-delete-selected').click();
+await sleep(100);
+const aiAskAfter = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
+if (aiAskAfter.length === 2 && aiAskAfter[0].pattern === '誤り訂正問題') {
+  ok('選択した1件だけが削除された');
+} else {
+  fail(`削除後のストック: ${JSON.stringify(aiAskAfter.map((i) => i.pattern))}`);
+}
 
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
-  : '\n✅ Web版UIの通し動作(生成→一覧→プレビュー→apkg→削除)はすべて正常です。');
+  : '\n✅ Web版UIの通し動作(単語タブ・AIに質問タブとも 生成→一覧→プレビュー→apkg→削除)はすべて正常です。');
 process.exit(failures ? 1 : 0);

@@ -50,13 +50,45 @@ export async function guidFor(...values) {
 }
 
 /**
- * card_def_builder.build_guid() と同一の guid を返す。
- * dedup_key で指定された項目の値を、前後空白除去 + 小文字化して使う。
+ * card_def_builder.build_guid() と同一の guid を返す
+ * (genanki.guid_for(prefix, 前後空白除去+小文字化した1フィールド値))。
+ */
+async function guidByDedupKey(scheme, item) {
+  const raw = item[scheme.dedup_key];
+  const keyValue = String(raw === undefined || raw === null ? '' : raw).trim().toLowerCase();
+  return guidFor(scheme.prefix, keyValue);
+}
+
+/**
+ * grammar_multi_builder.build_guid() と同一の guid を返す
+ * (genanki.guid_for(prefix, item[key1], item[key2], ...) — 複数フィールドの
+ * 生値をそのまま連結する。1フィールドの正規化では表現できない場合に使う)。
+ */
+async function guidByCompoundKeys(scheme, item) {
+  const values = scheme.item_keys.map((k) => (item[k] === undefined || item[k] === null ? '' : item[k]));
+  return guidFor(scheme.prefix, ...values);
+}
+
+/**
+ * card_def(docs/shared/card_defs.json の1定義)が持つ `guid_scheme` に従って、
+ * item(生成したカード内容)の guid を計算する。
+ *
+ * デスクトップ版はカード種別ごとに異なるguid計算をしている
+ * (word: card_def_builder.build_guid() / grammar_multi:
+ * grammar_multi_builder.build_guid())。Web側でカード種別ごとに専用コードを
+ * 分岐させるのではなく、共有JSON側に「どう計算するか」を記述させることで、
+ * 新しいカード種別を追加してもこの関数を直す必要がないようにしてある。
+ *
  * @param {object} cardDef docs/shared/card_defs.json の 1 定義
  * @param {object} item 生成した item(フィールドの内部項目名をキーに持つ)
  */
-export async function buildGuid(cardDef, item) {
-  const raw = item[cardDef.dedup_key];
-  const keyValue = String(raw === undefined || raw === null ? '' : raw).trim().toLowerCase();
-  return guidFor(cardDef.key, keyValue);
+export async function buildItemGuid(cardDef, item) {
+  const scheme = cardDef.guid_scheme;
+  if (!scheme) {
+    // guid_scheme を持たない古い共有JSONとの後方互換
+    return guidByDedupKey({ prefix: cardDef.key, dedup_key: cardDef.dedup_key }, item);
+  }
+  if (scheme.type === 'compound') return guidByCompoundKeys(scheme, item);
+  if (scheme.type === 'dedup_key') return guidByDedupKey(scheme, item);
+  throw new Error(`未対応の guid_scheme.type です: ${scheme.type}`);
 }

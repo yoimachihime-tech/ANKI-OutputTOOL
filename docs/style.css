@@ -64,6 +64,36 @@ h2 { font-size: 1.05rem; margin: 0 0 4px; }
   vertical-align: middle;
 }
 
+/* 入力元タブ(単語 / AIに質問 / 今後追加予定の各機能) */
+.tabbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 8px 10px;
+  font-weight: 600;
+  color: var(--sub);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+}
+
+.tab-btn:hover:not(:disabled) { border-color: transparent; background: var(--bg); }
+
+.tab-btn.active {
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+
+.tab-panel[hidden] { display: none; }
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -119,6 +149,30 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }
 .status.error { color: var(--danger); }
 
+/* 生成中(AI呼び出し中)のローディング表示。ボタンの文言変更だけだと
+   目立たないという指摘を受け、はっきり分かるスピナー+専用の文言色にした。 */
+.status.loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .count { font-size: .8rem; font-weight: 400; color: var(--sub); }
 .empty { color: var(--sub); font-size: .9rem; padding: 12px 0; }
 
@@ -134,10 +188,20 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 
 .stock li.duplicate { background: var(--warn-bg); }
 .stock input[type="checkbox"] { width: auto; margin-top: 4px; flex: none; }
-.stock .word { font-weight: 600; }
-.stock .meaning { color: var(--sub); font-size: .85rem; }
 .stock .body { flex: 1; min-width: 0; }
 .stock .dup-tag { color: var(--danger); font-size: .75rem; font-weight: 600; }
+
+/* 一覧項目のタイトル/サブタイトル(単語タブでは単語名/意味、
+   AIに質問タブでは出題形式/質問の抜粋、というように内容はタブごとに違うが
+   見た目の役割は共通なので汎用クラス名にしてある)。 */
+.stock .title { font-weight: 600; }
+.stock .subtitle {
+  color: var(--sub);
+  font-size: .85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 #preview-dialog {
   width: min(680px, 94vw);

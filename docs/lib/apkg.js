@@ -16,7 +16,7 @@
 // 唯一 JS で再実装しているのが guid(guid.js)とカード生成条件(req)の判定で、
 // どちらも tools/verify_web_parity.mjs で Python 版との一致を検証している。
 
-import { buildGuid } from './guid.js';
+import { buildItemGuid } from './guid.js';
 
 const SQL_JS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
 
@@ -121,10 +121,17 @@ export async function buildApkg({ cardDef, ankiSchema, items, media }) {
 
     const sortFieldIndex = cardDef.anki_model.sortf || 0;
 
+    // due(カードの新規学習順): カード種別によって計算方法が異なるため
+    // card_def.due_scheme(共有JSON)から決める(デスクトップ版の
+    // card_def_builder.build_deck_from_def()は常に0、
+    // grammar_multi_builder.build_deck()はitemsのリスト内インデックス)。
+    const dueScheme = cardDef.due_scheme || 'fixed_zero';
+    const dueFor = (index) => (dueScheme === 'index' ? index : 0);
+
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
       const fields = fieldsFromItem(cardDef, item);
-      const guid = await buildGuid(cardDef, item);
+      const guid = await buildItemGuid(cardDef, item);
       const noteId = nextId;
       nextId += 1;
 
@@ -152,7 +159,7 @@ export async function buildApkg({ cardDef, ankiSchema, items, media }) {
           -1,               // usn
           0,                // type
           0,                // queue
-          0,                // due(card_def_builder は due を指定しないので常に 0)
+          dueFor(i),        // due(card_def.due_schemeに従う。上記コメント参照)
           0, 0, 0, 0, 0, 0, 0, 0, // ivl factor reps lapses left odue odid flags
           '',               // data
         ]);

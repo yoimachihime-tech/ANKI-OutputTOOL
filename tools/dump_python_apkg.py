@@ -3,16 +3,22 @@
 """
 tools/dump_python_apkg.py
 --------------------------
-標準入力で受け取った items(JSON配列)から、デスクトップ版とまったく同じ経路
-(card_defs.json + card_def_builder + genanki)で .apkg を生成し、その中身を
-JSON で標準出力に書き出す。
+標準入力で受け取った items(JSON配列)から、デスクトップ版とまったく同じ経路で
+.apkg を生成し、その中身をJSONで標準出力に書き出す。
 
 verify_web_parity.mjs から呼ばれ、Web版(docs/lib/apkg.js)の出力と
 突き合わせるための「正解データ」を提供する。単体でも実行できる:
 
-    echo '[{"word":"slated", ...}]' | python tools/dump_python_apkg.py
+    echo '[{"word":"slated", ...}]' | python tools/dump_python_apkg.py --card-def word
+    echo '[{"pattern":"...", ...}]' | python tools/dump_python_apkg.py --card-def grammar_multi
+
+--card-def word: card_defs.json + card_def_builder 経由(デスクトップ版の
+    単語タブと同じ経路)。
+--card-def grammar_multi: grammar_multi_builder.build_deck() 経由
+    (デスクトップ版のAIに質問タブと同じ経路。card_defs.json は通らない)。
 """
 
+import argparse
 import json
 import os
 import sqlite3
@@ -27,6 +33,7 @@ import genanki  # noqa: E402
 
 import card_def_builder  # noqa: E402
 import card_defs  # noqa: E402
+import grammar_multi_builder  # noqa: E402
 
 # Web版が guid を再実装しているため、代表的な入力での一致も確認する。
 # (フィールド構成が変わっても検出できるよう、apkg 本体とは別に見る)
@@ -38,18 +45,32 @@ GUID_CASES = [
 ]
 
 
+def build_deck_for(card_def_key: str, items: list):
+    """(genanki.Deck, model_id, deck_id) を返す。card_defs.json経由/独立
+    ビルダー経由のどちらでも呼び出し側から見た戻り値の形を揃える。"""
+    if card_def_key == "grammar_multi":
+        deck = grammar_multi_builder.build_deck(items)
+        return deck, grammar_multi_builder.canon.GRAMMAR_MODEL.model_id, grammar_multi_builder.DECK_ID
+
+    card_def = card_defs.get_def(card_def_key)
+    if not card_def:
+        raise SystemExit(f"カード定義 '{card_def_key}' が見つかりません。")
+    deck = card_def_builder.build_deck_from_def(card_def, items)
+    return deck, card_def["model_id"], card_def["deck_id"]
+
+
 def main() -> int:
     # 日本語Windowsでは標準入出力の既定が cp932 になり、日本語を含む items が
     # 壊れる(サロゲート混入で UnicodeEncodeError)。UTF-8 を明示する。
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
-    items = json.load(sys.stdin)
-    card_def = card_defs.get_def("word")
-    if not card_def:
-        print("カード定義 'word' が見つかりません。", file=sys.stderr)
-        return 1
 
-    deck = card_def_builder.build_deck_from_def(card_def, items)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--card-def", default="word", choices=["word", "grammar_multi"])
+    args = parser.parse_args()
+
+    items = json.load(sys.stdin)
+    deck, model_id, deck_id = build_deck_for(args.card_def, items)
 
     with tempfile.TemporaryDirectory() as tmp:
         apkg_path = os.path.join(tmp, "python.apkg")
@@ -80,8 +101,8 @@ def main() -> int:
             "entries": entries,
             "notes": notes,
             "cards": cards,
-            "model": json.loads(models_json)[str(card_def["model_id"])],
-            "deck": json.loads(decks_json)[str(card_def["deck_id"])],
+            "model": json.loads(models_json)[str(model_id)],
+            "deck": json.loads(decks_json)[str(deck_id)],
             "guid_cases": {
                 json.dumps(case): genanki.guid_for(*case) for case in GUID_CASES
             },
