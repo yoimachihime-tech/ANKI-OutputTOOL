@@ -1297,11 +1297,43 @@ example_ja/example_blank/noteの7キーを受け取る。
     **リポジトリにもページのソースにもAPIキーを一切含めないこと。**
     リポジトリ自体は非公開だが、GitHub Pagesで公開したページのJavaScriptは
     誰でも閲覧できるため、ハードコードは鍵の流出・不正課金に直結する。
-  - ソフトウェア版とWeb版のプロンプト同期方法として、`gemini_client.py`内の
-    `_WORD_TO_ITEM_PROMPT`をリポジトリ内の共有ファイル(例:
-    `prompts/word_card_prompt.txt`)に切り出し、Python側は`open()`で、
-    Web側は`fetch()`で同じファイルを読む案を提示済み(片桐はまだ合意も
-    却下もしていない。着手前に確認すること)。
+  - **配置場所(2026-07-28に片桐が選択)**: 同じリポジトリの`docs/`フォルダ。
+    GitHub Pagesは`docs/`をそのまま公開できるため、gh-pagesブランチへの
+    コピー等の手間が不要。
+  - **プロンプトの共有(2026-07-28に片桐が合意)**: `gemini_client.py`内の
+    `_WORD_TO_ITEM_PROMPT`等をリポジトリ内の共有ファイル(`prompts/*.txt`)に
+    切り出し、Python側は`open()`で、Web側は`fetch()`で同じファイルを読む。
+    プロンプトを改善したときに、片方だけ直して不一致になる事故を防ぐため。
+
+### ブラウザだけでのapkg生成(2026-07-28に実現可能と確認)
+
+「apkgをスマホで完結できないか」という片桐の質問を受けて調査し、
+**バックエンド無しでも実現可能**であることを確認した。これが成立するなら
+フェーズ2で想定していたCloud Runバックエンドは不要になる。
+
+- 技術構成: `sql.js`(SQLiteのWebAssembly版)でAnkiのSQLite DBを組み立て、
+  `JSZip`等でmedia(TTSのmp3)と一緒にzip化すれば`.apkg`になる
+  (`.apkg`の実体は「SQLite DB + mediaのJSON対応表 + 連番のメディア
+  ファイル」を固めたzip)。
+- **guidの互換性は実証済み(最重要)**: `genanki.guid_for()`は
+  「SHA256の先頭8バイト→整数→独自base91テーブル」という単純な処理で、
+  ブラウザ標準の`crypto.subtle.digest`と`BigInt`だけで再現できる。
+  Node.jsで書いた実装とPythonの`genanki.guid_for()`が、片桐の実データの
+  行IDを含む4ケースすべてで完全一致することを確認した(2026-07-28)。
+  **guidが一致しないと再インポート時に既存カードが更新されず重複が量産され、
+  学習履歴が壊れるため、Web版を実装する際は必ずPython側との一致テストを
+  用意すること。**
+- 未検証の残作業: AnkiのSQLiteスキーマ(genankiが生成するのは旧スキーマ11。
+  現行のAnkiはインポート時に自動アップグレードする)の再現、mediaの埋め込み、
+  iOS Safari/Androidでのダウンロード→AnkiMobile/AnkiDroidで開く導線。
+- **カード定義の共有が前提条件**: Web版が同じ見た目のカードを出すには、
+  CSS・テンプレート・model_idをPython版と共有する必要がある。既に
+  `card_defs.json`(`card_defs.py`)という汎用の定義形式があるので、
+  現在`build_*.py`側にしか無いDailyConversation/習熟用/Grammar Multiの
+  定義もここへ寄せていくのが自然(単語タブは既に移行済み)。
+  ただしDailyConversation・習熟用は単純なフィールド値の詰め替えではない
+  独自レンダリングロジックを持つため、移行には設計検討が必要
+  (`card_defs.py`のdocstring参照)。
   - 制約として片桐に伝達済み: Anki本体への直接投入(今の`auto_open_anki_var`
     のような一発連携)はスマホでは再現できず、「.apkgをダウンロード→
     AnkiMobile/AnkiDroidで開く」という一手間が残る。
