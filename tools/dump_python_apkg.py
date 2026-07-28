@@ -18,9 +18,14 @@ verify_web_parity.mjs から呼ばれ、Web版(docs/lib/apkg.js)の出力と
     (デスクトップ版のAIに質問タブと同じ経路。card_defs.json は通らない)。
 --card-def shuujuku: build_shuujuku_v1.build_deck(items, start_num=1) 経由
     (デスクトップ版の習熟用タブと同じ経路。start_numは再現性のため1固定)。
+--card-def daily: deck_builder.build_deck_and_row_map() 経由(デスクトップ版の
+    DailyConversationタブと同じ経路)。この種別だけは標準入力で受け取るのが
+    「生成済みのitem」ではなく**「添削結果」シートの生の行**で、カテゴリ
+    「誤りなし」の除外・ID重複の除去(process_sheet_rows)もPython側で行われる。
 """
 
 import argparse
+import contextlib
 import json
 import os
 import sqlite3
@@ -37,6 +42,8 @@ import card_def_builder  # noqa: E402
 import card_defs  # noqa: E402
 import grammar_multi_builder  # noqa: E402
 import build_shuujuku_v1  # noqa: E402
+import build_grammar_dailyconv_v1_final as dailyconv_canon  # noqa: E402
+import deck_builder  # noqa: E402
 
 # Web版が guid を再実装しているため、代表的な入力での一致も確認する。
 # (フィールド構成が変わっても検出できるよう、apkg 本体とは別に見る)
@@ -64,6 +71,13 @@ def build_deck_for(card_def_key: str, items: list):
         deck = build_shuujuku_v1.build_deck(items, start_num=1)
         return deck, build_shuujuku_v1.SHUUJUKU_MODEL.model_id, build_shuujuku_v1.DECK_ID
 
+    if card_def_key == "daily":
+        # itemsは「添削結果」シートの生の行(sheets_reader.fetch_pending_rowsの
+        # 戻り値と同じ形)。build_deck_and_row_map()がprocess_sheet_rows()での
+        # 除外まで含めてデスクトップ版と同じ経路で処理する。
+        deck, _row_map = deck_builder.build_deck_and_row_map(items)
+        return deck, dailyconv_canon.MODEL_ID, dailyconv_canon.DECK_ID
+
     card_def = card_defs.get_def(card_def_key)
     if not card_def:
         raise SystemExit(f"カード定義 '{card_def_key}' が見つかりません。")
@@ -78,11 +92,18 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--card-def", default="word", choices=["word", "grammar_multi", "shuujuku"])
+    parser.add_argument(
+        "--card-def", default="word",
+        choices=["word", "grammar_multi", "shuujuku", "daily"],
+    )
     args = parser.parse_args()
 
     items = json.load(sys.stdin)
-    deck, model_id, deck_id = build_deck_for(args.card_def, items)
+    # build_deck_for()が呼ぶ処理の一部(process_sheet_rowsのID重複警告など)は
+    # print()で標準出力に書くため、そのままだと出力するJSONが壊れる。
+    # 検証時に見えるよう捨てずに標準エラーへ回す。
+    with contextlib.redirect_stdout(sys.stderr):
+        deck, model_id, deck_id = build_deck_for(args.card_def, items)
 
     with tempfile.TemporaryDirectory() as tmp:
         apkg_path = os.path.join(tmp, "python.apkg")

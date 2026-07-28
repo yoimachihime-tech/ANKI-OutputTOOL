@@ -42,14 +42,15 @@ import card_defs  # noqa: E402
 import build_grammar_multi_v1_updated as grammar_multi_canon  # noqa: E402
 import grammar_multi_builder  # noqa: E402
 import build_shuujuku_v1  # noqa: E402
+import build_grammar_dailyconv_v1_final as dailyconv_canon  # noqa: E402
 
 SHARED_DIR = os.path.join(BASE_DIR, "docs", "shared")
 OUT_PATH = os.path.join(SHARED_DIR, "card_defs.json")
 SCHEMA_OUT_PATH = os.path.join(SHARED_DIR, "anki_schema.json")
 
-# Web版フェーズ1で出力対象にするカード種別。
-# daily(DailyConversation)は未対応(サービスアカウント鍵をブラウザに置けない
-# ためOAuth化が別途必要。CLAUDE.mdの「カード定義エディタ」の項を参照)。
+# card_defs.json(⚙設定「カード定義」タブが編集する汎用定義)から書き出す種別。
+# daily/grammar_multi/shuujukuはPython側でも汎用ビルダーを経由しない独立実装の
+# ため、下のbuild_*_def()で個別に組み立てる。
 EXPORT_KEYS = ("word",)
 
 
@@ -162,6 +163,62 @@ def build_shuujuku_def() -> dict:
     }
 
 
+def build_daily_def() -> dict:
+    """「Grammar DailyConversation (日次英作文添削 v1)」(DailyConversationタブ)の
+    共有定義を組み立てる(2026-07-29、Web版のシート連携対応時に追加)。
+
+    grammar_multi/shuujukuと同じく、Python側でも汎用ビルダー(card_defs.json +
+    card_def_builder)を経由せず、build_grammar_dailyconv_v1_final.py(正典)の
+    genanki.Modelとdeck_builder.py経由の生成になっている。card_defs.jsonにも
+    参照専用(editable=False)の定義が入っているが、そちらは実際の出力には
+    使われていないため、ここでは正典モジュールから直接組み立てる。
+
+    【他のカード種別と違う点】
+    itemの元になるのはAIの生成結果ではなく「添削結果」シートの1行で、
+    Question/Example/ExampleJA/Scoreはその行の複数列からHTMLに合成した結果
+    (build_deck()内の組み立て)。そのためWeb側は生の行をそのまま
+    fieldsFromItem()に渡すのではなく、docs/lib/dailyconv.jsの
+    buildFieldsReadyItems()で先に9フィールド分の値へ変換してから渡す
+    (shuujukuのbuildFieldsReadyItems()と同じ位置づけ)。
+
+    guidはgenanki.guid_for('dailyconv', シートのID列の値)。word等の
+    dedup_key方式は値を小文字化+trimしてしまい正典と一致しないため、
+    生値をそのまま使うcompound方式(item_keys=["id"])で表現する。
+    """
+    model = dailyconv_canon.GRAMMAR_DC_MODEL
+    return {
+        "key": "daily",
+        "label": "DailyConversation(日次英作文添削)",
+        "notetype_name": model.name,
+        "model_id": model.model_id,
+        "deck_id": dailyconv_canon.DECK_ID,
+        "deck_name": dailyconv_canon.DECK_NAME,
+        # フィールド順はbuild_deck()のfields=[...]と一致させること。
+        "fields": [
+            {"anki_name": "Pattern", "item_key": "pattern"},
+            {"anki_name": "Question", "item_key": "question"},
+            {"anki_name": "Choices", "item_key": "choices"},
+            {"anki_name": "Answer", "item_key": "answer"},
+            {"anki_name": "Example", "item_key": "example"},
+            {"anki_name": "ExampleJA", "item_key": "example_ja"},
+            {"anki_name": "Why", "item_key": "why"},
+            {"anki_name": "WhyNot", "item_key": "whynot"},
+            {"anki_name": "Score", "item_key": "score"},
+        ],
+        "guid_scheme": {
+            "type": "compound",
+            "prefix": "dailyconv",
+            "item_keys": ["id"],
+        },
+        # build_deck()はdue=enumerate(rows)のインデックス(grammar_multiと同じ)。
+        "due_scheme": {"type": "index"},
+        # build_deck()は全ノートにsource::gemini_dailyconvタグを付ける。
+        # 他のカード種別はタグ無しなので、この定義だけが持つ項目。
+        "tags": [dailyconv_canon.SOURCE_TAG],
+        "anki_model": model.to_json(0, dailyconv_canon.DECK_ID),
+    }
+
+
 def main() -> int:
     exported = {}
     for key in EXPORT_KEYS:
@@ -186,6 +243,7 @@ def main() -> int:
 
     exported["grammar_multi"] = build_grammar_multi_def()
     exported["shuujuku"] = build_shuujuku_def()
+    exported["daily"] = build_daily_def()
 
     os.makedirs(SHARED_DIR, exist_ok=True)
 

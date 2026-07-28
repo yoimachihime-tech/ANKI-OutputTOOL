@@ -68,6 +68,33 @@
   <div class="row">
     <button type="button" id="clear-tts-key" class="danger">TTSキーを消去</button>
   </div>
+
+  <hr>
+
+  <h3>スプレッドシート(DailyConversationタブ用)</h3>
+  <p class="hint">
+    「添削結果」シートの読み書きに使います。DailyConversationタブを使わない場合は
+    設定不要です。クライアントIDは秘密情報ではないため、他のAPIキーと違い
+    そのまま保存しても問題ありません。
+  </p>
+
+  <label for="google-client-id">OAuth 2.0 クライアントID</label>
+  <p class="hint">
+    Google Cloud Console →「APIとサービス → 認証情報」で「OAuth クライアント ID」を
+    種類「ウェブ アプリケーション」で作成し、<b>承認済みの JavaScript 生成元</b>に
+    このページのオリジン(例: https://yoimachihime-tech.github.io)を登録してください。
+    末尾が <code>.apps.googleusercontent.com</code> の文字列です。
+  </p>
+  <input type="text" id="google-client-id" autocomplete="off" spellcheck="false"
+         placeholder="xxxxxxxx.apps.googleusercontent.com">
+
+  <label for="sheets-spreadsheet-id">スプレッドシートID</label>
+  <p class="hint">シートのURL <code>/spreadsheets/d/<b>ここ</b>/edit</code> の部分です。</p>
+  <input type="text" id="sheets-spreadsheet-id" autocomplete="off" spellcheck="false"
+         placeholder="1ruIEHQk8J0rjjQQdiaT2Nvnje...">
+
+  <label for="sheets-sheet-name">シート(タブ)名</label>
+  <input type="text" id="sheets-sheet-name" autocomplete="off" spellcheck="false" value="添削結果">
 </section>
 
 <!-- ⚙設定を開いている間は、これより下(タブバー+各タブの中身)をまとめて
@@ -75,11 +102,12 @@
      表示状態か分かりにくいという指摘への対応。 -->
 <div id="main-content">
 
-<!-- 入力元タブ(単語 / AIに質問 / 習熟用。今後 TTS試聴 を追加予定) -->
+<!-- 入力元タブ(単語 / AIに質問 / 習熟用 / DailyConversation) -->
 <nav class="tabbar" role="tablist">
   <button type="button" class="tab-btn active" data-tab="word" role="tab" aria-selected="true">単語</button>
   <button type="button" class="tab-btn" data-tab="ai_ask" role="tab" aria-selected="false">AIに質問</button>
   <button type="button" class="tab-btn" data-tab="shuujuku" role="tab" aria-selected="false">習熟用(音読)</button>
+  <button type="button" class="tab-btn" data-tab="daily" role="tab" aria-selected="false">DailyConversation</button>
 </nav>
 
 <!-- ============================= 単語タブ ============================= -->
@@ -207,6 +235,73 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     </p>
     <button type="button" id="shuujuku-export" class="primary">.apkg をダウンロード</button>
     <p id="shuujuku-export-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+</div>
+
+<!-- ====================== DailyConversationタブ ====================== -->
+<div id="tab-daily" class="tab-panel" hidden role="tabpanel">
+
+  <section class="card">
+    <h2>① Googleにログイン</h2>
+    <p class="hint">
+      「添削結果」スプレッドシートを読み書きするため、Googleアカウントでのログインが
+      必要です。ログイン状態はこのページを開いている間だけ保持され(約1時間で失効)、
+      アクセストークンは保存されません。事前に⚙設定でクライアントID・
+      スプレッドシートID・シート名を設定してください。
+    </p>
+    <div class="row">
+      <button type="button" id="daily-signin" class="primary">Googleにログイン</button>
+      <button type="button" id="daily-signout">ログアウト</button>
+    </div>
+    <p id="daily-auth-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card">
+    <h2>② 英文を入力してAIに添削させる</h2>
+    <p class="hint">
+      複数文・複数段落をまとめて入力できます(AIが文ごとに分割して添削します)。
+      添削結果はシートに新規行として追記され、続けて③の一覧が更新されます。
+      Googleフォーム経由で追加された行もそのまま③に出てきます。
+    </p>
+    <textarea id="daily-input" rows="6" spellcheck="false"
+placeholder="I go to the park yesterday. She don't like coffee."></textarea>
+    <button type="button" id="daily-correct" class="primary">AIに添削させてシートに追加</button>
+    <p id="daily-correct-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card">
+    <h2>③ シート上の未出力行 <span id="daily-pending-count" class="count"></span></h2>
+    <p class="hint">
+      「Anki出力済み」列が空の行を表示します。ここに出ているものが④の出力対象です。
+      重複などで出力したくない行は選んで「一覧から除外」できます(シート自体は
+      変更されず、この端末でのみ非表示になります)。
+    </p>
+    <div class="row">
+      <button type="button" id="daily-refresh" class="primary">シートから読み込む</button>
+    </div>
+    <div id="daily-pending-empty" class="empty">まだ読み込んでいません。</div>
+    <ul id="daily-pending-list" class="stock"></ul>
+    <div class="row">
+      <button type="button" id="daily-exclude-selected">選択項目を一覧から除外</button>
+      <button type="button" id="daily-clear-exclusions" class="danger">除外をすべて解除</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>④ Ankiに取り込む</h2>
+    <p class="hint">
+      .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
+      カテゴリが「誤りなし」の行と、IDが重複している行は出力対象から除かれます。
+      ⚙設定でTTS APIキーを設定していれば、添削後の文と類似表現の音声も自動で
+      合成して埋め込みます。
+    </p>
+    <label class="checkbox">
+      <input type="checkbox" id="daily-mark-exported" checked>
+      出力後、対応する行をシートの「Anki出力済み」列にマークする
+    </label>
+    <button type="button" id="daily-export" class="primary">.apkg をダウンロード</button>
+    <p id="daily-export-status" class="status" role="status" aria-live="polite"></p>
   </section>
 
 </div>

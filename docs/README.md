@@ -5,14 +5,15 @@ AnkiMobile / AnkiDroid に取り込むための静的Webページ。サーバー
 すべてブラウザ内で完結する。
 
 **対応機能**: 単語カード生成 / AIに質問(Grammar Multi、3問生成 + 習熟用4問目) /
-習熟用(音読) / TTS音声の自動埋め込み(Cloud Text-to-Speech APIキーを設定した
-場合のみ)
+習熟用(音読) / DailyConversation(「添削結果」スプレッドシート連携) /
+TTS音声の自動埋め込み(Cloud Text-to-Speech APIキーを設定した場合のみ)
 
 ## 構成
 
 ```text
 docs/
-  index.html            画面(単語 / AIに質問 / 習熟用(音読) のタブ構成)
+  index.html            画面(単語 / AIに質問 / 習熟用(音読) /
+                        DailyConversation のタブ構成)
   style.css             スタイル(ダーク/ライト両対応)
   app.js                UI・タブ切り替え・ストック管理(localStorage)
   lib/
@@ -22,10 +23,17 @@ docs/
     apkg.js             .apkg の組み立て(sql.js + JSZip、mediaも埋め込み可能)
     shuujuku.js          習熟用(音読)のContentフィールド組み立て + 続き番号管理
                          (build_shuujuku_v1.py の Web 版)
+    sheets.js            Googleログイン(GIS token client)+「添削結果」シートの
+                         読み書き(sheets_reader.py / sheets_writer.py の Web 版)
+    dailyconv.js         シートの行 → DailyConversation の9フィールドへの変換 +
+                         ローカル除外リスト(build_grammar_dailyconv_v1_final.py /
+                         daily_pending_exclusions.py の Web 版)
   shared/               ← デスクトップ版と共有する資産(自動生成あり)
     word_card_prompt.txt      単語カード生成プロンプト
     grammar_multi_prompt.txt  Grammar Multi(3問)生成プロンプト
     shuujuku_prompt.txt        習熟用(音読・4問目)生成プロンプト
+    correction_system_instruction.txt  英文添削の system_instruction
+    correction_response_schema.json    英文添削の responseSchema(構造化出力)
     card_defs.json             ノートタイプ定義(自動生成)
     anki_schema.json           Anki の SQLite スキーマ(自動生成)
 ```
@@ -57,6 +65,10 @@ python -m http.server 8000
 初回に「⚙ 設定」から Gemini API キーを入力する。キーはこのブラウザの
 localStorage にのみ保存され、どこにも送信されない。
 
+各タブのストック一覧には、生成した日時(単語/AIに質問/習熟用は生成時刻、
+DailyConversationはシートの「日時」列)が項目ごとに表示される
+(2026-07-29追加、`app.js`の`formatDateTime()`/各`render*Stock()`)。
+
 ## TTS音声の自動埋め込み(2026-07-28追加)
 
 「⚙ 設定」の「Cloud Text-to-Speech APIキー」を設定すると、各タブの `.apkg`
@@ -64,12 +76,12 @@ localStorage にのみ保存され、どこにも送信されない。
 **空欄のままなら従来どおり音声無しの `.apkg` を出力する**(他のAI呼び出しと
 同じ「未設定なら黙ってスキップ」方針)。
 
-- 対象フィールド: 単語は `Example`、AIに質問(Grammar Multi)は `Answer` +
-  `Example`(デスクトップ版 `tts_gui.on_notetype_selected()` の既定選択と
-  揃えてある)。
+- 対象フィールド: 単語は `Example`、AIに質問(Grammar Multi)と
+  DailyConversation は `Answer` + `Example`(デスクトップ版
+  `tts_gui.on_notetype_selected()` の既定選択と揃えてある)。
 - **音声の分割単位**(2026-07-28に確定):
-  - 単語 / AIに質問 … **フィールド全体で1つのMP3・1つの`[sound:]`タグ**。
-    複数文が含まれていても文ごとには分けない。
+  - 単語 / AIに質問 / DailyConversation … **フィールド全体で1つのMP3・
+    1つの`[sound:]`タグ**。複数文が含まれていても文ごとには分けない。
   - 習熟用(音読) … **例文(`ex-en`)ごとに個別のMP3・タグ**を作り、各例文の
     直下に埋め込む(音読練習で1文ずつ再生したいため。デスクトップ版の
     `generate_shuujuku_sentence_tts_for_collection()` と同じ挿入位置)。
@@ -91,6 +103,77 @@ localStorage にのみ保存され、どこにも送信されない。
   ストックの生item自体は変更せず、`buildApkg()`に渡す直前のコピーにのみ
   音声タグを追記する(再エクスポート時に二重にタグが付くのを防ぐため)。
 
+## DailyConversation(スプレッドシート連携、2026-07-29追加)
+
+「添削結果」スプレッドシートを直接読み書きするタブ。デスクトップ版の
+DailyConversationタブと同じ4段階の流れをブラウザだけで行う。
+
+```text
+① Googleにログイン
+② 英文を入力 → AIが添削・採点 → シートに新規行として追記
+③ 「Anki出力済み」列が空の行を一覧表示(不要な行はローカルで除外できる)
+④ .apkg をダウンロード → 出力した行をシートの「Anki出力済み」列にマーク
+```
+
+Googleフォーム→Apps Script経由で追加された行も、そのまま③の一覧に出てくる
+(このタブは「添削結果」シートを唯一の実体として扱う)。
+
+### 認証方式(GIS token client)
+
+デスクトップ版はサービスアカウント(JSON秘密鍵)方式だが、**その鍵をブラウザに
+置くことは絶対にできない**(鍵を持つ者は誰でもシートを自由に読み書きできる)。
+また Google の「ウェブ アプリケーション」型クライアントは認可コード→トークン
+交換に client_secret を要求するため、静的サイトだけでは PKCE も完結できない。
+そこで client_secret もバックエンドも不要な
+**Google Identity Services の token client**(`initTokenClient`)を使う。
+
+- アクセストークンは**メモリ上にのみ**保持する(localStorage には置かない)。
+  有効期限は約1時間で、切れたら画面上のボタンから取り直す。リフレッシュ
+  トークンはこの方式では発行されない。
+- 一度同意していれば `prompt: ''` での再取得は基本的に無操作で通る。
+- 要求するスコープは `https://www.googleapis.com/auth/spreadsheets`
+  (未出力行の読み取りと、添削結果の追記・Anki出力済みのマークの両方を行うため)。
+
+### 事前準備(初回のみ)
+
+1. Google Cloud Console →「APIとサービス → ライブラリ」で
+   **Google Sheets API** を有効化する。
+2. 「APIとサービス → 認証情報」で **OAuth クライアント ID** を種類
+   「ウェブ アプリケーション」で作成し、**承認済みの JavaScript 生成元**に
+   このページのオリジン(例: `https://yoimachihime-tech.github.io`、
+   ローカル確認用なら `http://localhost:8000`)を登録する。
+   末尾が `.apps.googleusercontent.com` の文字列がクライアントID。
+3. OAuth 同意画面が「テスト」ステータスの場合は、自分のGoogleアカウントを
+   **テストユーザー**に追加する(でないと同意画面で弾かれる)。
+4. Web版の「⚙ 設定 → スプレッドシート」に、クライアントID・
+   スプレッドシートID・シート(タブ)名を入力する。
+
+**クライアントIDは秘密情報ではない**ため、APIキーと違い公開ページに置いても
+問題ない(設定項目にしてあるのは、コード変更・再デプロイ無しに差し替えられる
+ようにするため)。
+
+### 実装上の注意
+
+- **シートの行は削除できない**。`sheets.js` の責務は読み取りと「Anki出力済み」
+  列の書き込み・新規行の追記だけ(デスクトップ版の `sheets_reader.py` /
+  `sheets_writer.py` と同じ責務分担)。重複行などを一覧から外したい場合は、
+  シートを変更せず**行IDをローカル(localStorage)に記録して表示・出力対象から
+  除く**(`dailyconv.js`、デスクトップ版の `daily_pending_exclusions.py` と
+  同じ考え方)。
+- **カテゴリが「誤りなし」の行とID重複行は `.apkg` に含まれない**
+  (`dailyconv.processSheetRows()`、正典 `build_grammar_dailyconv_v1_final.py`
+  の `process_sheet_rows()` と同一)。一覧では「誤りなし」の行に
+  出力対象外である旨のバッジを出している。
+- **「Anki出力済み」のマークは `.apkg` の生成に成功してから**行う
+  (デスクトップ版と同じ2段階設計。失敗した行を出力済みにしないため)。
+- 添削の `system_instruction` / `responseSchema` は
+  `shared/correction_system_instruction.txt` /
+  `shared/correction_response_schema.json` に切り出してあり、
+  デスクトップ版(`gemini_client.correct_english_text()`)も同じファイルを読む。
+  **これらはGoogleフォーム側の Apps Script の実装と意味的に同一に保つこと**
+  (採点基準がズレると、同じシート上でフォーム経由の行とこのアプリ経由の行で
+  評価基準が食い違ってしまう)。
+
 ## 共有ファイルの再生成
 
 `card_defs.json` / `anki_schema.json` は自動生成物。デスクトップ版の
@@ -104,14 +187,25 @@ python tools/export_shared_card_defs.py
 単語(`word`)は`card_defs.json` + `card_def_builder`経由、AIに質問
 (`grammar_multi`)は`build_grammar_multi_v1_updated.py` +
 `grammar_multi_builder.py`経由、習熟用(`shuujuku`)は`build_shuujuku_v1.py`
-経由と、Python側の生成経路自体がすべて異なる(word は「1フィールドの
-正規化値」でguidを作り、grammar_multi は `topic_key`+`note_index`、
-shuujuku は `source_kind`+`source_topic` の複合キーでguidを作る)。この
+経由、DailyConversation(`daily`)は`build_grammar_dailyconv_v1_final.py` +
+`deck_builder.py`経由と、Python側の生成経路自体がすべて異なる(word は
+「1フィールドの正規化値」でguidを作り、grammar_multi は
+`topic_key`+`note_index`、shuujuku は `source_kind`+`source_topic`、
+daily はシートのID列の生値でguidを作る)。この
 ため各カード種別の共有定義には`guid_scheme`(guidの計算方法)・
-`due_scheme`(カードのdueの計算方法)を持たせてあり、`docs/lib/guid.js`・
-`docs/lib/apkg.js`はこれを読んで種別ごとの分岐をハードコードせずに動く。
-新しいカード種別を追加する場合も、この2ファイルを直接編集する必要は
-基本的にない。
+`due_scheme`(カードのdueの計算方法)・`tags`(ノートに付けるタグ)を
+持たせてあり、`docs/lib/guid.js`・`docs/lib/apkg.js`はこれを読んで
+種別ごとの分岐をハードコードせずに動く。新しいカード種別を追加する場合も、
+この2ファイルを直接編集する必要は基本的にない
+(実際 daily の追加時は `tags` を1つ足しただけで、既存3種別のコードは
+無変更のまま通っている)。
+
+**DailyConversation(daily)の特殊事情**: Question/Example/ExampleJA/Score
+フィールドは、シート1行の複数列から HTML に合成した結果。そのため習熟用と
+同じく、`.apkg` を書き出す直前に `docs/lib/dailyconv.js` の
+`buildFieldsReadyItems(rows)` で9フィールド分の値を確定させてから
+`buildApkg()` に渡す。また現状このカード種別だけがノートにタグ
+(`source::gemini_dailyconv`)を持つ。
 
 **習熟用(shuujuku)だけの特殊事情**: Content フィールドは pattern/meaning/
 examples/expl/source_label を HTML に合成した結果であり、item の1フィールド
@@ -137,19 +231,21 @@ Anki は guid が同じノートを「同一ノート」として更新する。
 ```sh
 cd tools
 npm install     # 初回のみ
-npm test        # 下記3つをまとめて実行
+npm test        # 下記6つをまとめて実行
 ```
 
 | コマンド | 内容 |
 | --- | --- |
-| `npm run verify` | 同じ入力からデスクトップ版(genanki)と Web 版それぞれで `.apkg` を作り(word・grammar_multi・shuujuku の3カード種別)、guid・フィールド・カード構成・ノートタイプ定義を突き合わせる |
+| `npm run verify` | 同じ入力からデスクトップ版(genanki)と Web 版それぞれで `.apkg` を作り(word・grammar_multi・shuujuku・daily の4カード種別)、guid・フィールド・タグ・カード構成・ノートタイプ定義を突き合わせる |
 | `npm run verify:grammar-multi` | Grammar Multi 固有の後処理(日本語指示文と英文の間の改行整形、選択問題の正解記号 `(B)` の付与、choices/whynot/example の HTML 化)が Python 版と一致するかを、生の Gemini 応答 JSON を固定して突き合わせる |
-| `npm run test:ui` | jsdom 上で `index.html` + `app.js` を実際に動かし、単語タブ・AIに質問タブ(3問+習熟用4問目)・習熟用(音読)タブそれぞれで 生成 → 一覧 → プレビュー → apkg 出力 → 削除 の通し動作を確認する(Gemini API はモックするのでキー・割り当てを消費しない) |
+| `npm run test:ui` | jsdom 上で `index.html` + `app.js` を実際に動かし、単語・AIに質問(3問+習熟用4問目)・習熟用(音読)・DailyConversation の各タブで通し動作を確認する(Gemini API・Sheets API・Googleログインはすべてモックするので、キー・割り当て・実データを消費しない) |
 | `npm run test:tts` | `lib/tts.js`(Cloud Text-to-Speech 呼び出し・文分割・エラー分類・音声埋め込み)を fetch モックで単体テストする(Text-to-Speech API キー・割り当ては消費しない) |
 | `npm run test:gemini` | `lib/gemini.js` の `callGemini()` のエラー処理・リトライ挙動(503 の自動リトライ、429 の既存挙動の回帰確認)を fetch モックで単体テストする |
+| `npm run test:sheets` | `lib/sheets.js`(未出力行の取得・添削結果の追記・「Anki出力済み」列のマーク・エラー分類)と `lib/dailyconv.js` のローカル除外リストを fetch モックで単体テストする(実際のスプレッドシートにはアクセスしない) |
 
-`npm run test:ui` は Gemini を呼ばないため、**実際の Gemini が期待どおりの JSON を
-返すか**は確認できない。そこだけは実機での確認が必要。
+`npm run test:ui` は Gemini・Sheets を呼ばないため、**実際の Gemini が期待どおりの
+JSON を返すか**・**実際のシートのヘッダーが想定どおりか**は確認できない。
+そこだけは実機での確認が必要。
 
 ## 注意
 

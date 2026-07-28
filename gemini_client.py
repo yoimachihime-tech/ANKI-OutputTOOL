@@ -539,54 +539,22 @@ def generate_vocab_card_from_word(word: str, context_sentence: str, api_key: str
 # 同一になるよう保つこと**(採点基準がズレると「添削結果」シート上でGoogle
 # フォーム経由の行とこのアプリ経由の行の基準が食い違ってしまうため)。
 
-CORRECTION_SYSTEM_INSTRUCTION = (
-    "あなたは英文添削者です。与えられた英文を文単位で確認し、誤りがあれば添削してください。"
-    "誤りがない時はcorrectedをoriginalと同一にしてください。解説は日本語で簡潔に書いてください。"
-    "さらに、correctedの文で使われている表現について、同じ意味・場面で使われる類似表現をより"
-    "自然な言い方で2〜3個挙げてください。各代替表現についてexpressionには英文の完成文1文のみ、"
-    "noteにはその表現の使い方やニュアンスの違いを日本語で書いてください。expressionフィールドに"
-    "日本語を含めないでください。特に無ければ配列を空にしてください。"
-    "加えて、入力された原文(original)そのものを以下3つの観点でそれぞれ0〜100点で評価してください。"
-    "1) grammar_score: 文法的な正確さ(誤りが多いほど低くなる) "
-    "2) naturalness_score: 母語話者から見た表現の自然さ(文法的に正しくても不自然な言い回しなら低くなる) "
-    "3) comprehensibility_score: 英語圏の人にどれだけ意味が伝わるか(全く伝わらない場合は0点付近、"
-    "多少不自然でも意味が通じるなら高くする) "
-    "score_commentには、なぜその点数になったか、原文中の具体的にどの言い回しが問題だったか、を"
-    "日本語で簡潔に説明してください。"
-)
+# system_instruction・responseSchemaは、他のプロンプトと同じ理由(Web版と
+# 片方だけ直して不一致になる事故を防ぐ)でdocs/shared/へ切り出してある
+# (2026-07-29、Web版のDailyConversation対応時)。Web側は
+# docs/lib/gemini.jsのcorrectEnglishText()が同じ2ファイルをfetchで読む。
+CORRECTION_SYSTEM_INSTRUCTION_PATH = os.path.join(SHARED_DIR, "correction_system_instruction.txt")
+CORRECTION_RESPONSE_SCHEMA_PATH = os.path.join(SHARED_DIR, "correction_response_schema.json")
 
-CORRECTION_RESPONSE_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "original": {"type": "STRING"},
-            "corrected": {"type": "STRING"},
-            "explanation": {"type": "STRING"},
-            "category": {"type": "STRING", "description": "文法 / 語彙 / 自然さ / 誤りなし のいずれか"},
-            "similar_expressions": {
-                "type": "ARRAY",
-                "description": "類似表現のリスト。無ければ空配列",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "expression": {"type": "STRING", "description": "英文の完成文1文のみ、日本語を含めない"},
-                        "note": {"type": "STRING", "description": "日本語のみ、使い方・ニュアンスの説明"},
-                    },
-                    "required": ["expression", "note"],
-                },
-            },
-            "grammar_score": {"type": "NUMBER", "description": "文法的正確さ 0〜100"},
-            "naturalness_score": {"type": "NUMBER", "description": "自然さ 0〜100"},
-            "comprehensibility_score": {"type": "NUMBER", "description": "伝わりやすさ 0〜100"},
-            "score_comment": {"type": "STRING", "description": "スコアの根拠。具体的な問題表現を含めて日本語で"},
-        },
-        "required": [
-            "original", "corrected", "explanation", "category", "similar_expressions",
-            "grammar_score", "naturalness_score", "comprehensibility_score", "score_comment",
-        ],
-    },
-}
+
+def _load_shared_json(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise GeminiClientError(
+            f"共有JSONファイルを読み込めませんでした: {path}\n{e}"
+        ) from e
 
 
 def correct_english_text(text: str, api_key: str, model: str, timeout: int = 60) -> list:
@@ -611,11 +579,13 @@ def correct_english_text(text: str, api_key: str, model: str, timeout: int = 60)
 
     url = GEMINI_ENDPOINT_TMPL.format(model=model)
     body = {
-        "system_instruction": {"parts": [{"text": CORRECTION_SYSTEM_INSTRUCTION}]},
+        "system_instruction": {
+            "parts": [{"text": _load_shared_prompt(CORRECTION_SYSTEM_INSTRUCTION_PATH)}]
+        },
         "contents": [{"parts": [{"text": text}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "responseSchema": CORRECTION_RESPONSE_SCHEMA,
+            "responseSchema": _load_shared_json(CORRECTION_RESPONSE_SCHEMA_PATH),
         },
     }
     result = _post_gemini_request(url, body, api_key, timeout)

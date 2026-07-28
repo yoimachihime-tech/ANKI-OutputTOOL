@@ -1,7 +1,8 @@
 // app.js
 // ---------------------------------------------------------------------------
 // ANKI出力ツール Web版のUI。デスクトップ版(tts_gui.py)の各入力元タブに
-// 相当する画面をまとめて持つ(現状: 単語 / AIに質問)。
+// 相当する画面をまとめて持つ(現状: 単語 / AIに質問 / 習熟用(音読) /
+// DailyConversation)。
 //
 // 【設計方針】
 // タブごとにitemの形・重複判定キー・カード定義が異なるため、デスクトップ版
@@ -10,11 +11,23 @@
 // 共通化しているのはAPI呼び出し(lib/gemini.js)・apkg組み立て(lib/apkg.js)・
 // guid計算(lib/guid.js)・ローディング表示のヘルパー(showLoading/hideLoading)
 // のみ。
+//
+// DailyConversationタブだけは候補の実体がlocalStorageのストックではなく
+// スプレッドシートそのもの(lib/sheets.js)で、他タブと共通の
+// TAB_CONFIG/onExport/onDeleteSelected の枠組みには載せていない。
 
-import { generateVocabCard, generateGrammarMultiItems, generateShuujukuItem, listModels, GeminiError } from './lib/gemini.js';
+import {
+  generateVocabCard, generateGrammarMultiItems, generateShuujukuItem,
+  correctEnglishText, consolidateNoErrorCorrections, listModels, GeminiError,
+} from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
 import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
 import { synthesizeFieldWithTags, synthesizeExampleAudioTags } from './lib/tts.js';
+import {
+  getAccessToken, clearAccessToken, hasValidAccessToken,
+  fetchPendingRows, appendCorrectionRows, markRowsAsExported, SheetsAuthError,
+} from './lib/sheets.js';
+import * as dailyconv from './lib/dailyconv.js';
 
 const STORAGE = {
   apiKey: 'anki_tool_gemini_api_key',
@@ -26,6 +39,9 @@ const STORAGE = {
   ttsVoice: 'anki_tool_tts_voice',
   ttsLang: 'anki_tool_tts_lang',
   ttsVolumeGainDb: 'anki_tool_tts_volume_gain_db',
+  googleClientId: 'anki_tool_google_client_id',
+  spreadsheetId: 'anki_tool_sheets_spreadsheet_id',
+  sheetName: 'anki_tool_sheets_sheet_name',
 };
 
 /**
@@ -36,18 +52,35 @@ const STORAGE = {
 const TTS_FIELD_KEYS = {
   word: ['example'],
   ai_ask: ['answer', 'example'],
+  // DailyConversation は Answer(添削後の文)と Example(類似表現)の両方が
+  // 英文なので、デスクトップ版の既定選択と同じくその2つを対象にする。
+  daily: ['answer', 'example'],
 };
 
 const $ = (id) => document.getElementById(id);
 
 /** 共有アセット(プロンプト・カード定義・スキーマ)。起動時に読み込む。 */
 const shared = {
-  wordPrompt: null, grammarMultiPrompt: null, shuujukuPrompt: null, cardDefs: null, ankiSchema: null,
+  wordPrompt: null,
+  grammarMultiPrompt: null,
+  shuujukuPrompt: null,
+  correctionSystemInstruction: null,
+  correctionResponseSchema: null,
+  cardDefs: null,
+  ankiSchema: null,
 };
 
 let wordStock = loadJson(STORAGE.wordStock);
 let aiAskStock = loadJson(STORAGE.aiAskStock);
 let shuujukuStock = loadJson(STORAGE.shuujukuStock);
+
+/**
+ * DailyConversation の「シート上の未出力行」。他のタブと違い実体は
+ * スプレッドシート側(Anki出力済み列が空の行)なので localStorage には
+ * 保存せず、読み込むたびにシートから取り直す(デスクトップ版と同じ方針)。
+ * ローカルに持つのは「一覧から除外した行ID」だけ(dailyconv.js)。
+ */
+let dailyPendingRows = [];
 
 // ---------------------------------------------------------------------------
 // 起動
@@ -65,20 +98,32 @@ async function init() {
   $('tts-voice').value = localStorage.getItem(STORAGE.ttsVoice) || $('tts-voice').value;
   $('tts-lang').value = localStorage.getItem(STORAGE.ttsLang) || $('tts-lang').value;
   $('tts-volume-gain').value = localStorage.getItem(STORAGE.ttsVolumeGainDb) || $('tts-volume-gain').value;
+  $('google-client-id').value = localStorage.getItem(STORAGE.googleClientId) || '';
+  $('sheets-spreadsheet-id').value = localStorage.getItem(STORAGE.spreadsheetId) || '';
+  $('sheets-sheet-name').value = localStorage.getItem(STORAGE.sheetName) || $('sheets-sheet-name').value;
   renderWordStock();
   renderAiAskStock();
   renderShuujukuStock();
+  renderDailyPending();
+  updateDailyAuthStatus();
 
-  const [wordPrompt, grammarMultiPrompt, shuujukuPrompt, cardDefsJson, ankiSchema] = await Promise.all([
+  const [
+    wordPrompt, grammarMultiPrompt, shuujukuPrompt,
+    correctionSystemInstruction, correctionResponseSchema, cardDefsJson, ankiSchema,
+  ] = await Promise.all([
     fetchText('./shared/word_card_prompt.txt'),
     fetchText('./shared/grammar_multi_prompt.txt'),
     fetchText('./shared/shuujuku_prompt.txt'),
+    fetchText('./shared/correction_system_instruction.txt'),
+    fetchJson('./shared/correction_response_schema.json'),
     fetchJson('./shared/card_defs.json'),
     fetchJson('./shared/anki_schema.json'),
   ]);
   shared.wordPrompt = wordPrompt;
   shared.grammarMultiPrompt = grammarMultiPrompt;
   shared.shuujukuPrompt = shuujukuPrompt;
+  shared.correctionSystemInstruction = correctionSystemInstruction;
+  shared.correctionResponseSchema = correctionResponseSchema;
   shared.cardDefs = cardDefsJson.defs;
   shared.ankiSchema = ankiSchema;
 }
@@ -143,6 +188,20 @@ function bindEvents() {
   });
   $('clear-tts-key').addEventListener('click', onClearTtsKey);
 
+  // スプレッドシート設定(DailyConversationタブ用)
+  $('google-client-id').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.googleClientId, e.target.value.trim());
+    // クライアントIDが変わったら、古いトークンは使い回さない
+    clearAccessToken();
+    updateDailyAuthStatus();
+  });
+  $('sheets-spreadsheet-id').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.spreadsheetId, e.target.value.trim());
+  });
+  $('sheets-sheet-name').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.sheetName, e.target.value.trim());
+  });
+
   // 単語タブ
   $('word-generate').addEventListener('click', onWordGenerate);
   $('word-delete-selected').addEventListener('click', () => onDeleteSelected('word'));
@@ -159,6 +218,15 @@ function bindEvents() {
   $('shuujuku-delete-selected').addEventListener('click', () => onDeleteSelected('shuujuku'));
   $('shuujuku-clear-stock').addEventListener('click', () => onClearStock('shuujuku'));
   $('shuujuku-export').addEventListener('click', onExportShuujuku);
+
+  // DailyConversationタブ
+  $('daily-signin').addEventListener('click', onDailySignIn);
+  $('daily-signout').addEventListener('click', onDailySignOut);
+  $('daily-correct').addEventListener('click', onDailyCorrect);
+  $('daily-refresh').addEventListener('click', () => refreshDailyPending($('daily-export-status')));
+  $('daily-exclude-selected').addEventListener('click', onDailyExcludeSelected);
+  $('daily-clear-exclusions').addEventListener('click', onDailyClearExclusions);
+  $('daily-export').addEventListener('click', onDailyExport);
 
   // プレビュー(共通)
   $('preview-close').addEventListener('click', () => $('preview-dialog').close());
@@ -355,6 +423,7 @@ function renderWordStock() {
       isDuplicate: dup.has(i),
       title: item.word,
       subtitle: item.meaning || '(意味なし)',
+      meta: formatDateTime(item.generated_at),
       onPreview: () => showPreview('word', item),
     });
     list.appendChild(li);
@@ -409,13 +478,14 @@ async function onWordGenerate() {
       const { word, context } = pairs[i];
       showLoading(status, `生成中... (${i + 1}/${pairs.length}) ${word}`);
       try {
-        generated.push(await generateVocabCard({
+        const card = await generateVocabCard({
           word,
           contextSentence: context,
           apiKey,
           model,
           promptTemplate: shared.wordPrompt,
-        }));
+        });
+        generated.push({ ...card, generated_at: new Date().toISOString() });
       } catch (e) {
         failed.push(`${word}: ${e.message}`);
         if (e instanceof GeminiError && (e.message.includes('1日あたり') || e.message.includes('前払いクレジット'))) break;
@@ -476,6 +546,7 @@ function renderAiAskStock() {
       isDuplicate: dup.has(i),
       title: item.pattern || '(形式未設定)',
       subtitle: questionPreview,
+      meta: formatDateTime(item.generated_at),
       onPreview: () => showPreview('ai_ask', item),
     });
     list.appendChild(li);
@@ -483,6 +554,19 @@ function renderAiAskStock() {
 
   $('ai-ask-stock-empty').hidden = aiAskStock.length > 0;
   $('ai-ask-stock-count').textContent = aiAskStock.length ? `(${aiAskStock.length} 件)` : '';
+}
+
+/**
+ * ISO 8601 の日時文字列を「YYYY-MM-DD HH:MM」(ブラウザのローカル時刻)に
+ * 整形する。一覧の各項目に「いつ生成したか」を表示するために使う
+ * (2026-07-29追加)。パース不能な値・空文字は空文字を返す。
+ */
+function formatDateTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function htmlToPlainText(html) {
@@ -520,7 +604,8 @@ async function onAiAskGenerate() {
       model,
       promptTemplate: shared.grammarMultiPrompt,
     });
-    aiAskStock = aiAskStock.concat(items);
+    const generatedAt = new Date().toISOString();
+    aiAskStock = aiAskStock.concat(items.map((it) => ({ ...it, generated_at: generatedAt })));
     localStorage.setItem(STORAGE.aiAskStock, JSON.stringify(aiAskStock));
     renderAiAskStock();
 
@@ -537,7 +622,7 @@ async function onAiAskGenerate() {
           model,
           promptTemplate: shared.shuujukuPrompt,
         });
-        shuujukuStock = shuujukuStock.concat([shuujukuItem]);
+        shuujukuStock = shuujukuStock.concat([{ ...shuujukuItem, generated_at: new Date().toISOString() }]);
         localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
         renderShuujukuStock();
         shuujukuNote = ' + 習熟用(音読) 1件';
@@ -587,6 +672,7 @@ function renderShuujukuStock() {
       isDuplicate: dup.has(i),
       title: item.pattern || '(パターン未設定)',
       subtitle: item.meaning || '(意味なし)',
+      meta: formatDateTime(item.generated_at),
       onPreview: () => showShuujukuPreview(item),
     });
     list.appendChild(li);
@@ -668,10 +754,341 @@ function showShuujukuPreview(item) {
 }
 
 // ---------------------------------------------------------------------------
+// DailyConversationタブ(「添削結果」スプレッドシート連携)
+//
+// 【他のタブと根本的に違う点】
+// 候補の実体がローカルのストック(localStorage)ではなく**スプレッドシート
+// そのもの**(「Anki出力済み」列が空の行)。そのため一覧はローカルに複製せず、
+// 押されるたびにシートから取り直す。ローカルに持つのは「一覧から除外した
+// 行ID」だけ(dailyconv.js)。デスクトップ版のDailyConversationタブと同じ方針。
+// ---------------------------------------------------------------------------
+
+function sheetsConfig() {
+  return {
+    clientId: $('google-client-id').value.trim(),
+    spreadsheetId: $('sheets-spreadsheet-id').value.trim(),
+    sheetName: $('sheets-sheet-name').value.trim(),
+  };
+}
+
+/** ログイン状態の表示と、ログイン系ボタンの文言を現在の状態に合わせる。 */
+function updateDailyAuthStatus() {
+  const signedIn = hasValidAccessToken();
+  setStatus(
+    $('daily-auth-status'),
+    signedIn
+      ? 'ログイン済みです(このページを閉じるか約1時間で失効します)。'
+      : '未ログインです。シートを読み書きする操作の前にログインしてください。',
+  );
+  // 既にログイン済みの状態で押した場合は「アカウントを選び直したい」
+  // ケースとみなし、同意画面を明示的に出す(forceConsent)。
+  $('daily-signin').textContent = signedIn ? '別のアカウントでログイン' : 'Googleにログイン';
+  $('daily-signout').disabled = !signedIn;
+}
+
+async function onDailySignIn() {
+  const status = $('daily-auth-status');
+  const { clientId } = sheetsConfig();
+  if (!clientId) {
+    setStatus(status, 'OAuthクライアントIDを設定してください(⚙ 設定 → スプレッドシート)。', true);
+    return;
+  }
+  const btn = $('daily-signin');
+  btn.disabled = true;
+  try {
+    const forceConsent = hasValidAccessToken();
+    showLoading(status, 'Googleログインを待っています...');
+    await getAccessToken(clientId, { forceConsent });
+    updateDailyAuthStatus();
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function onDailySignOut() {
+  clearAccessToken();
+  updateDailyAuthStatus();
+}
+
+/**
+ * シート操作に必要なアクセストークンを取得する。設定漏れは分かりやすい
+ * メッセージにして投げ直す(呼び出し側は catch して status に出すだけでよい)。
+ */
+async function requireSheetsAccess() {
+  const cfg = sheetsConfig();
+  if (!cfg.clientId || !cfg.spreadsheetId || !cfg.sheetName) {
+    throw new SheetsAuthError(
+      '⚙ 設定 → スプレッドシート で、クライアントID・スプレッドシートID・シート名を'
+      + '設定してください。',
+    );
+  }
+  const accessToken = await getAccessToken(cfg.clientId);
+  updateDailyAuthStatus();
+  return { ...cfg, accessToken };
+}
+
+/** 「誤りなし」の行は④で除外されるため、一覧でもその旨を明示する。 */
+function renderDailyPending() {
+  const list = $('daily-pending-list');
+  list.textContent = '';
+
+  dailyPendingRows.forEach((row) => {
+    const noError = row.category === '誤りなし';
+    const li = buildStockRow({
+      isDuplicate: noError,
+      tagText: ' ⚠ 誤りなし(出力対象外)',
+      title: `[${row.category || 'カテゴリ未設定'}] ${(row.original || '').slice(0, 40)}`,
+      subtitle: row.corrected || '(添削後なし)',
+      // シートの「日時」列は "YYYY-MM-DD HH:MM:SS" 形式の文字列(sheets_writer /
+      // sheets.js の nowString() と同じ形式)なので Date を経由せず秒を切り
+      // 落とすだけでよい。
+      meta: (row.created_at || '').slice(0, 16),
+      onPreview: () => showDailyPreview(row),
+    });
+    list.appendChild(li);
+  });
+
+  const empty = $('daily-pending-empty');
+  empty.hidden = dailyPendingRows.length > 0;
+  $('daily-pending-count').textContent = dailyPendingRows.length ? `(${dailyPendingRows.length} 件)` : '';
+}
+
+/**
+ * シートから未出力行を取り直して一覧を更新する。
+ * @param {HTMLElement|null} status 進捗を出す要素(null なら黙って更新する)
+ * @returns {Promise<boolean>} 取得できたか
+ */
+async function refreshDailyPending(status) {
+  const btn = $('daily-refresh');
+  btn.disabled = true;
+  try {
+    if (status) showLoading(status, 'シートを読み込み中...');
+    const cfg = await requireSheetsAccess();
+    const rows = await fetchPendingRows(cfg);
+    dailyPendingRows = dailyconv.filterOutExcluded(rows);
+    renderDailyPending();
+    $('daily-pending-empty').textContent = '未出力の行はありません。';
+
+    if (status) {
+      hideLoading(status);
+      const excluded = rows.length - dailyPendingRows.length;
+      setStatus(
+        status,
+        `未出力の行を ${dailyPendingRows.length} 件読み込みました。`
+        + (excluded > 0 ? `(除外登録済みの ${excluded} 件は非表示)` : ''),
+      );
+    }
+    return true;
+  } catch (e) {
+    if (status) {
+      hideLoading(status);
+      setStatus(status, e.message, true);
+    }
+    if (e instanceof SheetsAuthError) {
+      clearAccessToken();
+      updateDailyAuthStatus();
+    }
+    return false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function onDailyCorrect() {
+  const status = $('daily-correct-status');
+  const apiKey = $('api-key').value.trim();
+  if (!apiKey) {
+    setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
+    $('settings').hidden = false;
+    return;
+  }
+  if (!shared.correctionSystemInstruction || !shared.correctionResponseSchema) {
+    setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
+    return;
+  }
+  const text = $('daily-input').value.trim();
+  if (!text) {
+    setStatus(status, '添削する英文を入力してください。', true);
+    return;
+  }
+
+  const btn = $('daily-correct');
+  btn.disabled = true;
+  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  try {
+    // 先にシートへの書き込み権限を確保しておく(添削だけ済んで書き込めない、
+    // という無駄なAPI消費を避けるため)。
+    const cfg = await requireSheetsAccess();
+
+    showLoading(status, 'AIが添削中...(数十秒かかることがあります)');
+    const corrections = consolidateNoErrorCorrections(await correctEnglishText({
+      text,
+      apiKey,
+      model,
+      systemInstruction: shared.correctionSystemInstruction,
+      responseSchema: shared.correctionResponseSchema,
+    }));
+
+    showLoading(status, 'シートに追記中...');
+    const newIds = await appendCorrectionRows({ ...cfg, corrections });
+
+    hideLoading(status);
+    $('daily-input').value = '';
+    setStatus(status, `${newIds.length} 件をシートに追加しました。③の一覧を更新します...`);
+
+    // デスクトップ版と同じく、追記に成功したらそのまま③の読み込みまで連鎖させる
+    // (確認導線が上下バラバラになるのを避けるため)。
+    await refreshDailyPending(null);
+    setStatus(status, `${newIds.length} 件をシートに追加し、③の一覧を更新しました。`);
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, e.message, true);
+    if (e instanceof SheetsAuthError) {
+      clearAccessToken();
+      updateDailyAuthStatus();
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function onDailyExcludeSelected() {
+  const indices = checkedIndicesOf('daily-pending-list');
+  if (indices.length === 0) {
+    alert('除外する項目を選択してください。');
+    return;
+  }
+  if (!confirm(
+    `選択した ${indices.length} 件を一覧から除外します。\n`
+    + '(スプレッドシート自体は変更されません。この端末でのみ非表示になります)',
+  )) return;
+
+  const remove = new Set(indices);
+  dailyconv.addExcludedIds(dailyPendingRows.filter((_, i) => remove.has(i)).map((r) => r.id));
+  dailyPendingRows = dailyPendingRows.filter((_, i) => !remove.has(i));
+  renderDailyPending();
+}
+
+function onDailyClearExclusions() {
+  if (!confirm('一覧から除外した行の登録をすべて解除します。よろしいですか？')) return;
+  dailyconv.clearExcludedIds();
+  refreshDailyPending($('daily-export-status'));
+}
+
+async function onDailyExport() {
+  const status = $('daily-export-status');
+  if (dailyPendingRows.length === 0) {
+    setStatus(status, '出力する行がありません。先に③でシートから読み込んでください。', true);
+    return;
+  }
+  const cardDef = shared.cardDefs?.daily;
+  if (!cardDef || !shared.ankiSchema) {
+    setStatus(status, 'カード定義の読み込みが完了していません。少し待って再試行してください。', true);
+    return;
+  }
+
+  // build_grammar_dailyconv_v1_final.process_sheet_rows() と同じ除外
+  // (「誤りなし」の行・ID重複行はカード化しない)。
+  const { rows, duplicateIds } = dailyconv.processSheetRows(dailyPendingRows);
+  if (rows.length === 0) {
+    setStatus(
+      status,
+      '出力対象の行がありません。読み込んだ行はすべて「誤りなし」またはID重複のため'
+      + '除外されました(誤りのある行だけがカード化の対象です)。',
+      true,
+    );
+    return;
+  }
+
+  const btn = $('daily-export');
+  btn.disabled = true;
+  try {
+    setStatus(status, '.apkg を生成中...');
+    const readyItems = dailyconv.buildFieldsReadyItems(rows);
+    // TTS APIキーが設定されていれば、Answer(添削後)とExample(類似表現)に
+    // 音声を合成して埋め込む(未設定なら従来どおり音声無し)。
+    const { items, media } = await embedTtsAudioIntoItems(
+      readyItems, TTS_FIELD_KEYS.daily, 'daily', status,
+    );
+    const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items, media });
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadBlob(blob, `daily_${stamp}.apkg`);
+
+    let note = '';
+    if (duplicateIds.length > 0) note += `\nID重複の ${duplicateIds.length} 件は除外しました。`;
+
+    // 「Anki出力済み」のマークは、.apkg の生成に**実際に成功してから**行う
+    // (デスクトップ版と同じ2段階設計。失敗した行を出力済みにしないため)。
+    if ($('daily-mark-exported').checked) {
+      if (confirm(`${rows.length} 件をシートの「Anki出力済み」列にマークします。よろしいですか？`)) {
+        showLoading(status, 'シートを更新中...');
+        const cfg = await requireSheetsAccess();
+        const result = await markRowsAsExported({ ...cfg, rowIds: rows.map((r) => r.id) });
+        hideLoading(status);
+        note += `\nシートの ${result.succeeded.length} 行を「Anki出力済み」にしました。`;
+        if (result.failed.length > 0) {
+          note += `(${result.failed.length} 件はID列に見つかりませんでした)`;
+        }
+        await refreshDailyPending(null);
+      } else {
+        note += '\nシートへのマークは行いませんでした。';
+      }
+    }
+
+    setStatus(
+      status,
+      `${rows.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。${note}`,
+    );
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
+    if (e instanceof SheetsAuthError) {
+      clearAccessToken();
+      updateDailyAuthStatus();
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/**
+ * シートの1行を、実際のカードテンプレート+CSSでプレビューする。
+ * 出力前の行は9フィールドを持たないため、buildFieldsReadyItems() で
+ * 1件だけ変換してから showPreview() と同じ手順でレンダリングする。
+ */
+function showDailyPreview(row) {
+  const def = shared.cardDefs?.daily;
+  if (!def) {
+    alert('カード定義の読み込みが完了していません。');
+    return;
+  }
+  const [item] = dailyconv.buildFieldsReadyItems([row]);
+  const fields = fieldsFromItem(def, item);
+  const values = {};
+  def.fields.forEach((f, i) => { values[f.anki_name] = fields[i]; });
+
+  const tmpl = def.anki_model.tmpls[0];
+  const front = renderTemplate(tmpl.qfmt, values);
+  const back = renderTemplate(tmpl.afmt, values, front);
+
+  $('preview-title').textContent = `プレビュー: ${(row.original || '').slice(0, 30)}`;
+  $('preview-frame').srcdoc = buildPreviewDoc(def.anki_model.css, front, back);
+  $('preview-dialog').showModal();
+}
+
+// ---------------------------------------------------------------------------
 // 共通: 一覧の行・削除・出力
 // ---------------------------------------------------------------------------
 
-function buildStockRow({ isDuplicate, title, subtitle, onPreview }) {
+/**
+ * @param {string} [meta] 生成日時などの補足情報(2026-07-29追加)。
+ *   空文字・未指定なら何も描画しない(古い形式で保存されたストック項目
+ *   ("generated_at"を持たない)でも問題なく表示できるようにするため)。
+ */
+function buildStockRow({ isDuplicate, tagText = ' ⚠ 重複', title, subtitle, meta, onPreview }) {
   const li = document.createElement('li');
   if (isDuplicate) li.className = 'duplicate';
 
@@ -688,7 +1105,7 @@ function buildStockRow({ isDuplicate, title, subtitle, onPreview }) {
   if (isDuplicate) {
     const tag = document.createElement('span');
     tag.className = 'dup-tag';
-    tag.textContent = ' ⚠ 重複';
+    tag.textContent = tagText;
     titleEl.appendChild(tag);
   }
 
@@ -697,6 +1114,13 @@ function buildStockRow({ isDuplicate, title, subtitle, onPreview }) {
   subtitleEl.textContent = subtitle;
 
   body.append(titleEl, subtitleEl);
+
+  if (meta) {
+    const metaEl = document.createElement('div');
+    metaEl.className = 'meta';
+    metaEl.textContent = meta;
+    body.append(metaEl);
+  }
 
   const preview = document.createElement('button');
   preview.type = 'button';

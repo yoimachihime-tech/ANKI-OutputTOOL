@@ -78,6 +78,19 @@ export function dueFor(dueScheme, item, index) {
 }
 
 /**
+ * ノートの tags 列の値を、genanki の Note.write_to_db() と同じ形式で作る
+ * (`' ' + ' '.join(tags) + ' '`。タグが無い場合も `'  '` になる)。
+ *
+ * タグを持つのは今のところ DailyConversation(`source::gemini_dailyconv`、
+ * build_grammar_dailyconv_v1_final.build_deck() が全ノートに付ける)だけで、
+ * 他のカード種別は tags を持たない。カード種別ごとに JS 側で分岐させず、
+ * guid_scheme/due_scheme と同じく共有 JSON 側(card_def.tags)に持たせている。
+ */
+export function tagsFieldFor(cardDef) {
+  return ` ${(cardDef.tags || []).join(' ')} `;
+}
+
+/**
  * item(AI が生成した内容)を、ノートタイプの定義順に並べたフィールド配列にする。
  * card_def_builder.build_deck_from_def() と同じ変換。
  */
@@ -144,6 +157,7 @@ export async function buildApkg({ cardDef, ankiSchema, items, media }) {
     // --- ノートとカードを挿入 ---
 
     const sortFieldIndex = cardDef.anki_model.sortf || 0;
+    const tagsField = tagsFieldFor(cardDef);
 
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
@@ -159,7 +173,7 @@ export async function buildApkg({ cardDef, ankiSchema, items, media }) {
         cardDef.model_id,             // mid
         timestampSec,                 // mod
         -1,                           // usn
-        '  ',                         // tags(genanki: ' ' + join + ' ')
+        tagsField,                    // tags(genanki: ' ' + join + ' ')
         fields.join('\x1f'),          // flds
         fields[sortFieldIndex] || '', // sfld
         0,                            // csum(Anki 側が再計算するので 0 でよい)

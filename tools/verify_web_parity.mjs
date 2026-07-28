@@ -10,10 +10,11 @@
 // 必ずこの検証を通すこと。
 //
 // 【対象】
-// word(単語)・grammar_multi(AIに質問)・shuujuku(習熟用/音読)の3種別。
-// いずれもPython側の生成経路が異なる(word: card_defs.json +
-// card_def_builder / grammar_multi: grammar_multi_builder.build_deck() /
-// shuujuku: build_shuujuku_v1.build_deck())ため、それぞれ別個に突き合わせる。
+// word(単語)・grammar_multi(AIに質問)・shuujuku(習熟用/音読)・
+// daily(DailyConversation)の4種別。いずれもPython側の生成経路が異なる
+// (word: card_defs.json + card_def_builder / grammar_multi:
+// grammar_multi_builder.build_deck() / shuujuku: build_shuujuku_v1.build_deck() /
+// daily: deck_builder.build_deck_and_row_map())ため、それぞれ別個に突き合わせる。
 //
 // 【使い方】
 //   cd tools && npm install && npm run verify
@@ -43,6 +44,7 @@ globalThis.JSZip = require('jszip');
 const { buildApkg } = await import(new URL('../docs/lib/apkg.js', import.meta.url));
 const { guidFor } = await import(new URL('../docs/lib/guid.js', import.meta.url));
 const { buildFieldsReadyItems } = await import(new URL('../docs/lib/shuujuku.js', import.meta.url));
+const dailyconv = await import(new URL('../docs/lib/dailyconv.js', import.meta.url));
 
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const cardDefsAll = readJson(join(DOCS, 'shared', 'card_defs.json')).defs;
@@ -83,8 +85,13 @@ function dumpPython(cardDefKey, items) {
  *   場合に指定する(shuujuku: Content/Numを出力時点で確定させるため、
  *   Python側はsource_key付きの生item、Web側はbuildFieldsReadyItems()済みの
  *   item、と形が異なるため)。省略時は`items`をそのまま両方に使う。
+ * @param {object[]} [labelItems] labelOf に渡す配列。**ノートの並び順と1対1で
+ *   対応していること**。daily はPython側へ渡すのが除外前の生の行なので、
+ *   ノート i と items[i] が一致しない(除外後の行を明示的に渡す必要がある)。
+ *   省略時は`items`を使う。
  */
-async function verifyCardDef(cardDefKey, items, labelOf, webItems) {
+async function verifyCardDef(cardDefKey, items, labelOf, webItems, labelItems) {
+  const labelSource = labelItems || items;
   console.log(`\n=== ${cardDefKey} ===`);
   const expected = dumpPython(cardDefKey, items);
   const cardDef = cardDefsAll[cardDefKey];
@@ -112,7 +119,7 @@ async function verifyCardDef(cardDefKey, items, labelOf, webItems) {
     }
     notes.forEach((n, i) => {
       const e = expected.notes[i];
-      const label = labelOf(items[i]);
+      const label = labelOf(labelSource[i]);
       for (const key of ['guid', 'mid', 'tags', 'flds', 'sfld']) {
         if (String(n[key]) !== String(e[key])) {
           fail(`[notes] [${i}] (${label}) の ${key}: web=${JSON.stringify(n[key])} / python=${JSON.stringify(e[key])}`);
@@ -290,10 +297,86 @@ const shuujukuGuidCases = await verifyCardDef(
   shuujukuWebItems,
 );
 
+// DailyConversation(daily): Python側へ渡すのは「添削結果」シートの**生の行**で、
+// カテゴリ「誤りなし」の除外・ID重複の除去(process_sheet_rows)もPython側が行う。
+// Web側は同等の処理を dailyconv.processSheetRows() が担当するため、
+// 「両者が同じ行を同じ順序で残すか」もここで一緒に検証されることになる。
+// スコアが全て入っている行/欠けている行、類似表現が空の行、除外対象の行を
+// 一通り混ぜてある。
+const DAILY_RAW_ROWS = [
+  {
+    id: '59cb55d3-d794-4ae8-8813-c1268807b0f7',
+    original: 'I go to the park yesterday.',
+    corrected: 'I went to the park yesterday.',
+    explanation: '過去の出来事なので動詞は過去形 <b>went</b> にします。',
+    category: '文法',
+    similar_en_list: ['I visited the park yesterday.', 'I headed to the park yesterday.'],
+    similar_ja_list: ['visit は「訪れる」の意味で少し硬い。', 'head to は「向かう」に近い。'],
+    grammar_score: 60,
+    naturalness_score: 70,
+    comprehensibility_score: 90,
+    score_comment: '時制の誤りが1点、意味は十分に伝わります。',
+  },
+  {
+    // スコア列が空欄(sheets_reader が None を返す)→ Score フィールドは空になる
+    id: 'a1b2c3d4-0000-4000-8000-000000000001',
+    original: "She don't like coffee.",
+    corrected: "She doesn't like coffee.",
+    explanation: '三人称単数の否定は <b>doesn\'t</b> を使います。',
+    category: '語彙',
+    similar_en_list: [],   // 類似表現なし(Example/ExampleJA が空)
+    similar_ja_list: [],
+    grammar_score: null,
+    naturalness_score: null,
+    comprehensibility_score: null,
+    score_comment: '',
+  },
+  {
+    // カテゴリ「誤りなし」→ 両実装とも出力対象から除外するはず
+    id: 'a1b2c3d4-0000-4000-8000-000000000002',
+    original: 'This sentence is perfectly fine.',
+    corrected: 'This sentence is perfectly fine.',
+    explanation: '誤りはありません。',
+    category: '誤りなし',
+    similar_en_list: [],
+    similar_ja_list: [],
+    grammar_score: 100,
+    naturalness_score: 100,
+    comprehensibility_score: 100,
+    score_comment: '問題ありません。',
+  },
+  {
+    // 1件目とID重複 → 両実装とも先に出現した方だけを残すはず
+    id: '59cb55d3-d794-4ae8-8813-c1268807b0f7',
+    original: 'duplicated row',
+    corrected: 'duplicated row',
+    explanation: '',
+    category: '自然さ',
+    similar_en_list: [],
+    similar_ja_list: [],
+    grammar_score: null,
+    naturalness_score: null,
+    comprehensibility_score: null,
+    score_comment: '',
+  },
+];
+const { rows: dailyDeckRows, duplicateIds: dailyDuplicateIds } = dailyconv.processSheetRows(DAILY_RAW_ROWS);
+console.log(
+  `\n(daily) processSheetRows: ${DAILY_RAW_ROWS.length} 行 → ${dailyDeckRows.length} 行`
+  + `(ID重複で除外: ${dailyDuplicateIds.length} 件)`,
+);
+const dailyGuidCases = await verifyCardDef(
+  'daily',
+  DAILY_RAW_ROWS,
+  (row) => `${row.category} / ${row.id.slice(0, 8)}`,
+  dailyconv.buildFieldsReadyItems(dailyDeckRows),
+  dailyDeckRows,
+);
+
 // --- guid 単体(既知の値との突き合わせ。GUID_CASES は両方の呼び出しで共通) ---
 console.log('\n=== guid アルゴリズム単体 ===');
 for (const [values, want] of Object.entries({
-  ...wordGuidCases, ...grammarMultiGuidCases, ...shuujukuGuidCases,
+  ...wordGuidCases, ...grammarMultiGuidCases, ...shuujukuGuidCases, ...dailyGuidCases,
 })) {
   const got = await guidFor(...JSON.parse(values));
   if (got === want) ok(`guid_for(${values}) = ${got}`);

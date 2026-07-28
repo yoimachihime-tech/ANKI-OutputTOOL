@@ -99,16 +99,19 @@ function describeError(status, detail) {
 }
 
 /**
- * Gemini にプロンプトを投げ、応答テキストを返す。
- * @param {string} prompt
+ * Gemini の generateContent にリクエストを投げ、応答 JSON をそのまま返す共通処理
+ * (gemini_client._post_gemini_request() に対応)。429/5xx のリトライ判定と
+ * エラーメッセージの日本語化はすべてここに集約する。
+ *
+ * @param {object} requestBody generateContent のリクエストボディ
  * @param {string} apiKey
  * @param {string} model 例: "gemini-2.0-flash"
  */
-export async function callGemini(prompt, apiKey, model) {
+async function postGeminiRequest(requestBody, apiKey, model) {
   if (!apiKey) throw new GeminiError('Gemini APIキーが設定されていません。');
 
   const url = ENDPOINT_TMPL.replace('{model}', encodeURIComponent(model));
-  const body = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+  const body = JSON.stringify(requestBody);
 
   let lastDetail = '';
   for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
@@ -118,14 +121,7 @@ export async function callGemini(prompt, apiKey, model) {
       body,
     });
 
-    if (res.ok) {
-      const data = await res.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (typeof text !== 'string') {
-        throw new GeminiError(`Gemini APIの応答形式が想定と異なります: ${JSON.stringify(data).slice(0, 300)}`);
-      }
-      return text;
-    }
+    if (res.ok) return res.json();
 
     lastDetail = await res.text();
 
@@ -180,6 +176,27 @@ export async function callGemini(prompt, apiKey, model) {
     );
   }
   throw new GeminiError(`Gemini API呼び出しに失敗しました: ${lastDetail}`);
+}
+
+/** 応答 JSON から生成テキストを取り出す。 */
+function textFromResponse(data) {
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (typeof text !== 'string') {
+    throw new GeminiError(`Gemini APIの応答形式が想定と異なります: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  return text;
+}
+
+/**
+ * Gemini にプロンプトを投げ、応答テキストを返す。
+ * @param {string} prompt
+ * @param {string} apiKey
+ * @param {string} model 例: "gemini-2.0-flash"
+ */
+export async function callGemini(prompt, apiKey, model) {
+  return textFromResponse(
+    await postGeminiRequest({ contents: [{ parts: [{ text: prompt }] }] }, apiKey, model),
+  );
 }
 
 /** 応答から JSON オブジェクトを取り出す(```json フェンス付きにも対応)。 */
@@ -381,6 +398,98 @@ export async function generateShuujukuItem({ question, apiKey, model, promptTemp
     source_topic: topicKey,
     source_label: '由来: AIに質問',
   };
+}
+
+// ---------------------------------------------------------------------------
+// 英文添削 — 「DailyConversation」タブ
+// gemini_client.correct_english_text() / consolidate_no_error_corrections()
+// と処理内容を一致させてある。
+// ---------------------------------------------------------------------------
+
+/**
+ * 英文(複数文・段落もまとめて可)を Gemini に添削・採点させる。
+ *
+ * 他の生成関数と違い、プロンプトで JSON 出力を「指示」するのではなく、
+ * Gemini の構造化出力(responseMimeType + responseSchema / JSON Mode)を使う。
+ * responseSchema が ARRAY なので、複数文をまとめて渡しても Gemini 側が
+ * 文ごとに分割して配列で返す(Googleフォーム経由の Apps Script と同じ挙動)。
+ *
+ * **systemInstruction / responseSchema は Apps Script 側の実装と意味的に同一に
+ * 保つこと**(採点基準がズレると、「添削結果」シート上でフォーム経由の行と
+ * このアプリ経由の行で評価基準が食い違ってしまうため)。両者は
+ * docs/shared/correction_system_instruction.txt と
+ * docs/shared/correction_response_schema.json に切り出してあり、
+ * デスクトップ版(gemini_client.py)も同じファイルを読む。
+ *
+ * @returns {Promise<object[]>} original/corrected/explanation/category/
+ *   similar_expressions/各スコア/score_comment を持つ dict の配列
+ */
+export async function correctEnglishText({
+  text, apiKey, model, systemInstruction, responseSchema,
+}) {
+  if (!text || !text.trim()) throw new GeminiError('添削する英文が空です。');
+
+  const data = await postGeminiRequest({
+    system_instruction: { parts: [{ text: systemInstruction }] },
+    contents: [{ parts: [{ text }] }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema,
+    },
+  }, apiKey, model);
+
+  const resultText = textFromResponse(data);
+  let corrections;
+  try {
+    corrections = JSON.parse(resultText);
+  } catch {
+    throw new GeminiError(`Gemini応答をJSONとして解析できませんでした: ${resultText.slice(0, 300)}`);
+  }
+  if (!Array.isArray(corrections)) {
+    throw new GeminiError(`Gemini応答が配列ではありません: ${resultText.slice(0, 300)}`);
+  }
+  return corrections;
+}
+
+/**
+ * category=="誤りなし" の結果が複数あっても、シートには1行だけ書き込むよう
+ * 1件に要約する(gemini_client.consolidate_no_error_corrections() と同一)。
+ *
+ * 誤りのある行は 1文=1行のまま素通しする(それぞれ個別にカード化するため)。
+ * 要約行は複数文の点数を平均する意味付けが無いのでスコアを持たない。
+ */
+export function consolidateNoErrorCorrections(corrections) {
+  const noError = corrections.filter((c) => c.category === '誤りなし');
+  if (noError.length <= 1) return corrections;
+
+  const originals = noError.map((c) => c.original || '');
+  const merged = {
+    original: originals.join('\n'),
+    corrected: originals.join('\n'),
+    explanation: `${noError.length}文とも誤りなしでした。`,
+    category: '誤りなし',
+    similar_expressions: [],
+    grammar_score: '',
+    naturalness_score: '',
+    comprehensibility_score: '',
+    score_comment: '',
+  };
+
+  const result = [];
+  let inserted = false;
+  for (const c of corrections) {
+    if (c.category === '誤りなし') {
+      // 誤りのある文と混在していても並び順が大きく崩れないよう、
+      // 「誤りなし」の最初の出現位置に要約行を差し込む。
+      if (!inserted) {
+        result.push(merged);
+        inserted = true;
+      }
+    } else {
+      result.push(c);
+    }
+  }
+  return result;
 }
 
 /** generateContent に対応しているモデル名の一覧を取得する。 */

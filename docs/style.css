@@ -103,8 +103,29 @@ h2 { font-size: 1.05rem; margin: 0 0 4px; }
   margin-bottom: 16px;
 }
 
+h3 { font-size: .95rem; margin: 0 0 4px; }
+
 .hint { color: var(--sub); font-size: .85rem; margin: 4px 0 12px; }
+.hint code {
+  padding: 1px 4px;
+  font-size: .95em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
 label { display: block; font-size: .85rem; font-weight: 600; margin: 10px 0 4px; }
+
+/* チェックボックス付きラベル(DailyConversationタブの「Anki出力済みにする」等)。
+   通常の label は見出し扱い(block/太字)なので、こちらは行内に並べる。 */
+label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .9rem;
+  font-weight: 400;
+}
+label.checkbox input[type="checkbox"] { width: auto; flex: none; }
 
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row > input[type="text"], .row > input[type="password"] { flex: 1 1 12rem; }
@@ -205,6 +226,9 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 生成日時などの補足情報(2026-07-29追加)。subtitle よりさらに控えめに。 */
+.stock .meta { color: var(--sub); font-size: .75rem; margin-top: 2px; }
 
 #preview-dialog {
   width: min(680px, 94vw);

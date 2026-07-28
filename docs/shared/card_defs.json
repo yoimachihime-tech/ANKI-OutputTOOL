@@ -437,6 +437,187 @@
         "usn": -1,
         "vers": []
       }
+    },
+    "daily": {
+      "key": "daily",
+      "label": "DailyConversation(日次英作文添削)",
+      "notetype_name": "Grammar DailyConversation (日次英作文添削 v1)",
+      "model_id": 1907260020123,
+      "deck_id": 1907260010001,
+      "deck_name": "02.単語・MindTips::DailyConversation",
+      "fields": [
+        {
+          "anki_name": "Pattern",
+          "item_key": "pattern"
+        },
+        {
+          "anki_name": "Question",
+          "item_key": "question"
+        },
+        {
+          "anki_name": "Choices",
+          "item_key": "choices"
+        },
+        {
+          "anki_name": "Answer",
+          "item_key": "answer"
+        },
+        {
+          "anki_name": "Example",
+          "item_key": "example"
+        },
+        {
+          "anki_name": "ExampleJA",
+          "item_key": "example_ja"
+        },
+        {
+          "anki_name": "Why",
+          "item_key": "why"
+        },
+        {
+          "anki_name": "WhyNot",
+          "item_key": "whynot"
+        },
+        {
+          "anki_name": "Score",
+          "item_key": "score"
+        }
+      ],
+      "guid_scheme": {
+        "type": "compound",
+        "prefix": "dailyconv",
+        "item_keys": [
+          "id"
+        ]
+      },
+      "due_scheme": {
+        "type": "index"
+      },
+      "tags": [
+        "source::gemini_dailyconv"
+      ],
+      "anki_model": {
+        "css": "\n.card {\n  font-family: -apple-system, \"Hiragino Sans\", \"Helvetica Neue\", Arial, sans-serif;\n  font-size: 17px;\n  line-height: 1.75;\n  text-align: left;\n  max-width: 640px;\n  margin: 0 auto;\n  padding: 8px 4px 28px 4px;\n\n  --bg: #e7e9ec;\n  --fg: #000000;\n  --sub: #6b7280;\n  --pattern-bg: #eef2ff;\n  --pattern-fg: #4338ca;\n  --question-bg: #ccd1d7;\n  --question-border: #b3b9c1;\n  --choice-bg: #dcdfe3;\n  --choice-border: #b3b9c1;\n  --answer-bg: #ecdca0;\n  --answer-border: #c7a83a;\n  --why-bg: #c9dfc9;\n  --why-border: #3a8f5c;\n  --whynot-bg: #f0c9c9;\n  --whynot-border: #c94a3f;\n  --example-bg: #c7d3e2;\n  --example-border: #5c85cf;\n  --score-bg: #ded1ec;\n  --score-border: #6b46c1;\n  color: var(--fg);\n  background: var(--bg);\n}\n\n.night_mode .card {\n  --bg: #1a1c1f;\n  --fg: #f0f1f3;\n  --sub: #9aa1ab;\n  --pattern-bg: #2b2f6b;\n  --pattern-fg: #c7cdff;\n  --question-bg: #212326;\n  --question-border: #34373b;\n  --choice-bg: #24272a;\n  --choice-border: #383c40;\n  --answer-bg: #332b10;\n  --answer-border: #8c7620;\n  --why-bg: #16241b;\n  --why-border: #3a7350;\n  --whynot-bg: #271515;\n  --whynot-border: #96453c;\n  --example-bg: #182130;\n  --example-border: #4d76b3;\n  --score-bg: #241b30;\n  --score-border: #7c5bc4;\n}\n\n@media (prefers-color-scheme: dark) {\n  .card {\n    --bg: #1a1c1f;\n    --fg: #f0f1f3;\n    --sub: #9aa1ab;\n    --pattern-bg: #2b2f6b;\n    --pattern-fg: #c7cdff;\n    --question-bg: #212326;\n    --question-border: #34373b;\n    --choice-bg: #24272a;\n    --choice-border: #383c40;\n    --answer-bg: #332b10;\n    --answer-border: #8c7620;\n    --why-bg: #16241b;\n    --why-border: #3a7350;\n    --whynot-bg: #271515;\n    --whynot-border: #96453c;\n    --example-bg: #182130;\n    --example-border: #4d76b3;\n    --score-bg: #241b30;\n    --score-border: #7c5bc4;\n  }\n}\n\n.pattern-tag {\n  display: inline-block;\n  background: var(--pattern-bg);\n  color: var(--pattern-fg);\n  font-weight: 700;\n  font-size: 14px;\n  padding: 4px 12px;\n  border-radius: 999px;\n  margin-bottom: 12px;\n  letter-spacing: 0.02em;\n}\n\n.block { border-radius: 12px; padding: 14px 16px; margin: 12px 0; }\n\n.question-block { background: var(--question-bg); border: 1px solid var(--question-border); }\n.question-label { font-size: 12px; color: var(--sub); font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; }\n\n.choices { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }\n.choice { background: var(--choice-bg); border: 1px solid var(--choice-border); border-radius: 8px; padding: 7px 12px; font-family: \"SF Mono\", Menlo, monospace; font-size: 15.5px; }\n\n.answer-block { background: var(--answer-bg); border-left: 5px solid var(--answer-border); }\n.answer-block .label { font-weight: 700; font-size: 12.5px; color: var(--answer-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;}\n.answer-block .sentence { font-size: 18px; font-weight: 600; }\n\n.example-block { background: var(--example-bg); border-left: 5px solid var(--example-border); }\n.example-block .label { font-weight: 700; font-size: 12.5px; color: var(--example-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.example-item { margin: 0 0 10px 0; }\n.example-item:last-child { margin-bottom: 0; }\n.example-sentence { font-size: 16px; }\n.example-ja { color: var(--sub); font-size: 14.5px; margin-top: 2px; }\n\n.score-block { background: var(--score-bg); border-left: 5px solid var(--score-border); }\n.score-block .label { font-weight: 700; font-size: 12.5px; color: var(--score-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.score-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }\n.score-badge { background: var(--choice-bg); border: 1px solid var(--choice-border); border-radius: 8px; padding: 6px 10px; font-size: 14px; }\n.score-badge .num { font-weight: 700; font-family: \"SF Mono\", Menlo, monospace; }\n.score-comment { color: var(--sub); font-size: 14.5px; }\n\n.why-block { background: var(--why-bg); border-left: 5px solid var(--why-border); }\n.why-block .label { font-weight: 700; font-size: 12.5px; color: var(--why-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n\n.whynot-block { background: var(--whynot-bg); border-left: 5px solid var(--whynot-border); }\n.whynot-block .label { font-weight: 700; font-size: 12.5px; color: var(--whynot-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n\nb { color: inherit; }\nhr.sep { border: none; border-top: 1px solid var(--question-border); margin: 18px 0; }\n.ex-num { font-weight: 700; }\n",
+        "did": 1907260010001,
+        "flds": [
+          {
+            "name": "Pattern",
+            "ord": 0,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Question",
+            "ord": 1,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Choices",
+            "ord": 2,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Answer",
+            "ord": 3,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Example",
+            "ord": 4,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "ExampleJA",
+            "ord": 5,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Why",
+            "ord": 6,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "WhyNot",
+            "ord": 7,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Score",
+            "ord": 8,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          }
+        ],
+        "id": "1907260020123",
+        "latexPost": "\\end{document}",
+        "latexPre": "\\documentclass[12pt]{article}\n\\special{papersize=3in,5in}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amssymb,amsmath}\n\\pagestyle{empty}\n\\setlength{\\parindent}{0in}\n\\begin{document}\n",
+        "latexsvg": false,
+        "mod": 0,
+        "name": "Grammar DailyConversation (日次英作文添削 v1)",
+        "req": [
+          [
+            0,
+            "any",
+            [
+              0,
+              1,
+              2
+            ]
+          ]
+        ],
+        "sortf": 0,
+        "tags": [],
+        "tmpls": [
+          {
+            "name": "1. 添削問題",
+            "qfmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  {{#Choices}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n  {{/Choices}}\n</div>\n",
+            "afmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  {{#Choices}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n  {{/Choices}}\n</div>\n\n<hr class=\"sep\">\n<div class=\"block answer-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n\n{{#Example}}\n<div class=\"block example-block\">\n  <div class=\"label\">類似表現</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/Example}}\n\n{{#Score}}\n<div class=\"block score-block\">\n  <div class=\"label\">Self-Assessment</div>\n  {{Score}}\n</div>\n{{/Score}}\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
+            "ord": 0,
+            "bafmt": "",
+            "bqfmt": "",
+            "bfont": "",
+            "bsize": 0,
+            "did": null
+          }
+        ],
+        "type": 0,
+        "usn": -1,
+        "vers": []
+      }
     }
   }
 }

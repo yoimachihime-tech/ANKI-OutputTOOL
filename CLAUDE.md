@@ -49,11 +49,14 @@ DailyConversationタブに、英文を直接入力してAIに添削・採点さ�
   そのまま`gemini_client.correct_english_text()`に移植できたため。
   **採点基準を意図的にズラすと、Googleフォーム経由の行とこのアプリ経由の行で
   「添削結果」シート上の評価基準が食い違ってしまうため、
-  `CORRECTION_SYSTEM_INSTRUCTION`/`CORRECTION_RESPONSE_SCHEMA`はApps Script側の
+  system_instruction/responseSchemaはApps Script側の
   実装と意味的に同一になるよう保つこと**(Apps Script側が変更された場合は
   片桐に確認の上、このコピーも追従させる。position的には
   `build_grammar_dailyconv_v1_final.py`の「正典はclaude.ai側」と同種の
-  「正典は別システム側」パターン)。
+  「正典は別システム側」パターン)。2026-07-29のWeb版対応時に、両者は
+  他のプロンプトと同じ理由(Web版と片方だけ直して不一致になる事故を防ぐ)で
+  `docs/shared/correction_system_instruction.txt` /
+  `docs/shared/correction_response_schema.json`へ切り出し済み。
 - `gemini_client.correct_english_text(text, api_key, model)`: 複数文・複数
   段落をまとめて渡しても、Geminiの構造化出力(`responseSchema`が`ARRAY`)が
   文ごとに自動分割して返す(Apps Scriptの「1フォーム送信=1englishText」でも
@@ -867,8 +870,16 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
 - `correct_english_text(text, api_key, model)`(2026-07-27追加): DailyConversation
   タブへの直接入力機能向け。片桐から提供を受けたApps Script
   (`onFormSubmit`→`callGeminiForCorrection`)の`system_instruction`・
-  `responseSchema`をそのまま移植した(`CORRECTION_SYSTEM_INSTRUCTION`/
-  `CORRECTION_RESPONSE_SCHEMA`)。他の関数と違い、プロンプトでJSON出力を
+  `responseSchema`をそのまま移植した。**2026-07-29のWeb版対応時に、この2つは
+  他のプロンプトと同じ理由(Web版と片方だけ直して不一致になる事故を防ぐ)で
+  `docs/shared/correction_system_instruction.txt` /
+  `docs/shared/correction_response_schema.json`へ切り出した**
+  (Python側は`_load_shared_prompt()`/`_load_shared_json()`、Web側は
+  `docs/lib/gemini.js`の`correctEnglishText()`が同じ2ファイルを読む。
+  以前あったモジュール定数`CORRECTION_SYSTEM_INSTRUCTION`/
+  `CORRECTION_RESPONSE_SCHEMA`は廃止し、パス定数
+  `CORRECTION_SYSTEM_INSTRUCTION_PATH`/`CORRECTION_RESPONSE_SCHEMA_PATH`に
+  置き換えてある)。他の関数と違い、プロンプトでJSON出力を
   「指示」するのではなく、Geminiの`generationConfig.responseMimeType=
   "application/json"` + `responseSchema`(構造化出力/JSON Mode)を使っており、
   `_extract_json`によるフェンス除去は不要(`json.loads`に直接渡せる)。
@@ -1288,13 +1299,18 @@ example_ja/example_blank/noteの7キーを受け取る。
   ページのJavaScriptは誰でも読めるため、APIキーをソースに埋め込んでは
   いけない**(下記「Web版」の項を参照)。
 
-## 次にやること(2026-07-28時点の引き継ぎ)
+## 次にやること(2026-07-29時点の引き継ぎ)
 
 **Web版フェーズ1は完了**(2026-07-28)。単語カード生成・AIに質問
 (Grammar Multi)・習熟用(音読)・**TTS音声の自動埋め込み**のすべてが実装・
 push済みで、GitHub Pagesで公開・片桐による実機確認も完了している。URL:
 `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/`
-次のセッションは新機能の追加(下記「未実施」)から再開する。
+
+**2026-07-29: DailyConversation(シート連携)のWeb対応も実装完了**
+(下記「Web版のDailyConversation(スプレッドシート連携)」を参照)。
+`npm test`(6本、154アサーション)は全て通過しているが、**片桐の実機確認は
+未実施**。実機で試すには片桐側でOAuthクライアントIDの作成等が必要
+(手順は`docs/README.md`の「事前準備(初回のみ)」を参照)。
 
 ### 片桐側で完了済み
 
@@ -1315,21 +1331,29 @@ push済みで、GitHub Pagesで公開・片桐による実機確認も完了し�
 
 ### 未実施(次にやること、どれを先にやるかは片桐に確認すること)
 
-- DailyConversation(シート連携)のWeb対応。サービスアカウント鍵は
-  ブラウザに置けないため、OAuth 2.0 (PKCE) が必要(詳細は下記Web版の項)
+- **Web版DailyConversationの実機確認**(実装は完了済み、2026-07-29)。
+  片桐側の準備として、Google Cloud Consoleで (a) Google Sheets APIの有効化、
+  (b) OAuthクライアントID(種類「ウェブ アプリケーション」、承認済みの
+  JavaScript生成元に`https://yoimachihime-tech.github.io`)の作成、
+  (c) OAuth同意画面が「テスト」ステータスならテストユーザーへの自分の
+  アカウント追加、が必要(詳細な手順は`docs/README.md`)。
+- exeの再ビルド、サービスアカウントJSONキーの保管場所移動(下記「今後の
+  拡張候補」を参照)
 
 ### Web版TTS音声の埋め込み(2026-07-28実装・実機確認・push済み)
 
 `docs/lib/tts.js`(新設)がGoogle Cloud Text-to-SpeechをブラウザからCall
 する(`tts_core.py`の`call_google_tts`/`split_into_sentences`/
 `_classify_tts_error`の移植)。⚙設定に「Cloud Text-to-Speech APIキー」欄を
-追加し、**設定されている場合のみ**、単語/AIに質問/習熟用(音読)いずれの
+追加し、**設定されている場合のみ**、単語/AIに質問/習熟用(音読)/
+DailyConversationいずれの
 `.apkg`出力時にも自動で音声を合成して埋め込む(未設定なら従来どおり音声
 無しで出力する、他のAI呼び出しと同じ「未設定なら黙ってスキップ」方針)。
 
 - **音声の分割単位(2026-07-28、片桐の指示で確定。当初は全タブで文ごとに
   分けていたのを修正した)**:
-  - 単語 / AIに質問 … **フィールド全体で1つのMP3・1つの`[sound:]`タグ**
+  - 単語 / AIに質問 / DailyConversation … **フィールド全体で1つのMP3・
+    1つの`[sound:]`タグ**
     (`synthesizeFieldWithTags`)。複数文が含まれていても文ごとには分けない。
   - 習熟用(音読) … **例文ごとに個別のMP3・タグ**
     (`synthesizeExampleAudioTags`)。音読練習で1文ずつ再生したいため、この
@@ -1346,7 +1370,8 @@ push済みで、GitHub Pagesで公開・片桐による実機確認も完了し�
   同じく、平文をそのまま1回のTTS呼び出しに渡す(文間隔の調整は未対応)。
 - 対象フィールドはデスクトップ版の既定選択("Answer"+"Example"がある場合は
   その2つ、単語のように"Answer"が無ければ"Example"のみ)と揃えた
-  (`app.js`の`TTS_FIELD_KEYS`)。習熟用(音読)は例文(`ex-en`)ごとの
+  (`app.js`の`TTS_FIELD_KEYS`。DailyConversationは添削後の文(Answer)と
+  類似表現(Example)の2つ)。習熟用(音読)は例文(`ex-en`)ごとの
   個別音声を各例文の直下に挿入する(デスクトップ版の
   `generate_shuujuku_sentence_tts_for_collection()`と同じ挿入位置。
   `docs/lib/shuujuku.js`の`renderItem`/`buildContentHtml`/
@@ -1368,6 +1393,94 @@ push済みで、GitHub Pagesで公開・片桐による実機確認も完了し�
   改めて確認し、**正常に動作している**(=Web版フェーズ1のTTS埋め込みは
   実装・実機確認とも完了)。
 - **未検証**: 音量ゲイン・音声名の既定値がスマホ実機で妥当か。
+
+### Web版のDailyConversation(スプレッドシート連携、2026-07-29実装)
+
+Web版から「添削結果」スプレッドシートを直接読み書きできるようにしたもの。
+デスクトップ版のDailyConversationタブと同じ①〜④の流れをブラウザだけで行う
+(①Googleログイン → ②英文入力→AI添削→シートへ追記 → ③未出力行の一覧 →
+④.apkg出力→「Anki出力済み」マーク)。**実装・自動テストは完了しているが、
+片桐の実機確認は未実施**(2026-07-29時点)。
+
+#### 認証方式: GIS token client(**PKCEではない**)
+
+CLAUDE.mdには当初「OAuth 2.0 (PKCE)が必要」と書いていたが、調査の結果
+**静的サイトではPKCEだけでは完結しない**ことが分かった: Googleの
+「ウェブ アプリケーション」型クライアントは、認可コード→トークン交換に
+client_secretを要求する(client_secretをブラウザに置くことはできない)。
+「Desktop/Installed app」型ならPKCEのみで交換できるが、リダイレクトURIが
+localhostに限られるためGitHub Pagesでは使えない。
+
+そのため、client_secret不要でバックエンドも不要な唯一の正規ルートである
+**Google Identity Services (GIS) の token client**
+(`google.accounts.oauth2.initTokenClient`)を採用した(2026-07-29、片桐が選択)。
+
+- **アクセストークンはメモリ上にのみ保持する**(`docs/lib/sheets.js`の
+  モジュールスコープ変数)。localStorageに置くとXSSで持ち出されうるため。
+  有効期限は約1時間、リフレッシュトークンはこの方式では発行されない。
+  期限の1分前(`EXPIRY_MARGIN_MS`)には切れたものとして扱う。
+- 一度同意していれば`prompt: ''`での再取得は基本的に無操作で通る。
+  既にログイン済みの状態でログインボタンを押した場合は「アカウントを
+  選び直したい」ケースとみなし`prompt: 'consent'`にする
+  (`app.js`の`onDailySignIn`。ボタン文言も
+  「別のアカウントでログイン」に変わる)。
+- **OAuthクライアントIDは秘密情報ではない**ため公開ページに置いて問題ないが、
+  他のAPIキーと同じく⚙設定の入力欄+localStorageにしてある
+  (コード変更・再デプロイ無しに差し替えられるようにするため)。
+- スコープは`https://www.googleapis.com/auth/spreadsheets`(readonlyでは
+  ないのは、添削結果の追記と「Anki出力済み」のマークを行うため)。
+- **片桐側の事前準備**(未実施): (a) Google Sheets APIの有効化、
+  (b) OAuthクライアントID(種類「ウェブ アプリケーション」、承認済みの
+  JavaScript生成元に`https://yoimachihime-tech.github.io`)の作成、
+  (c) OAuth同意画面が「テスト」ステータスならテストユーザーへの
+  自分のアカウント追加。手順は`docs/README.md`に記載。
+
+#### 実装(Web版DailyConversation)
+
+- `docs/lib/sheets.js`: 認証部(GIS)とAPI部を明確に分けてある。API部
+  (`fetchPendingRows`/`appendCorrectionRows`/`markRowsAsExported`)は
+  accessTokenを引数で受け取る純粋な関数なので、`test_sheets.mjs`が
+  GISを一切読み込まずにfetchモックだけで検証できる。
+  **デスクトップ版と同じ責務分担を守ること**: このモジュールは読み取りと
+  「Anki出力済み」列の書き込み・新規行の追記だけを行い、行の削除・他の列の
+  書き換えは一切しない。
+- `docs/lib/dailyconv.js`: `processSheetRows()`(「誤りなし」除外+ID重複
+  除去)・`buildFieldsReadyItems()`(9フィールドへの合成)と、ローカル除外
+  リスト(`daily_pending_exclusions.py`のWeb版、保存先はlocalStorage)。
+- `docs/lib/gemini.js`: `correctEnglishText()`/
+  `consolidateNoErrorCorrections()`を追加。この対応で、リトライ・エラー
+  日本語化を担う`postGeminiRequest()`を`callGemini()`から切り出し、
+  構造化出力(system_instruction+responseSchema)のリクエストも同じ経路を
+  通るようにした。
+- `docs/app.js`: DailyConversationタブは**他タブと共通の
+  `TAB_CONFIG`/`onExport`/`onDeleteSelected`の枠組みに載せていない**。
+  候補の実体がlocalStorageのストックではなくシートそのものであり、
+  「削除」の意味(ローカル除外)も「出力」の後処理(シートへのマーク)も
+  他タブと異なるため。デスクトップ版のtts_gui.pyが同じ理由で
+  DailyConversationタブだけ別実装を持っているのと同じ判断。
+- **共有カード定義に`daily`を追加**(`tools/export_shared_card_defs.py`の
+  `build_daily_def()`)。guidは`genanki.guid_for('dailyconv', シートのID列)`
+  で**値を正規化しない**ため、word等の`dedup_key`方式(小文字化+trimする)
+  ではなくcompound方式(`item_keys: ["id"]`)で表現している。
+  またこのカード種別だけがノートにタグ(`source::gemini_dailyconv`)を持つ
+  ため、`card_def.tags`という項目を新設して`docs/lib/apkg.js`の
+  `tagsFieldFor()`がデータ駆動で読むようにした(JS側にカード種別ごとの
+  分岐を持ち込まないため。guid_scheme/due_schemeと同じ考え方)。
+
+#### 注意点(Web版DailyConversation)
+
+- **`.apkg`の生成に成功してから「Anki出力済み」をマークする**(デスクトップ版
+  と同じ2段階設計)。順序を入れ替えると、生成に失敗した行が出力済みになって
+  二度と一覧に出てこなくなる。
+- `tools/dump_python_apkg.py`は`--card-def daily`のときだけ、標準入力で
+  受け取るのが「生成済みのitem」ではなく**シートの生の行**になる
+  (`process_sheet_rows`による除外もPython側で行われる)。そのため
+  `verify_web_parity.mjs`の`verifyCardDef()`には、ラベル表示用の配列を
+  別に渡す`labelItems`引数を追加してある(ノートiと入力items[i]が
+  1対1に対応しないため)。
+- `process_sheet_rows()`はID重複時に`print()`で警告を出すため、
+  `dump_python_apkg.py`は`contextlib.redirect_stdout(sys.stderr)`で
+  囲んでいる(でないと出力するJSONが壊れる)。
 
 ### Gemini APIキーの運用に関する注意(2026-07-28)
 
@@ -1455,7 +1568,7 @@ Web版公開用のキーには次を設定する:
   このプロジェクトの範囲外のパイプライン側の話なのか)、片桐から詳細確認待ち。
   **保留中につき、指示なく調査・修正に着手しないこと。**
 - **Web版(2026-07-28に方針確定。フェーズ1は完了・push済み)**:
-  以下は方針決定時の記録。実装状況は上記「Web版フェーズ1の実装状況」と
+  以下は方針決定時の記録。実装状況は上記「Web版の実装状況」と
   「次にやること」を参照。
   - 進め方は「まずAI生成だけの軽量版を作り、後でapkg生成を追加」を採用
     (片桐が選択)。フェーズ1: サーバー不要の静的Webページとして、ブラウザ
@@ -1466,13 +1579,14 @@ Web版公開用のキーには次を設定する:
     AIに質問(Grammar Multi 3問生成) / 習熟用(音読)カード生成 /
     TTS音声の試聴 の4つ。いずれもAPI呼び出しだけで完結するため、
     バックエンド無しで実現できる。
-  - **DailyConversation(シート連携)はフェーズ1の対象外**。
-    `sheets_reader.py`/`sheets_writer.py`は**サービスアカウント方式**の
-    認証を使っており、その秘密鍵(JSON)をブラウザに置くことは絶対に
-    できない(鍵を持つ者はスプレッドシートを自由に読み書きできてしまう)。
-    ブラウザから使うには (a) OAuth 2.0 (PKCE) でGoogleログインさせる、
-    (b) Cloud Run等のバックエンドに鍵を置いて中継する、のいずれかが必要。
-    どちらを採るかは着手時に片桐へ確認すること。
+  - **DailyConversation(シート連携)は当初フェーズ1の対象外だったが、
+    2026-07-29に実装した**(下記「Web版のDailyConversation(スプレッドシート
+    連携)」を参照)。当時の記録: `sheets_reader.py`/`sheets_writer.py`は
+    **サービスアカウント方式**の認証を使っており、その秘密鍵(JSON)を
+    ブラウザに置くことは絶対にできない(鍵を持つ者はスプレッドシートを
+    自由に読み書きできてしまう)。ブラウザから使うには (a) OAuthで
+    Googleログインさせる、(b) Cloud Run等のバックエンドに鍵を置いて中継する、
+    のいずれかが必要 → **2026-07-29に片桐が(a)を選択**。
   - **APIキーの扱い(2026-07-28に片桐が選択)**: 利用者が自分のAPIキーを
     ページ上で入力し、ブラウザの`localStorage`に保存する方式。
     **リポジトリにもページのソースにもAPIキーを一切含めないこと。**
@@ -1486,16 +1600,19 @@ Web版公開用のキーには次を設定する:
     切り出し、Python側は`open()`で、Web側は`fetch()`で同じファイルを読む。
     プロンプトを改善したときに、片方だけ直して不一致になる事故を防ぐため。
 
-### Web版フェーズ1の実装状況(2026-07-28、単語+AIに質問+習熟用+TTSが完成)
+### Web版の実装状況(2026-07-29、単語+AIに質問+習熟用+TTS+DailyConversation)
 
 `docs/`配下に静的Webページとして実装済み。詳細は`docs/README.md`を参照。
 **単語入力→AI生成→プレビュー→apkgダウンロード**、**AIに質問(3問生成)→
 プレビュー→apkgダウンロード**、**習熟用(音読、AIに質問の4問目として自動
-追加)→プレビュー→apkgダウンロード**のいずれもブラウザだけで完結し、
-バックエンドは不要。⚙設定でCloud Text-to-SpeechのAPIキーを設定していれば、
-どのタブのapkg出力でも**TTS音声を自動で合成して埋め込む**(上記
-「Web版TTS音声の埋め込み」の項を参照)。画面はタブ切り替え式
-(単語 / AIに質問 / 習熟用(音読))。
+追加)→プレビュー→apkgダウンロード**、**DailyConversation(Googleログイン→
+英文入力→AI添削→シートへ追記→未出力行一覧→apkgダウンロード→
+「Anki出力済み」マーク)**のいずれもブラウザだけで完結し、バックエンドは不要。
+⚙設定でCloud Text-to-SpeechのAPIキーを設定していれば、どのタブのapkg出力でも
+**TTS音声を自動で合成して埋め込む**(上記「Web版TTS音声の埋め込み」の項を
+参照)。画面はタブ切り替え式
+(単語 / AIに質問 / 習熟用(音読) / DailyConversation)。既定の表示タブは
+「単語」のままにしてある(DailyConversationは最後のタブとして追加した)。
 
 ```text
 docs/
@@ -1503,14 +1620,15 @@ docs/
   lib/gemini.js                     Gemini呼び出し(gemini_client.pyのWeb版)。
                                      単語カード生成・Grammar Multi(3問生成)の
                                      後処理(改行整形・正解記号付与・HTML化)・
-                                     習熟用4問目の生成(generateShuujukuItem)を持つ
+                                     習熟用4問目の生成(generateShuujukuItem)・
+                                     英文添削(correctEnglishText)を持つ
   lib/guid.js                       genanki.guid_for()と同一のguid生成。
                                      card_def.guid_scheme(dedup_key方式/
                                      compound方式)を読んで計算方法を切り替える
                                      (下記参照)
   lib/apkg.js                       .apkgの組み立て(sql.js + JSZip)。
-                                     card_def.due_scheme(fixed_zero/index/field)も
-                                     データ駆動にしてある
+                                     card_def.due_scheme(fixed_zero/index/field)・
+                                     card_def.tagsもデータ駆動にしてある
   lib/shuujuku.js                    習熟用(音読)のContentフィールド組み立て
                                      (build_shuujuku_v1.render_item()のWeb版)+
                                      続き番号(Num)管理(localStorage)
@@ -1518,11 +1636,22 @@ docs/
                                      call_google_tts/strip_html_for_tts/
                                      _classify_tts_errorのWeb版)+ apkgへの
                                      [sound:]タグ埋め込み
+  lib/sheets.js                     Googleログイン(GIS token client)+
+                                     「添削結果」シートの読み書き
+                                     (sheets_reader.py/sheets_writer.pyのWeb版、
+                                     2026-07-29追加)
+  lib/dailyconv.js                  シートの行→DailyConversationの9フィールドへの
+                                     変換 + ローカル除外リスト
+                                     (build_grammar_dailyconv_v1_final.pyの
+                                     process_sheet_rows/build_deckと
+                                     daily_pending_exclusions.pyのWeb版、
+                                     2026-07-29追加)
   shared/                           デスクトップ版と共有する資産
 tools/
-  export_shared_card_defs.py        docs/shared/*.json を生成(word/grammar_multi/shuujuku)
+  export_shared_card_defs.py        docs/shared/*.json を生成
+                                     (word/grammar_multi/shuujuku/daily)
   dump_python_apkg.py               検証用にPython版のapkg中身を出力
-                                     (--card-def word|grammar_multi|shuujuku)
+                                     (--card-def word|grammar_multi|shuujuku|daily)
   verify_web_parity.mjs             両者のapkgが一致するか検証(npm run verify)
   verify_grammar_multi_parity.mjs   Grammar Multiの後処理(改行整形・正解記号)が
                                      一致するか検証(npm run verify:grammar-multi)
@@ -1530,6 +1659,8 @@ tools/
   test_tts.mjs                      lib/tts.jsの単体テスト(npm run test:tts)
   test_gemini.mjs                   lib/gemini.jsのリトライ・エラー処理の
                                      単体テスト(npm run test:gemini)
+  test_sheets.mjs                   lib/sheets.js / lib/dailyconv.jsの単体テスト
+                                     (npm run test:sheets、2026-07-29追加)
 ```
 
 - **共有資産を`docs/shared/`に置いている理由**: GitHub Pagesは`docs/`配下
@@ -1585,10 +1716,11 @@ tools/
   される。この4問目生成の失敗は3問の生成成功を無効にしない(非ブロッキング、
   `docs/app.js`の`onAiAskGenerate()`を参照)。
 - **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
-  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は5本:
+  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は6本:
   - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
-    (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multi・shuujuku
-    の3種別)、guid・フィールド・カード構成・ノートタイプ定義を突き合わせる。
+    (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multi・shuujuku・
+    dailyの4種別)、guid・フィールド・タグ・カード構成・ノートタイプ定義を
+    突き合わせる。
     実装中に実際に複数の差異(cards.dueの採番、models.modの扱い)を検出して
     おり、これを省くと気付かないまま学習履歴を壊す変更が入る。shuujukuは
     Python側の生item(`source_key`が`[kind, topic]`の2要素配列)と、
@@ -1623,6 +1755,14 @@ tools/
   - `npm run test:gemini`(`test_gemini.mjs`): `lib/gemini.js`の
     `callGemini()`のリトライ・エラー処理の単体テスト(503の自動リトライ、
     429の既存挙動の回帰確認)をfetchモックで行う。
+  - `npm run test:sheets`(`test_sheets.mjs`、2026-07-29追加):
+    `lib/sheets.js`(未出力行の取得・添削結果の追記・「Anki出力済み」列の
+    マーク・401/403のエラー分類)と`lib/dailyconv.js`のローカル除外リストを
+    fetchモックで単体テストする。**実際のスプレッドシートにもGoogle
+    アカウントにも一切アクセスしない**。特に「シートの実ヘッダー行の並びに
+    合わせて列を配置する(固定の列順を決め打ちしていない)」ことと、
+    「markRowsAsExportedがAnki出力済み列のセルだけを対象にする」ことを
+    固定している。
   - **`verify`系2本は`execFileSync('python3', ...)`とハードコードしている**
     ため、`python3`という名前で起動できるPythonが無い環境ではこの2本だけ
     失敗する(2026-07-28のClaude Code検証環境がこれに該当し、

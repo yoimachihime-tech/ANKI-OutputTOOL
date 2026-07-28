@@ -1,0 +1,51 @@
+{
+  "type": "ARRAY",
+  "items": {
+    "type": "OBJECT",
+    "properties": {
+      "original": { "type": "STRING" },
+      "corrected": { "type": "STRING" },
+      "explanation": { "type": "STRING" },
+      "category": {
+        "type": "STRING",
+        "description": "文法 / 語彙 / 自然さ / 誤りなし のいずれか"
+      },
+      "similar_expressions": {
+        "type": "ARRAY",
+        "description": "類似表現のリスト。無ければ空配列",
+        "items": {
+          "type": "OBJECT",
+          "properties": {
+            "expression": {
+              "type": "STRING",
+              "description": "英文の完成文1文のみ、日本語を含めない"
+            },
+            "note": {
+              "type": "STRING",
+              "description": "日本語のみ、使い方・ニュアンスの説明"
+            }
+          },
+          "required": ["expression", "note"]
+        }
+      },
+      "grammar_score": { "type": "NUMBER", "description": "文法的正確さ 0〜100" },
+      "naturalness_score": { "type": "NUMBER", "description": "自然さ 0〜100" },
+      "comprehensibility_score": { "type": "NUMBER", "description": "伝わりやすさ 0〜100" },
+      "score_comment": {
+        "type": "STRING",
+        "description": "スコアの根拠。具体的な問題表現を含めて日本語で"
+      }
+    },
+    "required": [
+      "original",
+      "corrected",
+      "explanation",
+      "category",
+      "similar_expressions",
+      "grammar_score",
+      "naturalness_score",
+      "comprehensibility_score",
+      "score_comment"
+    ]
+  }
+}
