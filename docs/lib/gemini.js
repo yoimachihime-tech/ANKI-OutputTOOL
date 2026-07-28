@@ -51,6 +51,21 @@ function isDailyQuotaError(detail) {
 }
 
 /**
+ * 429 のうち「課金・クレジット切れ」によるものかを判定する(2026-07-28追加)。
+ *
+ * Gemini API は前払いクレジットが尽きた場合も 429 RESOURCE_EXHAUSTED を返すが、
+ * これは短期のレート制限とは違い待っても回復しない。以前はこれを
+ * 「レート制限に達しました」と表示したうえリトライしており、原因が伝わらず
+ * 無駄な呼び出しも発生していた(実際に片桐の環境で発生)。
+ */
+function isBillingError(detail) {
+  const n = (detail || '').replace(/[\s_-]/g, '').toLowerCase();
+  return n.includes('prepayment')
+    || n.includes('billing')
+    || (n.includes('credit') && n.includes('deplet'));
+}
+
+/**
  * 403 などの失敗理由を、利用者が対処できる日本語の説明にする。
  * 判定できない場合は null を返す(その場合は生のレスポンスをそのまま見せる)。
  *
@@ -115,6 +130,18 @@ export async function callGemini(prompt, apiKey, model) {
     lastDetail = await res.text();
 
     if (res.status === 429) {
+      if (isBillingError(lastDetail)) {
+        throw new GeminiError(
+          'Gemini APIの前払いクレジットが尽きているため利用できません'
+          + '(レート制限ではないので、待っても回復しません)。\n\n'
+          + '対処:\n'
+          + '・無料で使いたい場合 … このAPIキーが「無料利用枠」のプロジェクトの'
+          + 'ものか確認してください。有料設定のプロジェクトのキーだと、'
+          + 'クレジットが尽きた時点で使えなくなります。\n'
+          + '・有料で使う場合 … https://ai.studio/projects でクレジットを追加'
+          + `してください。\n\n詳細: ${lastDetail}`,
+        );
+      }
       if (isDailyQuotaError(lastDetail)) {
         throw new GeminiError(
           'Gemini APIの1日あたりのリクエスト数上限に達しました。時間を置いてもすぐには'

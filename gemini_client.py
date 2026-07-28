@@ -90,6 +90,23 @@ def _is_daily_quota_error(error_detail_text: str) -> bool:
     return "perday" in normalized
 
 
+def _is_billing_error(error_detail_text: str) -> bool:
+    """429のうち「課金・前払いクレジット切れ」によるものかを判定する
+    (2026-07-28追加)。
+
+    Gemini APIは前払いクレジットが尽きた場合も429 RESOURCE_EXHAUSTEDを返すが、
+    短期のレート制限と違い待っても回復しない。以前はこれを「レート制限に
+    達しました」と表示したうえリトライしており、原因が伝わらず無駄な呼び出しも
+    発生していた(2026-07-28に片桐の環境で実際に発生:
+    "Your prepayment credits are depleted.")。"""
+    normalized = re.sub(r"[\s_-]", "", (error_detail_text or "")).lower()
+    return (
+        "prepayment" in normalized
+        or "billing" in normalized
+        or ("credit" in normalized and "deplet" in normalized)
+    )
+
+
 def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> dict:
     """Gemini APIへのPOSTリクエストを行い、レスポンスのJSONをdictで返す共通処理。
     429(レート制限/無料枠上限)が返った場合は、Google側が示すretryDelay
@@ -111,6 +128,17 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> di
             detail = e.read().decode("utf-8", errors="replace")
             last_detail = detail
             if e.code == 429:
+                if _is_billing_error(detail):
+                    raise GeminiClientError(
+                        "Gemini APIの前払いクレジットが尽きているため利用できません"
+                        "(レート制限ではないので、待っても回復しません)。\n\n"
+                        "対処:\n"
+                        "・無料で使いたい場合 … このAPIキーが「無料利用枠」の"
+                        "プロジェクトのものか確認してください。有料設定のプロジェクトの"
+                        "キーだと、クレジットが尽きた時点で使えなくなります。\n"
+                        "・有料で使う場合 … https://ai.studio/projects でクレジットを"
+                        f"追加してください。\n\n詳細: {detail}"
+                    ) from e
                 if _is_daily_quota_error(detail):
                     raise GeminiClientError(
                         "Gemini APIの1日あたりのリクエスト数上限に達しました。"
