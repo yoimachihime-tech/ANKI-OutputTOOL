@@ -54,6 +54,30 @@ export function cardOrdsFor(ankiModel, fields) {
 }
 
 /**
+ * カードの新規学習順(due)を、card_def.due_scheme(共有JSON)に従って計算する。
+ * カード種別ごとにPython側の採番方法が異なるため、種類を分けてある:
+ *   - fixed_zero: 常に0(card_def_builder.build_deck_from_def()、単語など)
+ *   - index     : itemsのリスト内インデックス(grammar_multi_builder.build_deck())
+ *   - field     : item内の特定フィールドの値をそのまま使う
+ *                 (build_shuujuku_v1.build_deck()のdue=idx。Numフィールドと
+ *                 同じ値になる。この値は出力時点で払い出される連番なので、
+ *                 呼び出し側が事前にitemへ埋め込んでおく必要がある)
+ *
+ * @param {object} dueScheme cardDef.due_scheme(`{"type": ...}`)。省略時はfixed_zero扱い
+ * @param {object} item
+ * @param {number} index itemsの中でのこのitemの位置(0始まり)
+ */
+export function dueFor(dueScheme, item, index) {
+  const type = dueScheme?.type || 'fixed_zero';
+  if (type === 'index') return index;
+  if (type === 'field') {
+    const n = Number(item[dueScheme.key]);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+/**
  * item(AI が生成した内容)を、ノートタイプの定義順に並べたフィールド配列にする。
  * card_def_builder.build_deck_from_def() と同じ変換。
  */
@@ -121,17 +145,11 @@ export async function buildApkg({ cardDef, ankiSchema, items, media }) {
 
     const sortFieldIndex = cardDef.anki_model.sortf || 0;
 
-    // due(カードの新規学習順): カード種別によって計算方法が異なるため
-    // card_def.due_scheme(共有JSON)から決める(デスクトップ版の
-    // card_def_builder.build_deck_from_def()は常に0、
-    // grammar_multi_builder.build_deck()はitemsのリスト内インデックス)。
-    const dueScheme = cardDef.due_scheme || 'fixed_zero';
-    const dueFor = (index) => (dueScheme === 'index' ? index : 0);
-
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
       const fields = fieldsFromItem(cardDef, item);
       const guid = await buildItemGuid(cardDef, item);
+      const due = dueFor(cardDef.due_scheme, item, i);
       const noteId = nextId;
       nextId += 1;
 
@@ -159,7 +177,7 @@ export async function buildApkg({ cardDef, ankiSchema, items, media }) {
           -1,               // usn
           0,                // type
           0,                // queue
-          dueFor(i),        // due(card_def.due_schemeに従う。上記コメント参照)
+          due,              // due(card_def.due_schemeに従う。dueFor()参照)
           0, 0, 0, 0, 0, 0, 0, 0, // ivl factor reps lapses left odue odid flags
           '',               // data
         ]);

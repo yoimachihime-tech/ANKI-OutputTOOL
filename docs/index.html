@@ -48,10 +48,11 @@
      表示状態か分かりにくいという指摘への対応。 -->
 <div id="main-content">
 
-<!-- 入力元タブ(単語 / AIに質問。今後 習熟用・TTS試聴 を追加予定) -->
+<!-- 入力元タブ(単語 / AIに質問 / 習熟用。今後 TTS試聴 を追加予定) -->
 <nav class="tabbar" role="tablist">
   <button type="button" class="tab-btn active" data-tab="word" role="tab" aria-selected="true">単語</button>
   <button type="button" class="tab-btn" data-tab="ai_ask" role="tab" aria-selected="false">AIに質問</button>
+  <button type="button" class="tab-btn" data-tab="shuujuku" role="tab" aria-selected="false">習熟用(音読)</button>
 </nav>
 
 <!-- ============================= 単語タブ ============================= -->
@@ -104,7 +105,9 @@ resilient | She remained resilient."></textarea>
     <h2>① 質問・お題を入力</h2>
     <p class="hint">
       文法に関する質問やお題を入力すると、AIが出題形式の異なる練習問題を3問
-      (選択問題・誤り訂正問題・記述式など)作成します。
+      (選択問題・誤り訂正問題・記述式など)作成します。あわせて、同じ質問の
+      背景にある文法パターンを音読練習用にまとめた4問目が「習熟用(音読)」
+      タブへ自動的に追加されます。
     </p>
     <textarea id="ai-ask-input" rows="4" spellcheck="false"
 placeholder="例: patience と patient の使い分けを教えて"></textarea>
@@ -135,6 +138,45 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     </p>
     <button type="button" id="ai-ask-export" class="primary">.apkg をダウンロード</button>
     <p id="ai-ask-export-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+</div>
+
+<!-- ============================= 習熟用(音読)タブ ============================= -->
+<div id="tab-shuujuku" class="tab-panel" hidden role="tabpanel">
+
+  <section class="card">
+    <h2>① 候補について</h2>
+    <p class="hint">
+      このタブには直接の入力欄がありません。「AIに質問」タブで質問を送信すると、
+      その質問の背景にある文法パターンを音読練習用にまとめたカードが4問目として
+      自動的にここへ追加されます。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>② 生成結果 <span id="shuujuku-stock-count" class="count"></span></h2>
+    <p class="hint">
+      生成したカードはこのブラウザに保存され、再訪しても残ります。
+      同じ質問から生成した場合は重複として警告表示されます。
+    </p>
+    <div id="shuujuku-stock-empty" class="empty">まだカードがありません。</div>
+    <ul id="shuujuku-stock-list" class="stock"></ul>
+    <div class="row">
+      <button type="button" id="shuujuku-delete-selected">選択項目を削除</button>
+      <button type="button" id="shuujuku-clear-stock" class="danger">すべて削除</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>③ Ankiに取り込む</h2>
+    <p class="hint">
+      .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
+      出力した内容はこの一覧から取り除かれます(番号の重複を避けるため、出力するたびに
+      続き番号を採番します)。
+    </p>
+    <button type="button" id="shuujuku-export" class="primary">.apkg をダウンロード</button>
+    <p id="shuujuku-export-status" class="status" role="status" aria-live="polite"></p>
   </section>
 
 </div>

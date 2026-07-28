@@ -11,23 +11,28 @@
 // guid計算(lib/guid.js)・ローディング表示のヘルパー(showLoading/hideLoading)
 // のみ。
 
-import { generateVocabCard, generateGrammarMultiItems, listModels, GeminiError } from './lib/gemini.js';
+import { generateVocabCard, generateGrammarMultiItems, generateShuujukuItem, listModels, GeminiError } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
+import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
 
 const STORAGE = {
   apiKey: 'anki_tool_gemini_api_key',
   model: 'anki_tool_gemini_model',
   wordStock: 'anki_tool_word_stock',
   aiAskStock: 'anki_tool_ai_ask_stock',
+  shuujukuStock: 'anki_tool_shuujuku_stock',
 };
 
 const $ = (id) => document.getElementById(id);
 
 /** 共有アセット(プロンプト・カード定義・スキーマ)。起動時に読み込む。 */
-const shared = { wordPrompt: null, grammarMultiPrompt: null, cardDefs: null, ankiSchema: null };
+const shared = {
+  wordPrompt: null, grammarMultiPrompt: null, shuujukuPrompt: null, cardDefs: null, ankiSchema: null,
+};
 
 let wordStock = loadJson(STORAGE.wordStock);
 let aiAskStock = loadJson(STORAGE.aiAskStock);
+let shuujukuStock = loadJson(STORAGE.shuujukuStock);
 
 // ---------------------------------------------------------------------------
 // 起動
@@ -43,15 +48,18 @@ async function init() {
   $('model').value = localStorage.getItem(STORAGE.model) || 'gemini-2.0-flash';
   renderWordStock();
   renderAiAskStock();
+  renderShuujukuStock();
 
-  const [wordPrompt, grammarMultiPrompt, cardDefsJson, ankiSchema] = await Promise.all([
+  const [wordPrompt, grammarMultiPrompt, shuujukuPrompt, cardDefsJson, ankiSchema] = await Promise.all([
     fetchText('./shared/word_card_prompt.txt'),
     fetchText('./shared/grammar_multi_prompt.txt'),
+    fetchText('./shared/shuujuku_prompt.txt'),
     fetchJson('./shared/card_defs.json'),
     fetchJson('./shared/anki_schema.json'),
   ]);
   shared.wordPrompt = wordPrompt;
   shared.grammarMultiPrompt = grammarMultiPrompt;
+  shared.shuujukuPrompt = shuujukuPrompt;
   shared.cardDefs = cardDefsJson.defs;
   shared.ankiSchema = ankiSchema;
 }
@@ -108,6 +116,11 @@ function bindEvents() {
   $('ai-ask-delete-selected').addEventListener('click', () => onDeleteSelected('ai_ask'));
   $('ai-ask-clear-stock').addEventListener('click', () => onClearStock('ai_ask'));
   $('ai-ask-export').addEventListener('click', () => onExport('ai_ask'));
+
+  // 習熟用(音読)タブ(入力欄は無く、AIに質問からの4問目でのみ増える)
+  $('shuujuku-delete-selected').addEventListener('click', () => onDeleteSelected('shuujuku'));
+  $('shuujuku-clear-stock').addEventListener('click', () => onClearStock('shuujuku'));
+  $('shuujuku-export').addEventListener('click', onExportShuujuku);
 
   // プレビュー(共通)
   $('preview-close').addEventListener('click', () => $('preview-dialog').close());
@@ -392,15 +405,145 @@ async function onAiAskGenerate() {
     aiAskStock = aiAskStock.concat(items);
     localStorage.setItem(STORAGE.aiAskStock, JSON.stringify(aiAskStock));
     renderAiAskStock();
+
+    // 4問目: 同じ質問の背景にある文法パターンを習熟用(音読)ストックへ追加する
+    // (2026-07-28、デスクトップ版と同じ挙動)。この呼び出しの失敗は3問の生成
+    // 成功を無効にしない(非ブロッキング)。
+    let shuujukuNote = '';
+    if (shared.shuujukuPrompt) {
+      try {
+        showLoading(status, '習熟用(音読)カードも生成中...');
+        const shuujukuItem = await generateShuujukuItem({
+          question,
+          apiKey,
+          model,
+          promptTemplate: shared.shuujukuPrompt,
+        });
+        shuujukuStock = shuujukuStock.concat([shuujukuItem]);
+        localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
+        renderShuujukuStock();
+        shuujukuNote = ' + 習熟用(音読) 1件';
+      } catch (e) {
+        shuujukuNote = `(習熟用の4問目生成には失敗しました: ${e.message})`;
+      }
+    }
+
     hideLoading(status);
     $('ai-ask-input').value = '';
-    setStatus(status, `${items.length} 件のカードを生成しました。`);
+    setStatus(status, `${items.length} 件のカードを生成しました${shuujukuNote}`);
   } catch (e) {
     hideLoading(status);
     setStatus(status, e.message, true);
   } finally {
     btn.disabled = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 習熟用(音読)タブ
+// このタブには直接の入力欄が無く、onAiAskGenerate()の4問目としてのみ増える
+// (CLAUDE.mdの「習熟用の populate source」を参照)。
+// ---------------------------------------------------------------------------
+
+/** source_topic をキーに、重複している要素の index を返す(表示用)。 */
+function shuujukuDuplicateIndices() {
+  const counts = new Map();
+  shuujukuStock.forEach((item) => {
+    const key = item.source_topic || '';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const dup = new Set();
+  shuujukuStock.forEach((item, i) => {
+    if (counts.get(item.source_topic || '') > 1) dup.add(i);
+  });
+  return dup;
+}
+
+function renderShuujukuStock() {
+  const list = $('shuujuku-stock-list');
+  const dup = shuujukuDuplicateIndices();
+  list.textContent = '';
+
+  shuujukuStock.forEach((item, i) => {
+    const li = buildStockRow({
+      isDuplicate: dup.has(i),
+      title: item.pattern || '(パターン未設定)',
+      subtitle: item.meaning || '(意味なし)',
+      onPreview: () => showShuujukuPreview(item),
+    });
+    list.appendChild(li);
+  });
+
+  $('shuujuku-stock-empty').hidden = shuujukuStock.length > 0;
+  $('shuujuku-stock-count').textContent = shuujukuStock.length ? `(${shuujukuStock.length} 件)` : '';
+}
+
+async function onExportShuujuku() {
+  const status = $('shuujuku-export-status');
+  if (shuujukuStock.length === 0) {
+    setStatus(status, '出力するカードがありません。', true);
+    return;
+  }
+  const cardDef = shared.cardDefs?.shuujuku;
+  if (!cardDef || !shared.ankiSchema) {
+    setStatus(status, 'カード定義の読み込みが完了していません。少し待って再試行してください。', true);
+    return;
+  }
+
+  const btn = $('shuujuku-export');
+  btn.disabled = true;
+  try {
+    setStatus(status, '.apkg を生成中...');
+    // Numフィールド・cards.dueは出力するたびに続き番号を採番する(desktop版の
+    // shuujuku_stock.get_next_num()と同じ理由: Anki側のソートフィールド衝突を
+    // 避けるため)。そのためbuildFieldsReadyItems()でNum/Contentを確定させて
+    // から渡す(ストックの生item自体はNum/Contentを持たない)。
+    const startNum = getNextNum();
+    const readyItems = buildFieldsReadyItems(shuujukuStock, startNum);
+    const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items: readyItems });
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadBlob(blob, `shuujuku_${stamp}.apkg`);
+
+    // apkgの生成に成功した時点で初めて続き番号を進め、出力済みの項目を
+    // ストックから取り除く(desktop版のmark_exportedと同じ2段階設計。
+    // 生成に失敗した場合はストックも番号も変化させない)。
+    advanceNextNum(shuujukuStock.length);
+    const count = shuujukuStock.length;
+    shuujukuStock = [];
+    localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
+    renderShuujukuStock();
+
+    setStatus(status, `${count} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。`);
+  } catch (e) {
+    setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/**
+ * 習熟用アイテムのプレビュー(実際に出力される次の番号を仮に使ってレンダリング
+ * する。出力前のitemはNum/Contentを持たないため、他タブのshowPreview()を
+ * そのまま使えない)。
+ */
+function showShuujukuPreview(item) {
+  const def = shared.cardDefs?.shuujuku;
+  if (!def) {
+    alert('カード定義の読み込みが完了していません。');
+    return;
+  }
+  const previewNum = getNextNum();
+  const values = {
+    Num: String(previewNum).padStart(3, '0'),
+    Content: buildContentHtml(previewNum, item),
+  };
+  const tmpl = def.anki_model.tmpls[0];
+  const front = renderTemplate(tmpl.qfmt, values);
+  const back = renderTemplate(tmpl.afmt, values, front);
+
+  $('preview-title').textContent = `プレビュー: ${item.pattern || '(パターン未設定)'}`;
+  $('preview-frame').srcdoc = buildPreviewDoc(def.anki_model.css, front, back);
+  $('preview-dialog').showModal();
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +604,17 @@ const TAB_CONFIG = {
     render: renderAiAskStock,
     label: (item) => `[${item.pattern || '形式未設定'}] ${htmlToPlainText(item.question).slice(0, 20)}`,
     cardDefKey: 'grammar_multi',
+  },
+  // shuujuku: onDeleteSelected/onClearStock(汎用の一覧削除)からは使うが、
+  // 出力(onExportShuujuku)・プレビュー(showShuujukuPreview)は続き番号(Num)の
+  // 採番が必要なため専用関数を使う(cardDefKeyはここでは未使用)。
+  shuujuku: {
+    get stock() { return shuujukuStock; },
+    setStock: (v) => { shuujukuStock = v; localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock)); },
+    listEl: 'shuujuku-stock-list',
+    render: renderShuujukuStock,
+    label: (item) => item.pattern || '(パターン未設定)',
+    cardDefKey: 'shuujuku',
   },
 };
 
@@ -564,15 +718,18 @@ function showPreview(tabKey, item) {
   const front = renderTemplate(tmpl.qfmt, values);
   const back = renderTemplate(tmpl.afmt, values, front);
 
-  const doc = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  $('preview-title').textContent = `プレビュー: ${TAB_CONFIG[tabKey].label(item)}`;
+  $('preview-frame').srcdoc = buildPreviewDoc(def.anki_model.css, front, back);
+  $('preview-dialog').showModal();
+}
+
+/** プレビューiframeに入れる、カードCSS+表面/裏面を並べたHTML文書を組み立てる。 */
+function buildPreviewDoc(css, front, back) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>${def.anki_model.css}
+<style>${css}
 hr.preview-sep{border:0;border-top:2px dashed #bbb;margin:24px 0}</style></head>
 <body><div class="card">${front}<hr class="preview-sep">${back}</div></body></html>`;
-
-  $('preview-title').textContent = `プレビュー: ${TAB_CONFIG[tabKey].label(item)}`;
-  $('preview-frame').srcdoc = doc;
-  $('preview-dialog').showModal();
 }
 
 /**

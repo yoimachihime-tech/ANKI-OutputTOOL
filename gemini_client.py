@@ -463,34 +463,13 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
 # 専用プロンプト・専用のGemini呼び出しで生成する(1回の質問につき
 # Gemini呼び出しが1回増える)。
 
-_QUESTION_TO_SHUUJUKU_ITEM_PROMPT = """あなたは英語学習カード作成のアシスタントです。
-以下は、学習者からの英文法に関する質問です。
-
-質問: {question}
-
-この質問の背景にある「文法パターン」を抽象化し、音読練習用のカードを1つ作ってください。
-以下のルールを厳守してください:
-
-1. pattern: 可変部分をプレースホルダー語(動詞、代名詞、否定文、形容詞、名詞、主語、時制、数など)
-   に置き換えた、穴埋め形式の英語パターン(例: "She doesn't 動詞")
-2. examples: そのパターンを使った例文を2〜3個(英文と日本語訳のペア)
-3. meaning: そのパターンの意味・使い方の日本語での簡潔な説明
-4. expl: 質問への回答・解説を1〜2文で
-
-以下のJSON形式で、JSON以外の文字を含めずに出力してください:
-{{
-  "pattern": "...",
-  "meaning": "...",
-  "examples": [["English sentence.", "日本語訳。"], ["English sentence 2.", "日本語訳2。"]],
-  "expl": "..."
-}}
-"""
+SHUUJUKU_PROMPT_PATH = os.path.join(SHARED_DIR, "shuujuku_prompt.txt")
 
 
 def generate_shuujuku_item_from_question(question: str, api_key: str, model: str) -> dict:
     """「AIに質問」タブの質問文から、build_shuujuku_v1.build_deck()に渡せる
     item dictを1つ生成する(「3問+習熟用4問目」のうちの4問目)。"""
-    prompt = _QUESTION_TO_SHUUJUKU_ITEM_PROMPT.format(question=question)
+    prompt = _fill_placeholders(_load_shared_prompt(SHUUJUKU_PROMPT_PATH), question=question)
     text = call_gemini(prompt, api_key, model)
     parsed = _extract_json(text)
     topic_key = " ".join(question.strip().casefold().split())

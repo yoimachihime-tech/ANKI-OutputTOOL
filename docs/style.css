@@ -67,6 +67,7 @@ h2 { font-size: 1.05rem; margin: 0 0 4px; }
 /* 入力元タブ(単語 / AIに質問 / 今後追加予定の各機能) */
 .tabbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px;
   margin-bottom: 12px;
@@ -76,7 +77,7 @@ h2 { font-size: 1.05rem; margin: 0 0 4px; }
 }
 
 .tab-btn {
-  flex: 1;
+  flex: 1 1 30%;
   padding: 8px 10px;
   font-weight: 600;
   color: var(--sub);

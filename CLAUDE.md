@@ -1277,9 +1277,10 @@ example_ja/example_blank/noteの7キーを受け取る。
 
 ## 次にやること(2026-07-28時点の引き継ぎ)
 
-Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)が完成し、
-GitHub Pagesで公開済み**。URL:
+Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習熟用(音読)が
+完成し、GitHub Pagesで公開済み**。URL:
 `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/`
+(2026-07-28、習熟用は実装済み。片桐による実機確認・pushはまだ)
 次のセッションは新機能の追加(下記「未実施」)から再開する。
 
 ### 片桐側で完了済み
@@ -1300,11 +1301,6 @@ GitHub Pagesで公開済み**。URL:
 
 ### 未実施(次にやること、どれを先にやるかは片桐に確認すること)
 
-- 習熟用(音読)のWeb版対応。`card_defs.json`(または`build_shuujuku_v1.py`
-  を直接読む独立実装)への定義移行が前提になる(現状は`build_*.py`側にしか
-  定義が無く、`card_def_builder`の汎用パスに載っていない)。AIに質問
-  (grammar_multi)を追加した際に導入した`guid_scheme`/`due_scheme`の
-  仕組み(下記「Web版フェーズ1の実装状況」参照)がそのまま使えるはず
 - Web版へのTTS音声の埋め込み。`docs/lib/apkg.js`の`buildApkg()`は
   既に`media`引数を受け取れるようにしてあるので、Google Cloud TTSを
   呼んで`Map<ファイル名, Uint8Array>`を渡せばよい
@@ -1388,32 +1384,37 @@ AI Studio発行のキーも実体はCloud ConsoleのAPIキーであり、
     切り出し、Python側は`open()`で、Web側は`fetch()`で同じファイルを読む。
     プロンプトを改善したときに、片方だけ直して不一致になる事故を防ぐため。
 
-### Web版フェーズ1の実装状況(2026-07-28、単語+AIに質問が完成)
+### Web版フェーズ1の実装状況(2026-07-28、単語+AIに質問+習熟用が完成)
 
 `docs/`配下に静的Webページとして実装済み。詳細は`docs/README.md`を参照。
 **単語入力→AI生成→プレビュー→apkgダウンロード**、**AIに質問(3問生成)→
-プレビュー→apkgダウンロード**の両方がブラウザだけで完結し、バックエンドは
-不要。画面はタブ切り替え式(単語 / AIに質問。今後 習熟用・TTS試聴 を追加予定)。
+プレビュー→apkgダウンロード**、**習熟用(音読、AIに質問の4問目として自動
+追加)→プレビュー→apkgダウンロード**のいずれもブラウザだけで完結し、
+バックエンドは不要。画面はタブ切り替え式(単語 / AIに質問 / 習熟用(音読)。
+今後 TTS試聴 を追加予定)。
 
 ```text
 docs/
   index.html / style.css / app.js   画面・UI(タブ切替、ストックはlocalStorage)
   lib/gemini.js                     Gemini呼び出し(gemini_client.pyのWeb版)。
-                                     単語カード生成に加え、Grammar Multi
-                                     (3問生成)の後処理(改行整形・正解記号
-                                     付与・HTML化)も持つ
+                                     単語カード生成・Grammar Multi(3問生成)の
+                                     後処理(改行整形・正解記号付与・HTML化)・
+                                     習熟用4問目の生成(generateShuujukuItem)を持つ
   lib/guid.js                       genanki.guid_for()と同一のguid生成。
                                      card_def.guid_scheme(dedup_key方式/
                                      compound方式)を読んで計算方法を切り替える
                                      (下記参照)
   lib/apkg.js                       .apkgの組み立て(sql.js + JSZip)。
-                                     card_def.due_scheme(fixed_zero/index)も
+                                     card_def.due_scheme(fixed_zero/index/field)も
                                      データ駆動にしてある
+  lib/shuujuku.js                    習熟用(音読)のContentフィールド組み立て
+                                     (build_shuujuku_v1.render_item()のWeb版)+
+                                     続き番号(Num)管理(localStorage)
   shared/                           デスクトップ版と共有する資産
 tools/
-  export_shared_card_defs.py        docs/shared/*.json を生成(word/grammar_multi)
+  export_shared_card_defs.py        docs/shared/*.json を生成(word/grammar_multi/shuujuku)
   dump_python_apkg.py               検証用にPython版のapkg中身を出力
-                                     (--card-def word|grammar_multi)
+                                     (--card-def word|grammar_multi|shuujuku)
   verify_web_parity.mjs             両者のapkgが一致するか検証(npm run verify)
   verify_grammar_multi_parity.mjs   Grammar Multiの後処理(改行整形・正解記号)が
                                      一致するか検証(npm run verify:grammar-multi)
@@ -1423,10 +1424,11 @@ tools/
 - **共有資産を`docs/shared/`に置いている理由**: GitHub Pagesは`docs/`配下
   しか配信しないため。リポジトリ直下の`prompts/`等に置くとWeb版から
   `fetch()`できない。プロンプト(`word_card_prompt.txt`/
-  `grammar_multi_prompt.txt`)はPython側の`gemini_client._load_shared_prompt()`
-  も同じファイルを読む。プレースホルダは`str.format()`ではなく`{{word}}`
-  形式の単純置換にしてある(format()だとJSON例の波括弧を`{{`にエスケープ
-  する必要があり、JS側と文面が一致しなくなるため)。
+  `grammar_multi_prompt.txt`/`shuujuku_prompt.txt`)はPython側の
+  `gemini_client._load_shared_prompt()`も同じファイルを読む。プレース
+  ホルダは`str.format()`ではなく`{{word}}`形式の単純置換にしてある
+  (format()だとJSON例の波括弧を`{{`にエスケープする必要があり、JS側と
+  文面が一致しなくなるため)。
 - **`docs/shared/card_defs.json` / `anki_schema.json`は自動生成物**。
   ⚙設定「カード定義」タブでノートタイプを編集したら
   `python tools/export_shared_card_defs.py`を実行して再生成すること
@@ -1434,34 +1436,66 @@ tools/
   ノートタイプJSON(`req`やfldsのord/font等を含む)はgenankiに組み立てさせた
   結果をそのまま運ぶ設計で、JS側では再構築しない。
 - **guid/dueの計算方法をカード種別ごとにハードコードせず、共有JSON側に
-  記述させる設計(2026-07-28、AIに質問追加時に導入)**: word(単語)は
+  記述させる設計(2026-07-28、AIに質問追加時に導入、習熟用追加時に
+  due_schemeへ第3のパターンを追加)**: word(単語)は
   `card_def_builder.build_guid()`(1フィールドの正規化値からguid、
   due常に0)、grammar_multi(AIに質問)は`grammar_multi_builder.build_guid()`
   (`topic_key`+`note_index`の複合キーからguid、dueはitemsのリスト内
-  インデックス)と、Python側の生成経路自体がカード種別ごとに異なる
-  (grammar_multiは`card_defs.json`を経由しない独立実装、
-  「Grammar Multiカード生成との関係」の項を参照)。この違いをWeb側の
-  `lib/guid.js`/`lib/apkg.js`が種別ごとに分岐するのではなく、
-  `card_def.guid_scheme`(`{"type": "dedup_key", ...}` または
-  `{"type": "compound", ...}`)・`card_def.due_scheme`
-  (`"fixed_zero"`または`"index"`)という形で`tools/export_shared_card_defs.py`
-  が共有JSONに埋め込み、Web側はそれを読んで計算する。新しいカード種別
-  (習熟用等)を追加する際も、この2ファイルを直接編集する必要は基本的にない。
+  インデックス)、shuujuku(習熟用)は`build_shuujuku_v1.build_guid()`
+  (`source_kind`+`source_topic`の複合キーからguid、dueはNumフィールドと
+  同じ続き番号)と、Python側の生成経路自体がカード種別ごとに異なる
+  (grammar_multi・shuujuku とも`card_defs.json`を経由しない独立実装、
+  「Grammar Multiカード生成との関係」「習熟用(ATSU方式)カード生成との
+  関係」の項を参照)。この違いをWeb側の`lib/guid.js`/`lib/apkg.js`が種別
+  ごとに分岐するのではなく、`card_def.guid_scheme`
+  (`{"type": "dedup_key", ...}` または `{"type": "compound", ...}`)・
+  `card_def.due_scheme`(`{"type": "fixed_zero"}` / `{"type": "index"}` /
+  `{"type": "field", "key": ...}`)という形で`tools/export_shared_card_defs.py`
+  が共有JSONに埋め込み、Web側はそれを読んで計算する。新しいカード種別を
+  追加する際も、この2ファイルを直接編集する必要は基本的にない
+  (実際、shuujuku追加時は`due_scheme`に`"field"`タイプを1つ足しただけで
+  word/grammar_multiのコードは無変更のまま通った)。
+- **習熟用(shuujuku)だけはguid/due以外にも特殊事情がある**:
+  Contentフィールドはitemの1値をそのまま流し込むのではなく、
+  pattern/meaning/examples/expl/source_labelを`build_shuujuku_v1.render_item()`
+  相当のロジックでHTMLに合成した結果であり、しかもNum/dueは出力時点で
+  払い出す続き番号(Ankiのソートフィールド衝突を避けるため)に依存する。
+  そのためWeb側は生のitem(ストックに貯める形)をそのまま`buildApkg()`に
+  渡すのではなく、`docs/lib/shuujuku.js`の`buildFieldsReadyItems(items,
+  startNum)`で先にNum/Contentを確定させてから渡す
+  (`docs/app.js`の`onExportShuujuku()`を参照)。続き番号は
+  `getNextNum()`/`advanceNextNum()`がlocalStorageで管理し、apkg生成が
+  実際に成功した時点で初めて進める(デスクトップ版の
+  `shuujuku_stock.get_next_num()`/`mark_exported()`と同じ2段階設計)。
+- **習熟用タブには直接の入力欄が無い**。デスクトップ版と同じく、
+  「AIに質問」タブで質問を送信すると、Grammar Multiの3問生成
+  (`generateGrammarMultiItems`)に続けて習熟用4問目の生成
+  (`generateShuujukuItem`)が呼ばれ、成功すれば習熟用ストックへ1件追加
+  される。この4問目生成の失敗は3問の生成成功を無効にしない(非ブロッキング、
+  `docs/app.js`の`onAiAskGenerate()`を参照)。
 - **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
   (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は3本:
   - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
-    (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multiの両方)、
-    guid・フィールド・カード構成・ノートタイプ定義を突き合わせる。実装中に
-    実際に複数の差異(cards.dueの採番、models.modの扱い)を検出しており、
-    これを省くと気付かないまま学習履歴を壊す変更が入る。
+    (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multi・shuujuku
+    の3種別)、guid・フィールド・カード構成・ノートタイプ定義を突き合わせる。
+    実装中に実際に複数の差異(cards.dueの採番、models.modの扱い)を検出して
+    おり、これを省くと気付かないまま学習履歴を壊す変更が入る。shuujukuは
+    Python側の生item(`source_key`が`[kind, topic]`の2要素配列)と、
+    Web側の`buildApkg()`に渡すitem(`buildFieldsReadyItems()`済み、
+    `source_kind`/`source_topic`がフラット)の形が異なるため、
+    `verifyCardDef()`に`webItems`引数(省略時は`items`をそのまま使う)を
+    追加して吸収している。
   - `npm run verify:grammar-multi`(`verify_grammar_multi_parity.mjs`):
     Grammar Multi固有の後処理(`_format_question_html`相当の改行整形、
     `_prefix_answer_with_correct_opt`相当の正解記号付与、choices/whynot/
     exampleのHTML化)が、固定した生のGemini応答JSONに対してPython版と
     一致するかを検証する。
   - `npm run test:ui`(`test_web_ui.mjs`): jsdom上で`index.html`+`app.js`を
-    実際に動かし、単語タブ・AIに質問タブそれぞれで 生成→一覧→プレビュー→
-    apkg出力→削除 の通し動作を確認する(タブ切り替え自体も検証する)。
+    実際に動かし、単語タブ・AIに質問タブ(3問+習熟用4問目)・習熟用(音読)
+    タブそれぞれで 生成→一覧→プレビュー→apkg出力→削除 の通し動作を
+    確認する(タブ切り替え自体も検証する)。習熟用タブの出力確認では、
+    apkg生成成功後にストックが空になること・続き番号カウンタが進むこと
+    (`localStorage`の`anki_tool_shuujuku_next_num`)も検証している。
     **Gemini APIはfetchをモックするのでAPIキー・割り当てを消費しない**
     (その代わり、実際のGeminiが期待どおりのJSONを返すかはこのテストの
     対象外で、実機確認が必要)。生成中のローディング表示(スピナー)は
@@ -1472,9 +1506,11 @@ tools/
     解決しようとして失敗するため、テスト側で`locateFile`を無視させている。
 - 実装時に判明した注意点:
   - `card_def_builder.build_deck_from_def()`は`due`を指定しないため、
-    全カードの`due`は0になる(due_scheme: "fixed_zero")。
+    全カードの`due`は0になる(due_scheme: `{"type": "fixed_zero"}`)。
   - `grammar_multi_builder.build_deck()`は`due`にitemsのリスト内インデックス
-    を使う(due_scheme: "index")。
+    を使う(due_scheme: `{"type": "index"}`)。
+  - `build_shuujuku_v1.build_deck()`は`due`にNumフィールドと同じ続き番号を
+    使う(due_scheme: `{"type": "field", "key": "num"}`)。
   - `models.mod`はgenankiが書き出し時刻で埋める値。共有JSONには固定値
     (0)で入っているので、apkg生成時に現在時刻で上書きしている。
   - 日本語Windowsでは標準入出力の既定がcp932になるため、検証スクリプトは

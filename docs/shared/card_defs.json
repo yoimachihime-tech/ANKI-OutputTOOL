@@ -48,7 +48,9 @@
         "prefix": "word",
         "dedup_key": "word"
       },
-      "due_scheme": "fixed_zero",
+      "due_scheme": {
+        "type": "fixed_zero"
+      },
       "anki_model": {
         "css": "\n.card {\n  font-family: -apple-system, \"Hiragino Sans\", \"Helvetica Neue\", Arial, sans-serif;\n  font-size: 17px;\n  line-height: 1.75;\n  text-align: left;\n  max-width: 640px;\n  margin: 0 auto;\n  padding: 8px 4px 28px 4px;\n\n  --bg: #e7e9ec;\n  --fg: #1f2328;\n  --sub: #6b7280;\n  --word-bg: #eef2ff;\n  --word-fg: #4338ca;\n  --head-bg: #ccd1d7;\n  --head-border: #b3b9c1;\n  --meaning-bg: #ecdca0;\n  --meaning-border: #c7a83a;\n  --example-bg: #c7d3e2;\n  --example-border: #5c85cf;\n  --note-bg: #d6cde6;\n  --note-border: #8567bd;\n  --word-color: #000000;\n  color: var(--fg);\n  background: var(--bg);\n}\n\n.night_mode .card {\n  --bg: #1a1c1f;\n  --fg: #f0f1f3;\n  --sub: #9aa1ab;\n  --word-bg: #2b2f6b;\n  --word-fg: #c7cdff;\n  --head-bg: #212326;\n  --head-border: #34373b;\n  --meaning-bg: #332b10;\n  --meaning-border: #8c7620;\n  --example-bg: #182130;\n  --example-border: #4d76b3;\n  --note-bg: #201b28;\n  --note-border: #7a5fc0;\n  --word-color: var(--fg);\n}\n\n@media (prefers-color-scheme: dark) {\n  .card {\n    --bg: #1a1c1f;\n    --fg: #f0f1f3;\n    --sub: #9aa1ab;\n    --word-bg: #2b2f6b;\n    --word-fg: #c7cdff;\n    --head-bg: #212326;\n    --head-border: #34373b;\n    --meaning-bg: #332b10;\n    --meaning-border: #8c7620;\n    --example-bg: #182130;\n    --example-border: #4d76b3;\n    --note-bg: #201b28;\n    --note-border: #7a5fc0;\n    --word-color: var(--fg);\n  }\n}\n\n.head-block {\n  background: var(--head-bg);\n  border: 1px solid var(--head-border);\n}\n.word-head {\n  display: flex;\n  align-items: baseline;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n.word-main { font-size: 28px; font-weight: 700; color: var(--word-color); }\n.word-reading { color: var(--sub); font-size: 15px; font-family: \"SF Mono\", Menlo, monospace; }\n.word-pos {\n  display: inline-block;\n  background: var(--word-bg);\n  color: var(--word-fg);\n  font-size: 12.5px;\n  font-weight: 700;\n  padding: 3px 10px;\n  border-radius: 999px;\n}\n\n.block { border-radius: 12px; padding: 14px 16px; margin: 12px 0; }\n.label { font-weight: 700; font-size: 12.5px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n\n.meaning-block { background: var(--meaning-bg); border-left: 5px solid var(--meaning-border); }\n.meaning-block .label { color: var(--meaning-border); }\n.meaning-text { font-size: 19px; font-weight: 600; }\n\n.example-block { background: var(--example-bg); border-left: 5px solid var(--example-border); }\n.example-block .label { color: var(--example-border); }\n.example-sentence { font-size: 16px; }\n.example-ja { color: var(--sub); font-size: 14.5px; margin-top: 4px; }\n\n.note-block { background: var(--note-bg); border-left: 5px solid var(--note-border); font-size: 15px; color: var(--word-color); }\n.note-block .label { color: var(--note-border); }\n\n.context-hint { color: var(--sub); font-size: 13px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }\n.blank-sentence { font-size: 17px; background: var(--head-bg); border: 1px solid var(--head-border); border-radius: 12px; padding: 14px 16px; }\n\nb { color: inherit; }\nhr.sep { border: none; border-top: 1px solid var(--head-border); margin: 18px 0; }\n",
         "did": 1785112749312,
@@ -232,7 +234,9 @@
           "note_index"
         ]
       },
-      "due_scheme": "index",
+      "due_scheme": {
+        "type": "index"
+      },
       "anki_model": {
         "css": "\n.card {\n  font-family: -apple-system, \"Hiragino Sans\", \"Helvetica Neue\", Arial, sans-serif;\n  font-size: 17px;\n  line-height: 1.75;\n  text-align: left;\n  max-width: 640px;\n  margin: 0 auto;\n  padding: 8px 4px 28px 4px;\n\n  --bg: #e7e9ec;\n  --fg: #000000;\n  --sub: #6b7280;\n  --pattern-bg: #eef2ff;\n  --pattern-fg: #4338ca;\n  --question-bg: #ccd1d7;\n  --question-border: #b3b9c1;\n  --choice-bg: #dcdfe3;\n  --choice-border: #b3b9c1;\n  --answer-bg: #ecdca0;\n  --answer-border: #c7a83a;\n  --why-bg: #c9dfc9;\n  --why-border: #3a8f5c;\n  --whynot-bg: #f0c9c9;\n  --whynot-border: #c94a3f;\n  --example-bg: #c7d3e2;\n  --example-border: #5c85cf;\n  --core-bg: #d6cde6;\n  --core-border: #8567bd;\n  color: var(--fg);\n  background: var(--bg);\n}\n\n.night_mode .card {\n  --bg: #1a1c1f;\n  --fg: #f0f1f3;\n  --sub: #9aa1ab;\n  --pattern-bg: #2b2f6b;\n  --pattern-fg: #c7cdff;\n  --question-bg: #212326;\n  --question-border: #34373b;\n  --choice-bg: #24272a;\n  --choice-border: #383c40;\n  --answer-bg: #332b10;\n  --answer-border: #8c7620;\n  --why-bg: #16241b;\n  --why-border: #3a7350;\n  --whynot-bg: #271515;\n  --whynot-border: #96453c;\n  --example-bg: #182130;\n  --example-border: #4d76b3;\n  --core-bg: #201b28;\n  --core-border: #7a5fc0;\n}\n\n@media (prefers-color-scheme: dark) {\n  .card {\n    --bg: #1a1c1f;\n    --fg: #f0f1f3;\n    --sub: #9aa1ab;\n    --pattern-bg: #2b2f6b;\n    --pattern-fg: #c7cdff;\n    --question-bg: #212326;\n    --question-border: #34373b;\n    --choice-bg: #24272a;\n    --choice-border: #383c40;\n    --answer-bg: #332b10;\n    --answer-border: #8c7620;\n    --why-bg: #16241b;\n    --why-border: #3a7350;\n    --whynot-bg: #271515;\n    --whynot-border: #96453c;\n    --example-bg: #182130;\n    --example-border: #4d76b3;\n    --core-bg: #201b28;\n    --core-border: #7a5fc0;\n  }\n}\n\n.pattern-tag {\n  display: inline-block;\n  background: var(--pattern-bg);\n  color: var(--pattern-fg);\n  font-weight: 700;\n  font-size: 14px;\n  padding: 4px 12px;\n  border-radius: 999px;\n  margin-bottom: 12px;\n  letter-spacing: 0.02em;\n}\n\n.block {\n  border-radius: 12px;\n  padding: 14px 16px;\n  margin: 12px 0;\n}\n\n.question-block {\n  background: var(--question-bg);\n  border: 1px solid var(--question-border);\n}\n.question-label { font-size: 12px; color: var(--sub); font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; }\n\n.choices { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }\n.choice {\n  background: var(--choice-bg);\n  border: 1px solid var(--choice-border);\n  border-radius: 8px;\n  padding: 7px 12px;\n  font-family: \"SF Mono\", Menlo, monospace;\n  font-size: 15.5px;\n}\n\n.answer-block {\n  background: var(--answer-bg);\n  border-left: 5px solid var(--answer-border);\n}\n.answer-block .label { font-weight: 700; font-size: 12.5px; color: var(--answer-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;}\n.answer-block .sentence { font-size: 18px; font-weight: 600; }\n\n.example-block { background: var(--example-bg); border-left: 5px solid var(--example-border); }\n.example-block .label { font-weight: 700; font-size: 12.5px; color: var(--example-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.example-item { margin: 0 0 10px 0; }\n.example-item:last-child { margin-bottom: 0; }\n.example-sentence { font-size: 16px; }\n.example-ja { color: var(--sub); font-size: 14.5px; margin-top: 2px; }\n\n.why-block { background: var(--why-bg); border-left: 5px solid var(--why-border); }\n.why-block .label { font-weight: 700; font-size: 12.5px; color: var(--why-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n\n.whynot-block { background: var(--whynot-bg); border-left: 5px solid var(--whynot-border); }\n.whynot-block .label { font-weight: 700; font-size: 12.5px; color: var(--whynot-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.whynot-item { margin: 4px 0; }\n.whynot-item .opt { font-family: \"SF Mono\", Menlo, monospace; font-weight: 700; }\n\n.core-block { background: var(--core-bg); border-left: 5px solid var(--core-border); font-style: italic; font-size: 15.5px; }\n.core-block .label { font-weight: 700; font-size: 12.5px; color: var(--core-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; font-style: normal; }\n\nb { color: inherit; }\nhr.sep { border: none; border-top: 1px solid var(--question-border); margin: 18px 0; }\n\n.masked b {\n  color: transparent;\n  background: var(--sub);\n  border-radius: 4px;\n  padding: 0 2px;\n}\n\n.ex-num { font-weight: 700; }\n\n.blank-hint { color: var(--sub); font-size: 14px; margin-bottom: 10px; }\n",
         "did": 1907231458999,
@@ -334,6 +338,93 @@
             "name": "1. 判断問題",
             "qfmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  {{#Choices}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n  {{/Choices}}\n</div>\n",
             "afmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  {{#Choices}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n  {{/Choices}}\n</div>\n\n<hr class=\"sep\">\n<div class=\"block answer-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n\n{{#Example}}\n<div class=\"block example-block\">\n  <div class=\"label\">Examples</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/Example}}\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
+            "ord": 0,
+            "bafmt": "",
+            "bqfmt": "",
+            "bfont": "",
+            "bsize": 0,
+            "did": null
+          }
+        ],
+        "type": 0,
+        "usn": -1,
+        "vers": []
+      }
+    },
+    "shuujuku": {
+      "key": "shuujuku",
+      "label": "習熟用(音読)",
+      "notetype_name": "ATSU方式 (PDF再現・音読用)",
+      "model_id": 1901020103491,
+      "deck_id": 1907280020001,
+      "deck_name": "02.単語・MindTips::習熟用",
+      "fields": [
+        {
+          "anki_name": "Num",
+          "item_key": "num"
+        },
+        {
+          "anki_name": "Content",
+          "item_key": "content"
+        }
+      ],
+      "guid_scheme": {
+        "type": "compound",
+        "prefix": "shuujuku",
+        "item_keys": [
+          "source_kind",
+          "source_topic"
+        ]
+      },
+      "due_scheme": {
+        "type": "field",
+        "key": "num"
+      },
+      "anki_model": {
+        "css": "\n.card { font-family: -apple-system, \"Helvetica Neue\", Arial, \"Hiragino Sans\", sans-serif;\n    font-size: 18px; line-height: 1.7; text-align: left; color: #1a1a1a;\n    background-color: #ffffff; padding: 16px; }\n.night_mode.card { color: #e6e6e6; background-color: #2f2f31; }\n*, *::before, *::after { box-sizing: border-box; }\n.deck-title { font-size: 15px; font-weight: 700; color:#6b7280; margin-bottom: 10px; }\n.night_mode .deck-title { color:#b0b3ba; }\n.item-card { margin: 14px 0; padding: 16px; border-radius: 14px; border: 1px solid #e5e7eb; background:#ffffff; }\n.night_mode .item-card { background:#3a3a3d; border-color:#55565c; }\n.item-head { display:flex; align-items:center; gap:10px; margin-bottom: 10px; }\n.item-num { display:inline-flex; align-items:center; justify-content:center; min-width:34px; height:34px; padding:0 8px;\n  border-radius: 10px; background:#ede9fe; color:#534ab7; font-weight:800; font-size:17px; }\n.night_mode .item-num { background:#4b4470; color:#c9c2f7; }\n.pattern-line { font-size: 21px; font-weight: 800; color:#1e3a8a; }\n.night_mode .pattern-line { color:#8ab4f8; }\n.pattern-line mark, .gloss-line mark { background: #cfe6ff; color:#0b3d91; border-radius:4px; padding:1px 4px; font-weight:800; }\n.night_mode .pattern-line mark, .night_mode .gloss-line mark { background:#274a72; color:#bcdcff; }\n.pattern-line u, .gloss-line u { text-decoration-color:#534ab7; }\n.gloss-line { font-size: 14px; color:#6b7280; margin: 4px 0 12px; }\n.night_mode .gloss-line { color:#b0b3ba; }\n.ex-row { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background:#f5f6f8; }\n.night_mode .ex-row { background:#26262a; }\n.ex-en { font-size: 17px; color:#0b3d91; font-weight:600; }\n.night_mode .ex-en { color:#bcdcff; }\n.ex-en mark { background:#cfe6ff; color:#0b3d91; border-radius:4px; padding:1px 4px; }\n.night_mode .ex-en mark { background:#274a72; color:#bcdcff; }\n.ex-jp { font-size: 15px; color:#374151; margin-top: 3px; }\n.night_mode .ex-jp { color:#cbd5e1; }\n.expl-box { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background:#fef7e6; border-left: 3px solid #f0b429; font-size: 14px; color:#78530a; }\n.night_mode .expl-box { background:#4a3f22; border-left-color:#f0b429; color:#f0c05a; }\n.expl-label { font-size: 11px; font-weight:700; color:#92660a; margin-bottom: 3px; }\n.night_mode .expl-label { color:#f0c05a; }\n.source-tag { font-size: 11px; color:#9ca3af; margin-top: 10px; text-align: right; }\n.night_mode .source-tag { color:#7c8087; }\n@media (max-width: 480px) {\n  .card { padding: 6px 8px; font-size: 16px; }\n  .item-card { padding: 10px; margin: 8px 0; border-radius: 10px; }\n  .pattern-line { font-size: 18px; }\n  .ex-en { font-size: 15.5px; }\n}\n",
+        "did": 1907280020001,
+        "flds": [
+          {
+            "name": "Num",
+            "ord": 0,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Content",
+            "ord": 1,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          }
+        ],
+        "id": "1901020103491",
+        "latexPost": "\\end{document}",
+        "latexPre": "\\documentclass[12pt]{article}\n\\special{papersize=3in,5in}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amssymb,amsmath}\n\\pagestyle{empty}\n\\setlength{\\parindent}{0in}\n\\begin{document}\n",
+        "latexsvg": false,
+        "mod": 0,
+        "name": "ATSU方式 (PDF再現・音読用)",
+        "req": [
+          [
+            0,
+            "all",
+            [
+              1
+            ]
+          ]
+        ],
+        "sortf": 0,
+        "tags": [],
+        "tmpls": [
+          {
+            "name": "カード 1",
+            "qfmt": "{{Content}}",
+            "afmt": "{{FrontSide}}",
             "ord": 0,
             "bafmt": "",
             "bqfmt": "",

@@ -16,6 +16,8 @@ verify_web_parity.mjs から呼ばれ、Web版(docs/lib/apkg.js)の出力と
     単語タブと同じ経路)。
 --card-def grammar_multi: grammar_multi_builder.build_deck() 経由
     (デスクトップ版のAIに質問タブと同じ経路。card_defs.json は通らない)。
+--card-def shuujuku: build_shuujuku_v1.build_deck(items, start_num=1) 経由
+    (デスクトップ版の習熟用タブと同じ経路。start_numは再現性のため1固定)。
 """
 
 import argparse
@@ -34,6 +36,7 @@ import genanki  # noqa: E402
 import card_def_builder  # noqa: E402
 import card_defs  # noqa: E402
 import grammar_multi_builder  # noqa: E402
+import build_shuujuku_v1  # noqa: E402
 
 # Web版が guid を再実装しているため、代表的な入力での一致も確認する。
 # (フィールド構成が変わっても検出できるよう、apkg 本体とは別に見る)
@@ -52,6 +55,15 @@ def build_deck_for(card_def_key: str, items: list):
         deck = grammar_multi_builder.build_deck(items)
         return deck, grammar_multi_builder.canon.GRAMMAR_MODEL.model_id, grammar_multi_builder.DECK_ID
 
+    if card_def_key == "shuujuku":
+        # start_num=1固定(再現性のため。docs/lib/shuujuku.jsのbuildFieldsReadyItems
+        # をWeb側でも同じstartNum=1で呼び出して突き合わせる、
+        # tools/verify_web_parity.mjs参照)。items内のsource_keyはJSONの配列として
+        # 届くが、build_shuujuku_v1.build_guid()側は `kind, key = item['source_key']`
+        # とアンパックするだけなのでlistでも問題ない。
+        deck = build_shuujuku_v1.build_deck(items, start_num=1)
+        return deck, build_shuujuku_v1.SHUUJUKU_MODEL.model_id, build_shuujuku_v1.DECK_ID
+
     card_def = card_defs.get_def(card_def_key)
     if not card_def:
         raise SystemExit(f"カード定義 '{card_def_key}' が見つかりません。")
@@ -66,7 +78,7 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--card-def", default="word", choices=["word", "grammar_multi"])
+    parser.add_argument("--card-def", default="word", choices=["word", "grammar_multi", "shuujuku"])
     args = parser.parse_args()
 
     items = json.load(sys.stdin)

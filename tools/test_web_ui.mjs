@@ -1,8 +1,11 @@
 // tools/test_web_ui.mjs
 // ---------------------------------------------------------------------------
 // docs/index.html + app.js を jsdom 上で実際に動かし、画面操作の一通り
-//   [単語タブ]     単語入力 → AI生成 → ストック表示 → プレビュー → .apkg 出力 → 削除
-//   [AIに質問タブ] 質問入力 → AI生成(3問) → ストック表示 → プレビュー → .apkg 出力 → 削除
+//   [単語タブ]       単語入力 → AI生成 → ストック表示 → プレビュー → .apkg 出力 → 削除
+//   [AIに質問タブ]   質問入力 → AI生成(3問+習熟用4問目) → ストック表示 → プレビュー →
+//                     .apkg 出力 → 削除
+//   [習熟用(音読)タブ] AIに質問の4問目として自動追加されたことの確認 → プレビュー →
+//                     .apkg 出力(出力後にストックが空になり、続き番号が進むこと) → 削除
 // が動くことを確認する。
 //
 // 【Gemini API は呼ばない】
@@ -64,6 +67,14 @@ const FAKE_GRAMMAR_MULTI_NOTES = [
   },
 ];
 
+// AIに質問タブの「4問目」(習熟用/音読)としてGeminiが返す想定の応答。
+const FAKE_SHUUJUKU_ITEM = {
+  pattern: "She doesn't 動詞",
+  meaning: '三人称単数の否定文',
+  examples: [["She doesn't like coffee.", '彼女はコーヒーが好きではない。']],
+  expl: "三人称単数の否定は doesn't を使う。",
+};
+
 console.log('Web版UIの通し動作テスト(jsdom / Gemini APIはモック)\n');
 
 // --- ページを読み込む ---
@@ -121,9 +132,15 @@ globalThis.fetch = async (url) => {
   }
   if (u.includes('generativelanguage.googleapis.com')) {
     geminiCalls += 1;
-    const text = geminiMode === 'grammar_multi'
-      ? JSON.stringify(FAKE_GRAMMAR_MULTI_NOTES)
-      : JSON.stringify(FAKE_WORD_CARD);
+    // grammar_multi モードでは、onAiAskGenerate()が「3問生成」の後に続けて
+    // 「習熟用4問目」も生成するため、1回目と2回目で別の応答を返す必要がある
+    // (呼び出し順は実装上always 3問→4問目の順で固定)。
+    let text;
+    if (geminiMode === 'grammar_multi') {
+      text = geminiCalls === 1 ? JSON.stringify(FAKE_GRAMMAR_MULTI_NOTES) : JSON.stringify(FAKE_SHUUJUKU_ITEM);
+    } else {
+      text = JSON.stringify(FAKE_WORD_CARD);
+    }
     return {
       ok: true,
       status: 200,
@@ -323,11 +340,11 @@ if ($('ai-ask-generate-status').classList.contains('loading')) {
   fail('生成中にローディング表示が出ていない');
 }
 
-for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
+for (let i = 0; i < 100 && geminiCalls < 2; i += 1) await sleep(50);
 await sleep(200);
 
-if (geminiCalls === 1) ok('1つの質問に対して Gemini を 1 回だけ呼んだ(3問まとめて1回のAPI呼び出し)');
-else fail(`Gemini 呼び出し回数: ${geminiCalls}(期待:1)`);
+if (geminiCalls === 2) ok('1つの質問に対して Gemini を 2 回呼んだ(3問まとめて1回 + 習熟用4問目1回)');
+else fail(`Gemini 呼び出し回数: ${geminiCalls}(期待:2)`);
 
 const aiAskItems = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
 if (aiAskItems.length === 3) ok('ストックに 3 件(選択問題/誤り訂正問題/記述式)保存された');
@@ -347,6 +364,18 @@ if (aiAskItems[0]?.question.includes('<br><br>')) {
   ok('日本語指示文と英文の間に<br><br>が挿入されている');
 } else {
   fail(`questionの整形結果: ${JSON.stringify(aiAskItems[0]?.question)}`);
+}
+
+const shuujukuAfterGenerate = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (shuujukuAfterGenerate.length === 1 && shuujukuAfterGenerate[0].pattern === FAKE_SHUUJUKU_ITEM.pattern) {
+  ok('AIに質問の4問目として習熟用(音読)ストックに1件追加された');
+} else {
+  fail(`習熟用ストック: ${JSON.stringify(shuujukuAfterGenerate)}`);
+}
+if (shuujukuAfterGenerate[0]?.source_kind === 'chat' && shuujukuAfterGenerate[0]?.source_topic) {
+  ok('習熟用アイテムに source_kind/source_topic (guid計算用)が付与されている');
+} else {
+  fail(`習熟用アイテムのsource_kind/source_topic: ${JSON.stringify(shuujukuAfterGenerate[0])}`);
 }
 
 if ($('ai-ask-input').value === '') ok('生成成功後、質問欄がクリアされた');
@@ -396,7 +425,73 @@ if (aiAskAfter.length === 2 && aiAskAfter[0].pattern === '誤り訂正問題') {
   fail(`削除後のストック: ${JSON.stringify(aiAskAfter.map((i) => i.pattern))}`);
 }
 
+// ===========================================================================
+// 習熟用(音読)タブ
+// このタブには直接の入力欄が無く、[8]でのAIに質問の4問目としてのみ増える。
+// ===========================================================================
+console.log('\n[12] タブ切り替え: 習熟用(音読)');
+document.querySelector('[data-tab="shuujuku"]').click();
+if ($('tab-shuujuku').hidden === false && $('tab-ai_ask').hidden === true) {
+  ok('習熟用(音読)タブに切り替わった');
+} else {
+  fail('タブ切り替えが機能していない');
+}
+
+if ($('shuujuku-stock-list').children.length === 1) ok('一覧に(4問目由来の)1件が描画された');
+else fail(`一覧の行数: ${$('shuujuku-stock-list').children.length}`);
+
+console.log('\n[13] 習熟用(音読)タブ: カードプレビュー');
+$('shuujuku-stock-list').querySelector('button').click();
+await sleep(100);
+if (dialogOpened) {
+  const srcdoc = $('preview-frame').srcdoc || '';
+  // プレビューはNum/Contentが未確定のitemを、出力予定の次番号で仮レンダリング
+  // したもの(showShuujukuPreview)。esc()はhtml.escape(s, quote=False)相当
+  // なのでアポストロフィはエスケープされない("doesn't"のまま)。
+  if (srcdoc.includes("doesn't")) {
+    if (srcdoc.includes('deck-title') && srcdoc.includes('item-card')) {
+      ok('render_item()相当のHTML(deck-title・item-card)でレンダリングされた');
+    } else {
+      fail('プレビューHTMLにdeck-title/item-cardが含まれない');
+    }
+  } else {
+    fail('プレビュー内容が想定と異なる');
+  }
+} else {
+  fail('プレビューダイアログが開かない');
+}
+dlg.close();
+
+console.log('\n[14] 習熟用(音読)タブ: .apkg の書き出し(出力後にストックが空になる)');
+downloaded = null;
+$('shuujuku-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (!downloaded) {
+  fail('.apkg が生成されなかった');
+} else {
+  await dumpApkgAndCheck(downloaded, {
+    expectedNoteCount: 1,
+    expectedCardCount: 1,
+    firstFieldEquals: '001', // Numフィールド(続き番号1件目なので001)
+    tmpName: '.uitest_shuujuku.anki2',
+  });
+}
+
+const shuujukuAfterExport = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (shuujukuAfterExport.length === 0) ok('出力成功後、習熟用ストックが空になった(mark_exported相当)');
+else fail(`出力後の習熟用ストック件数: ${shuujukuAfterExport.length}(期待:0)`);
+
+if (localStorage.getItem('anki_tool_shuujuku_next_num') === '2') {
+  ok('続き番号カウンタが1件分進んだ(次回は002から)');
+} else {
+  fail(`続き番号カウンタ: ${localStorage.getItem('anki_tool_shuujuku_next_num')}(期待:"2")`);
+}
+
+if ($('shuujuku-stock-empty').hidden === false) ok('出力後、一覧が「カードがありません」表示に戻った');
+else fail('出力後の一覧表示がおかしい');
+
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
-  : '\n✅ Web版UIの通し動作(単語タブ・AIに質問タブとも 生成→一覧→プレビュー→apkg→削除)はすべて正常です。');
+  : '\n✅ Web版UIの通し動作(単語タブ・AIに質問タブ・習熟用(音読)タブとも '
+    + '生成→一覧→プレビュー→apkg→削除)はすべて正常です。');
 process.exit(failures ? 1 : 0);

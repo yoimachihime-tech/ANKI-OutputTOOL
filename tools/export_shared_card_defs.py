@@ -41,15 +41,15 @@ import card_def_builder  # noqa: E402
 import card_defs  # noqa: E402
 import build_grammar_multi_v1_updated as grammar_multi_canon  # noqa: E402
 import grammar_multi_builder  # noqa: E402
+import build_shuujuku_v1  # noqa: E402
 
 SHARED_DIR = os.path.join(BASE_DIR, "docs", "shared")
 OUT_PATH = os.path.join(SHARED_DIR, "card_defs.json")
 SCHEMA_OUT_PATH = os.path.join(SHARED_DIR, "anki_schema.json")
 
 # Web版フェーズ1で出力対象にするカード種別。
-# daily(DailyConversation)/shuujuku(習熟用)は独自レンダリングロジックを持ち
-# card_def_builderの汎用パスに載っていないため、現時点では対象外
-# (CLAUDE.mdの「カード定義エディタ」の項を参照)。
+# daily(DailyConversation)は未対応(サービスアカウント鍵をブラウザに置けない
+# ためOAuth化が別途必要。CLAUDE.mdの「カード定義エディタ」の項を参照)。
 EXPORT_KEYS = ("word",)
 
 
@@ -110,8 +110,55 @@ def build_grammar_multi_def() -> dict:
         },
         # grammar_multi_builder.build_deck()はdue=itemsのリスト内インデックス
         # を使う(word/card_def_builderのdue=0固定とは異なる)。
-        "due_scheme": "index",
+        "due_scheme": {"type": "index"},
         "anki_model": model.to_json(0, grammar_multi_builder.DECK_ID),
+    }
+
+
+def build_shuujuku_def() -> dict:
+    """「ATSU方式 (PDF再現・音読用)」(習熟用タブ)の共有定義を組み立てる。
+
+    grammar_multiと同じく、Python側でも汎用ビルダーを経由しない独立実装
+    (build_shuujuku_v1.py + shuujuku_stock.pyの続き番号管理)。
+
+    【他のカード種別と根本的に違う点】
+    Contentフィールドは「pattern/meaning/examples/expl/source_labelを
+    render_item()でHTMLに合成した結果」であり、item自体の1フィールドを
+    そのまま流し込むものではない。さらにNum/Contentどちらも、出力時点で
+    払い出される連番(start_num、shuujuku_stock.get_next_num()相当)に
+    依存する。そのためWeb側は「生成時点のitem」をそのまま
+    fieldsFromItem()に渡すのではなく、docs/lib/shuujuku.jsの
+    renderShuujukuItem()で先にNum/Contentへ変換してから渡す必要がある
+    (docs/app.jsのonExportShuujuku参照)。
+
+    guidはgrammar_multiと同様の複合キー方式だが、キーの中身が
+    (source_kind, source_topic)というsource_key由来の2値である点が異なる
+    (build_shuujuku_v1.build_guid()参照。genanki.guid_for('shuujuku', kind, key))。
+    """
+    model = build_shuujuku_v1.SHUUJUKU_MODEL
+    return {
+        "key": "shuujuku",
+        "label": "習熟用(音読)",
+        "notetype_name": model.name,
+        "model_id": model.model_id,
+        "deck_id": build_shuujuku_v1.DECK_ID,
+        "deck_name": build_shuujuku_v1.DECK_NAME,
+        "fields": [
+            {"anki_name": "Num", "item_key": "num"},
+            {"anki_name": "Content", "item_key": "content"},
+        ],
+        "guid_scheme": {
+            "type": "compound",
+            "prefix": "shuujuku",
+            "item_keys": ["source_kind", "source_topic"],
+        },
+        # Numフィールドと同じ値をdueにも使う(build_shuujuku_v1.build_deck()の
+        # due=idxと同じ)。「itemの特定フィールドの値をそのままdueにする」
+        # という、word(常に0)・grammar_multi(配列内インデックス)のどちらとも
+        # 異なる第3のパターンのため、apkg.js側にdue_scheme.type="field"を
+        # 追加した。
+        "due_scheme": {"type": "field", "key": "num"},
+        "anki_model": model.to_json(0, build_shuujuku_v1.DECK_ID),
     }
 
 
@@ -132,12 +179,13 @@ def main() -> int:
             "dedup_key": card_def["dedup_key"],
             "fields": card_def["fields"],
             "guid_scheme": {"type": "dedup_key", "prefix": card_def["key"], "dedup_key": card_def["dedup_key"]},
-            "due_scheme": "fixed_zero",
+            "due_scheme": {"type": "fixed_zero"},
             # Ankiのcol.modelsへそのまま入れるJSON(genanki生成、上記docstring参照)
             "anki_model": build_anki_model_json(card_def),
         }
 
     exported["grammar_multi"] = build_grammar_multi_def()
+    exported["shuujuku"] = build_shuujuku_def()
 
     os.makedirs(SHARED_DIR, exist_ok=True)
 

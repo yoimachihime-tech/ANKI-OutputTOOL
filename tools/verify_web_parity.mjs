@@ -10,9 +10,10 @@
 // 必ずこの検証を通すこと。
 //
 // 【対象】
-// word(単語)・grammar_multi(AIに質問)の2種別。どちらもPython側の生成経路が
-// 異なる(word: card_defs.json + card_def_builder / grammar_multi:
-// grammar_multi_builder.build_deck())ため、それぞれ別個に突き合わせる。
+// word(単語)・grammar_multi(AIに質問)・shuujuku(習熟用/音読)の3種別。
+// いずれもPython側の生成経路が異なる(word: card_defs.json +
+// card_def_builder / grammar_multi: grammar_multi_builder.build_deck() /
+// shuujuku: build_shuujuku_v1.build_deck())ため、それぞれ別個に突き合わせる。
 //
 // 【使い方】
 //   cd tools && npm install && npm run verify
@@ -41,6 +42,7 @@ globalThis.JSZip = require('jszip');
 
 const { buildApkg } = await import(new URL('../docs/lib/apkg.js', import.meta.url));
 const { guidFor } = await import(new URL('../docs/lib/guid.js', import.meta.url));
+const { buildFieldsReadyItems } = await import(new URL('../docs/lib/shuujuku.js', import.meta.url));
 
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const cardDefsAll = readJson(join(DOCS, 'shared', 'card_defs.json')).defs;
@@ -71,13 +73,23 @@ function dumpPython(cardDefKey, items) {
   return JSON.parse(stdout.toString('utf8'));
 }
 
-/** 1つのカード種別について、Web版とPython版のapkgを突き合わせる。 */
-async function verifyCardDef(cardDefKey, items, labelOf) {
+/**
+ * 1つのカード種別について、Web版とPython版のapkgを突き合わせる。
+ *
+ * @param {string} cardDefKey
+ * @param {object[]} items Python側(dump_python_apkg.py)に渡す形のitems
+ * @param {(item: object) => string} labelOf
+ * @param {object[]} [webItems] Web版のbuildApkg()に渡すitemsが`items`と異なる
+ *   場合に指定する(shuujuku: Content/Numを出力時点で確定させるため、
+ *   Python側はsource_key付きの生item、Web側はbuildFieldsReadyItems()済みの
+ *   item、と形が異なるため)。省略時は`items`をそのまま両方に使う。
+ */
+async function verifyCardDef(cardDefKey, items, labelOf, webItems) {
   console.log(`\n=== ${cardDefKey} ===`);
   const expected = dumpPython(cardDefKey, items);
   const cardDef = cardDefsAll[cardDefKey];
 
-  const blob = await buildApkg({ cardDef, ankiSchema, items });
+  const blob = await buildApkg({ cardDef, ankiSchema, items: webItems || items });
   const zip = await globalThis.JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
 
   const entries = Object.keys(zip.files).sort();
@@ -237,9 +249,52 @@ const grammarMultiGuidCases = await verifyCardDef(
   (item) => `[${item.pattern}] note_index=${item.note_index}`,
 );
 
+// 習熟用(shuujuku): Content/Numは出力時点(buildFieldsReadyItems/
+// build_shuujuku_v1.build_deckのstart_num)で確定するため、Web側の生item
+// (source_kind/source_topicがフラット)とPython側の生item(source_keyが
+// [kind, topic]の2要素)は形が異なる。どちらも同じ論理内容を表すよう変換する。
+// meaning/expl/source_labelがNone(JS側はnull)のケースも1件混ぜて、
+// render_item()側の「値が無ければブロックごと省略する」分岐を検証する。
+const SHUUJUKU_RAW_ITEMS = [
+  {
+    pattern: "She doesn't <mark>動詞</mark>のようにHTMLタグを含む場合",
+    meaning: '三人称単数の否定文(<u>形容詞</u>等のプレースホルダーを含む)',
+    examples: [
+      ["She doesn't like coffee.", '彼女はコーヒーが好きではない。'],
+      ["He doesn't play tennis on Sundays.", '彼は日曜日にテニスをしない。', ['play', 'Sundays']],
+    ],
+    expl: '三人称単数の否定は doesn\'t を使う。',
+    source_kind: 'chat',
+    source_topic: 'discussの使い方',
+    source_label: '由来: AIに質問',
+  },
+  {
+    pattern: 'I 動詞ed yesterday',
+    meaning: null,   // meaningが無いケース(gloss-line省略の分岐)
+    examples: [['I went to school yesterday.', '私は昨日学校へ行った。']],
+    expl: null,       // explが無いケース(expl-box省略の分岐)
+    source_kind: 'dailyconv',
+    source_topic: '59cb55d3-d794-4ae8-8813-c1268807b0f7',
+    source_label: null, // source_labelが無いケース(source-tag省略の分岐)
+  },
+];
+const shuujukuPyItems = SHUUJUKU_RAW_ITEMS.map(({ source_kind, source_topic, ...rest }) => ({
+  ...rest,
+  source_key: [source_kind, source_topic],
+}));
+const shuujukuWebItems = buildFieldsReadyItems(SHUUJUKU_RAW_ITEMS, 1);
+const shuujukuGuidCases = await verifyCardDef(
+  'shuujuku',
+  shuujukuPyItems,
+  (item) => item.source_key.join('::'),
+  shuujukuWebItems,
+);
+
 // --- guid 単体(既知の値との突き合わせ。GUID_CASES は両方の呼び出しで共通) ---
 console.log('\n=== guid アルゴリズム単体 ===');
-for (const [values, want] of Object.entries({ ...wordGuidCases, ...grammarMultiGuidCases })) {
+for (const [values, want] of Object.entries({
+  ...wordGuidCases, ...grammarMultiGuidCases, ...shuujukuGuidCases,
+})) {
   const got = await guidFor(...JSON.parse(values));
   if (got === want) ok(`guid_for(${values}) = ${got}`);
   else fail(`guid_for(${values}): web=${got} / python=${want}`);

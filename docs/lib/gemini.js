@@ -334,6 +334,40 @@ export async function generateGrammarMultiItems({ question, apiKey, model, promp
   });
 }
 
+// ---------------------------------------------------------------------------
+// 習熟用(音読) — 「AIに質問」タブからの4問目
+// gemini_client.py の _item_from_parsed() / generate_shuujuku_item_from_question()
+// と処理内容を一致させてある。
+// ---------------------------------------------------------------------------
+
+/**
+ * 質問文から、習熟用(音読)ストックに追加する item を1件生成する
+ * (gemini_client.generate_shuujuku_item_from_question() に対応)。
+ *
+ * 戻り値は docs/lib/shuujuku.js の buildFieldsReadyItems() にそのまま渡せる
+ * 形式(pattern/meaning/examples/expl/source_label)に加え、guid計算に使う
+ * source_kind/source_topic を持つ(build_shuujuku_v1.build_guid()の
+ * `kind, key = item['source_key']` に対応する2値を、Web側では
+ * guid_scheme.item_keysが参照できるようフラットなフィールドとして持たせている。
+ * docs/shared/card_defs.jsonのshuujuku.guid_scheme.item_keys = ["source_kind",
+ * "source_topic"] と対応関係にあることに注意)。
+ */
+export async function generateShuujukuItem({ question, apiKey, model, promptTemplate }) {
+  const prompt = fillPlaceholders(promptTemplate, { question });
+  const text = await callGemini(prompt, apiKey, model);
+  const parsed = extractJson(text);
+  const topicKey = question.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  return {
+    pattern: parsed.pattern || '',
+    meaning: parsed.meaning || null,
+    examples: parsed.examples || [],
+    expl: parsed.expl || null,
+    source_kind: 'chat',
+    source_topic: topicKey,
+    source_label: '由来: AIに質問',
+  };
+}
+
 /** generateContent に対応しているモデル名の一覧を取得する。 */
 export async function listModels(apiKey) {
   if (!apiKey) throw new GeminiError('Gemini APIキーが設定されていません。');
