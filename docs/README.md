@@ -59,11 +59,16 @@ Anki は guid が同じノートを「同一ノート」として更新する。
 ```sh
 cd tools
 npm install     # 初回のみ
-npm run verify
+npm test        # 下記2つをまとめて実行
 ```
 
-同じ入力からデスクトップ版(genanki)と Web 版それぞれで `.apkg` を作り、
-guid・フィールド・カードの構成・ノートタイプ定義を突き合わせる。
+| コマンド | 内容 |
+| --- | --- |
+| `npm run verify` | 同じ入力からデスクトップ版(genanki)と Web 版それぞれで `.apkg` を作り、guid・フィールド・カード構成・ノートタイプ定義を突き合わせる |
+| `npm run test:ui` | jsdom 上で `index.html` + `app.js` を実際に動かし、単語入力 → AI生成 → 一覧 → プレビュー → apkg 出力 → 削除 の通し動作を確認する(Gemini API はモックするのでキー・割り当てを消費しない) |
+
+`npm run test:ui` は Gemini を呼ばないため、**実際の Gemini が期待どおりの JSON を
+返すか**は確認できない。そこだけは実機での確認が必要。
 
 ## 注意
 

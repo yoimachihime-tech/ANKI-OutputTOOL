@@ -4,10 +4,15 @@
   "type": "module",
   "description": "Web版(docs/)が生成するapkgが、デスクトップ版(genanki)の出力と一致することを検証するためのテスト用パッケージ。アプリ本体はCDNから読み込むため、この依存関係は検証時にしか使わない。",
   "scripts": {
-    "verify": "node verify_web_parity.mjs"
+    "verify": "node verify_web_parity.mjs",
+    "test:ui": "node test_web_ui.mjs",
+    "test": "node verify_web_parity.mjs && node test_web_ui.mjs"
   },
   "dependencies": {
     "jszip": "3.10.1",
     "sql.js": "1.10.3"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
   }
 }

@@ -1393,12 +1393,20 @@ tools/
   (でないとWeb版とデスクトップ版でカードの見た目がズレる)。
   ノートタイプJSON(`req`やfldsのord/font等を含む)はgenankiに組み立てさせた
   結果をそのまま運ぶ設計で、JS側では再構築しない。
-- **`docs/`配下を変更したら必ず`cd tools && npm run verify`を通すこと**。
-  同じ入力からデスクトップ版(genanki)とWeb版それぞれでapkgを生成し、
-  guid・フィールド・カード構成・ノートタイプ定義を突き合わせる。
-  初回のみ`npm install`が必要(`tools/node_modules/`はGit管理外)。
-  実装中に実際に2件の差異(cards.dueの採番、models.modの扱い)を検出しており、
-  この検証を省くと気付かないまま学習履歴を壊す変更が入る。
+- **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
+  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は2本:
+  - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
+    (genanki)とWeb版それぞれでapkgを生成し、guid・フィールド・カード構成・
+    ノートタイプ定義を突き合わせる。実装中に実際に2件の差異(cards.dueの
+    採番、models.modの扱い)を検出しており、これを省くと気付かないまま
+    学習履歴を壊す変更が入る。
+  - `npm run test:ui`(`test_web_ui.mjs`): jsdom上で`index.html`+`app.js`を
+    実際に動かし、単語入力→AI生成→一覧→プレビュー→apkg出力→削除の通し
+    動作を確認する。**Gemini APIはfetchをモックするのでAPIキー・割り当てを
+    消費しない**(その代わり、実際のGeminiが期待どおりのJSONを返すかは
+    このテストの対象外で、実機確認が必要)。
+    sql.jsのwasmはブラウザではCDNから読むが、Nodeではローカルパスとして
+    解決しようとして失敗するため、テスト側で`locateFile`を無視させている。
 - 実装時に判明した注意点:
   - `card_def_builder.build_deck_from_def()`は`due`を指定しないため、
     全カードの`due`は0になる。Web版もこれに合わせている。
