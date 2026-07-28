@@ -851,6 +851,19 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
   3回失敗した時点で「レート制限または無料枠の1日あたりのリクエスト数上限に
   達しました」という分かりやすいメッセージの`GeminiClientError`にして
   打ち切る(生のJSONエラーをそのまま見せない)。
+- **503(一時的な過負荷)時のリトライ**(2026-07-28追加): 片桐の環境で
+  `"This model is currently experiencing high demand. Spikes in demand are
+  usually temporary. Please try again later."`(503 UNAVAILABLE)が発生した際、
+  それまで429しかリトライしておらず生のJSONエラーがそのまま表示されていた
+  ことへの対応。`_post_gemini_request()`(`gemini_client.py`)・
+  `callGemini()`(`docs/lib/gemini.js`)の両方に、429と同じ`_MAX_RETRIES`回数
+  だけ短い固定間隔(2秒×試行回数)でリトライする分岐を追加した。429と違い
+  長期の割り当て超過ではなく数秒〜数十秒で解消することが多いため、
+  `retryDelay`の抽出は行わず単純な固定間隔にしてある。リトライしても解消
+  しない場合は「Gemini APIが一時的に混雑しています」という分かりやすい
+  メッセージで打ち切る。Web版の検証は`tools/test_gemini.mjs`(新設、
+  `npm run test:gemini`)がfetchモックで行う(503リトライ成功/リトライ尽き、
+  および429の既存挙動に回帰が無いことを確認)。
 - `correct_english_text(text, api_key, model)`(2026-07-27追加): DailyConversation
   タブへの直接入力機能向け。片桐から提供を受けたApps Script
   (`onFormSubmit`→`callGeminiForCorrection`)の`system_instruction`・

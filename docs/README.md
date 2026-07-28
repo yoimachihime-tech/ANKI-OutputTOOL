@@ -142,6 +142,7 @@ npm test        # 下記3つをまとめて実行
 | `npm run verify:grammar-multi` | Grammar Multi 固有の後処理(日本語指示文と英文の間の改行整形、選択問題の正解記号 `(B)` の付与、choices/whynot/example の HTML 化)が Python 版と一致するかを、生の Gemini 応答 JSON を固定して突き合わせる |
 | `npm run test:ui` | jsdom 上で `index.html` + `app.js` を実際に動かし、単語タブ・AIに質問タブ(3問+習熟用4問目)・習熟用(音読)タブそれぞれで 生成 → 一覧 → プレビュー → apkg 出力 → 削除 の通し動作を確認する(Gemini API はモックするのでキー・割り当てを消費しない) |
 | `npm run test:tts` | `lib/tts.js`(Cloud Text-to-Speech 呼び出し・文分割・エラー分類・音声埋め込み)を fetch モックで単体テストする(Text-to-Speech API キー・割り当ては消費しない) |
+| `npm run test:gemini` | `lib/gemini.js` の `callGemini()` のエラー処理・リトライ挙動(503 の自動リトライ、429 の既存挙動の回帰確認)を fetch モックで単体テストする |
 
 `npm run test:ui` は Gemini を呼ばないため、**実際の Gemini が期待どおりの JSON を
 返すか**は確認できない。そこだけは実機での確認が必要。

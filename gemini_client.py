@@ -186,6 +186,18 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> di
                     "時間をおくか、⚙設定でモデルを変更する、または有料プランへの"
                     f"切り替えをご検討ください。\n詳細: {detail}"
                 ) from e
+            if e.code >= 500:
+                # Google側の一時的な過負荷(503 UNAVAILABLE「currently
+                # experiencing high demand」等、2026-07-28に片桐の環境で発生)。
+                # 429と違い長期の割り当て超過ではなく、数秒〜数十秒待てば
+                # 解消することが多いため、429と同じ回数だけ短い間隔でリトライする。
+                if attempt < _MAX_RETRIES - 1:
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                raise GeminiClientError(
+                    "Gemini APIが一時的に混雑しています(モデルの需要が高い状態)。"
+                    f"しばらく時間をおいてから再試行してください。\n詳細: {detail}"
+                ) from e
             raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {detail}") from e
         except Exception as e:  # noqa: BLE001
             last_detail = str(e)

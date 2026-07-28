@@ -157,6 +157,21 @@ export async function callGemini(prompt, apiKey, model) {
       throw new GeminiError(`Gemini APIの利用上限(レート制限)に達しました。\n詳細: ${lastDetail}`);
     }
 
+    if (res.status >= 500) {
+      // Google側の一時的な過負荷(503 UNAVAILABLE「currently experiencing high
+      // demand」等、2026-07-28に片桐の環境で発生)。429と違い長期の割り当て
+      // 超過ではなく数秒〜数十秒待てば解消することが多いため、429と同じ回数
+      // だけ短い間隔でリトライする(gemini_client._post_gemini_requestと同じ考え方)。
+      if (attempt < MAX_RETRIES - 1) {
+        await sleep(2000 * (attempt + 1));
+        continue;
+      }
+      throw new GeminiError(
+        'Gemini APIが一時的に混雑しています(モデルの需要が高い状態)。'
+        + `しばらく時間をおいてから再試行してください。\n詳細: ${lastDetail}`,
+      );
+    }
+
     const described = describeError(res.status, lastDetail);
     throw new GeminiError(
       described
