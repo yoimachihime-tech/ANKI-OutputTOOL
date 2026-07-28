@@ -1290,10 +1290,10 @@ example_ja/example_blank/noteの7キーを受け取る。
 
 ## 次にやること(2026-07-28時点の引き継ぎ)
 
-Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習熟用(音読)が
-完成し、GitHub Pagesで公開済み**。URL:
+**Web版フェーズ1は完了**(2026-07-28)。単語カード生成・AIに質問
+(Grammar Multi)・習熟用(音読)・**TTS音声の自動埋め込み**のすべてが実装・
+push済みで、GitHub Pagesで公開・片桐による実機確認も完了している。URL:
 `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/`
-(2026-07-28、習熟用は実装済み。片桐による実機確認・pushはまだ)
 次のセッションは新機能の追加(下記「未実施」)から再開する。
 
 ### 片桐側で完了済み
@@ -1304,11 +1304,12 @@ Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習
   Chirp3-HD voices per minute)の引き下げ
 - 単語カード生成・AIに質問(Grammar Multi)の実機動作確認(生成→apkg出力→
   Ankiへの取り込みまで確認済み)
+- **TTS音声の自動埋め込みの実機動作確認**(2026-07-28、正常動作を確認)
 - リポジトリを公開(Public)に変更し、GitHub Pagesを有効化(Settings → Pages
   → Source「Deploy from a branch」、Branch `master` / `/docs`)
-- **本番用Gemini APIキーはGoogle AI Studio発行のものを使用**(Google Cloud
-  Console発行のキーだと前払いクレジット切れの429エラーが出たため。詳細は
-  下記「Gemini APIキーの運用に関する注意」を参照)。ウェブサイト制限
+- **本番用Gemini APIキーは、AI Studioで新しいプロジェクトを作って発行し直した
+  もの**を使用(それ以前のキーは前払いクレジット切れの429エラーが出たため。
+  詳細は下記「Gemini APIキーの運用に関する注意」を参照)。ウェブサイト制限
   (`https://yoimachihime-tech.github.io/*`)・APIの制限(Gemini APIのみ)
   とも設定済み
 
@@ -1317,7 +1318,7 @@ Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習
 - DailyConversation(シート連携)のWeb対応。サービスアカウント鍵は
   ブラウザに置けないため、OAuth 2.0 (PKCE) が必要(詳細は下記Web版の項)
 
-### Web版TTS音声の埋め込み(2026-07-28実装、片桐による実機確認・push待ち)
+### Web版TTS音声の埋め込み(2026-07-28実装・実機確認・push済み)
 
 `docs/lib/tts.js`(新設)がGoogle Cloud Text-to-SpeechをブラウザからCall
 する(`tts_core.py`の`call_google_tts`/`split_into_sentences`/
@@ -1356,39 +1357,17 @@ Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習
   `embedShuujukuTtsAudio()`。再エクスポート時に二重タグが付くのを防ぐため)。
 - 詳細・音声名/言語コードの既定値は`docs/README.md`の「TTS音声の自動埋め込み」
   節を参照。
-- **テスト**: `tools/test_tts.mjs`(新設、`npm run test:tts`)が
-  `lib/tts.js`単体(文分割・エラー分類判定・429/5xx/403の挙動・
-  `synthesizeFieldWithTags`/`synthesizeExampleAudioTags`の音声タグ埋め込み)を
-  fetchモックで検証、**このセッションで実行し全項目成功を確認済み**。
-  既存の`tools/test_web_ui.mjs`(TTS APIキー未設定のまま単語/AIに質問/習熟用の
-  通しフローを検証するテスト)も、shuujuku.jsの引数追加(`exampleAudioTags`/
-  `audioTagsByItem`はいずれも省略時`null`で従来動作を維持)後に**再実行し
-  従来どおり全項目成功することを確認済み**(TTS未設定時に既存フローへの
-  影響が無いことの裏付け)。
-  **`verify_web_parity.mjs`/`verify_grammar_multi_parity.mjs`は実行できな
-  かった**(`execFileSync('python3', ...)`とハードコードされているが、この
-  Claude Code検証環境には`python3`という名前の実行ファイルが無く
-  `C:\Python314\python.exe`のみだったため。`C:\Python314\`にも`python3.exe`
-  は存在しない。`.cmd`シムを一時PATHに追加しても解決しなかった原因は未特定)。
-  これはword/grammar_multiのapkg生成ロジック自体(`apkg.js`/`guid.js`)を
-  今回変更していないため実害は無いはずだが、**このverifyスクリプトが
-  片桐の実機でも同じ理由で動いていない可能性がある**(このリポジトリの
-  過去のコミットメッセージ等から少なくとも一度は動いた実績があるはずだが、
-  今回未確認)。片桐の実機で`cd tools && npm run verify`単体を試し、
-  `python3`が見つからないエラーが出る場合は、`verify_web_parity.mjs`/
-  `verify_grammar_multi_parity.mjs`の`'python3'`を実際に使えるPythonコマンド
-  (例: `'python'`または`C:\Python314\python.exe`のフルパス)に直す対応が
-  必要(Google Drive同期フォルダ配下のためnode_modules初回アクセスが遅く、
-  このセッションでは`npm run test:ui`/`test:tts`単体でも数分かかった)。
-  `tools/test_web_ui.mjs`にはTTS APIキーを設定した場合の通しテスト
+- **テスト**: `tools/test_tts.mjs`(新設、`npm run test:tts`)が`lib/tts.js`を
+  fetchモックで単体検証する(詳細は上記「引き継ぎ時の注意」のテスト一覧を
+  参照)。`tools/test_web_ui.mjs`にはTTS APIキーを設定した場合の通しテスト
   (実際に音声タグがapkgに埋め込まれるか)はまだ追加していない
   (`test_tts.mjs`側でfetchモックによる音声埋め込みの単体検証は済み)。
 - **実機確認済み(2026-07-28)**: 片桐の環境で、実際のCloud Text-to-Speech
   APIキーを設定してカード生成→apkg出力まで行い、**TTS音声が問題なく生成
-  された**ことを確認済み。
-- **未検証**: 音量ゲイン・音声名の既定値がスマホ実機で妥当か。また、
-  上記の「フィールド全体で1つのMP3」への変更後の実機確認
-  (変更前の「文ごと」の状態での確認は済んでいる)。
+  された**ことを確認済み。上記の「フィールド全体で1つのMP3」への変更後にも
+  改めて確認し、**正常に動作している**(=Web版フェーズ1のTTS埋め込みは
+  実装・実機確認とも完了)。
+- **未検証**: 音量ゲイン・音声名の既定値がスマホ実機で妥当か。
 
 ### Gemini APIキーの運用に関する注意(2026-07-28)
 
@@ -1475,7 +1454,7 @@ Web版公開用のキーには次を設定する:
   (またはCLAUDE.md冒頭の「①Googleフォーム→Apps Script→Gemini添削」という
   このプロジェクトの範囲外のパイプライン側の話なのか)、片桐から詳細確認待ち。
   **保留中につき、指示なく調査・修正に着手しないこと。**
-- **Web版(2026-07-28に方針確定。フェーズ1の単語カードは実装・push済み)**:
+- **Web版(2026-07-28に方針確定。フェーズ1は完了・push済み)**:
   以下は方針決定時の記録。実装状況は上記「Web版フェーズ1の実装状況」と
   「次にやること」を参照。
   - 進め方は「まずAI生成だけの軽量版を作り、後でapkg生成を追加」を採用
@@ -1507,14 +1486,16 @@ Web版公開用のキーには次を設定する:
     切り出し、Python側は`open()`で、Web側は`fetch()`で同じファイルを読む。
     プロンプトを改善したときに、片方だけ直して不一致になる事故を防ぐため。
 
-### Web版フェーズ1の実装状況(2026-07-28、単語+AIに質問+習熟用が完成)
+### Web版フェーズ1の実装状況(2026-07-28、単語+AIに質問+習熟用+TTSが完成)
 
 `docs/`配下に静的Webページとして実装済み。詳細は`docs/README.md`を参照。
 **単語入力→AI生成→プレビュー→apkgダウンロード**、**AIに質問(3問生成)→
 プレビュー→apkgダウンロード**、**習熟用(音読、AIに質問の4問目として自動
 追加)→プレビュー→apkgダウンロード**のいずれもブラウザだけで完結し、
-バックエンドは不要。画面はタブ切り替え式(単語 / AIに質問 / 習熟用(音読)。
-今後 TTS試聴 を追加予定)。
+バックエンドは不要。⚙設定でCloud Text-to-SpeechのAPIキーを設定していれば、
+どのタブのapkg出力でも**TTS音声を自動で合成して埋め込む**(上記
+「Web版TTS音声の埋め込み」の項を参照)。画面はタブ切り替え式
+(単語 / AIに質問 / 習熟用(音読))。
 
 ```text
 docs/
@@ -1533,6 +1514,10 @@ docs/
   lib/shuujuku.js                    習熟用(音読)のContentフィールド組み立て
                                      (build_shuujuku_v1.render_item()のWeb版)+
                                      続き番号(Num)管理(localStorage)
+  lib/tts.js                        Cloud Text-to-Speech呼び出し(tts_core.pyの
+                                     call_google_tts/strip_html_for_tts/
+                                     _classify_tts_errorのWeb版)+ apkgへの
+                                     [sound:]タグ埋め込み
   shared/                           デスクトップ版と共有する資産
 tools/
   export_shared_card_defs.py        docs/shared/*.json を生成(word/grammar_multi/shuujuku)
@@ -1542,6 +1527,9 @@ tools/
   verify_grammar_multi_parity.mjs   Grammar Multiの後処理(改行整形・正解記号)が
                                      一致するか検証(npm run verify:grammar-multi)
   test_web_ui.mjs                   jsdom上でUI操作を通しで検証(npm run test:ui)
+  test_tts.mjs                      lib/tts.jsの単体テスト(npm run test:tts)
+  test_gemini.mjs                   lib/gemini.jsのリトライ・エラー処理の
+                                     単体テスト(npm run test:gemini)
 ```
 
 - **共有資産を`docs/shared/`に置いている理由**: GitHub Pagesは`docs/`配下
@@ -1597,7 +1585,7 @@ tools/
   される。この4問目生成の失敗は3問の生成成功を無効にしない(非ブロッキング、
   `docs/app.js`の`onAiAskGenerate()`を参照)。
 - **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
-  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は3本:
+  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は5本:
   - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
     (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multi・shuujuku
     の3種別)、guid・フィールド・カード構成・ノートタイプ定義を突き合わせる。
@@ -1627,6 +1615,20 @@ tools/
     確認する必要がある(sleepを挟むと生成そのものが終わってしまう)。
     sql.jsのwasmはブラウザではCDNから読むが、Nodeではローカルパスとして
     解決しようとして失敗するため、テスト側で`locateFile`を無視させている。
+  - `npm run test:tts`(`test_tts.mjs`): `lib/tts.js`の単体テスト。
+    `stripHtmlForTts`の変換結果、Cloud Text-to-Speechのエラー分類
+    (429のQuota超過・5xxのリトライ・403のリファラー制限)、そして
+    **音声の分割単位**(単語/AIに質問はフィールド全体で1つのMP3・タグ、
+    習熟用は例文ごとに個別)をfetchモックで固定している。
+  - `npm run test:gemini`(`test_gemini.mjs`): `lib/gemini.js`の
+    `callGemini()`のリトライ・エラー処理の単体テスト(503の自動リトライ、
+    429の既存挙動の回帰確認)をfetchモックで行う。
+  - **`verify`系2本は`execFileSync('python3', ...)`とハードコードしている**
+    ため、`python3`という名前で起動できるPythonが無い環境ではこの2本だけ
+    失敗する(2026-07-28のClaude Code検証環境がこれに該当し、
+    `C:\Python314\python.exe`しか無く実行できなかった)。片桐の実機で
+    同様のエラーが出る場合は、この2ファイルの`'python3'`を実際に使える
+    コマンド(`'python'`やフルパス)に直すこと。
 - 実装時に判明した注意点:
   - `card_def_builder.build_deck_from_def()`は`due`を指定しないため、
     全カードの`due`は0になる(due_scheme: `{"type": "fixed_zero"}`)。
