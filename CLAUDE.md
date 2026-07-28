@@ -1277,38 +1277,58 @@ example_ja/example_blank/noteの7キーを受け取る。
 
 ## 次にやること(2026-07-28時点の引き継ぎ)
 
-Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)が一通し完成し、
-pushまで完了している**。次のセッションはここから再開する。
+Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)が完成し、
+GitHub Pagesで公開済み**。URL:
+`https://yoimachihime-tech.github.io/ANKI-OutputTOOL/`
+次のセッションは新機能の追加(下記「未実施」)から再開する。
 
 ### 片桐側で完了済み
 
-- Google Cloud のAPIキー構成(Gemini用/TTS用、開発用/本番用の4キー)の作成と、
+- Google Cloud のAPIキー構成(Gemini用/TTS用、開発用/本番用)の作成と、
   「アプリケーションの制限」「APIの制限」の設定
 - Cloud Text-to-Speech の割り当て(All requests per minute /
   Chirp3-HD voices per minute)の引き下げ
-- 単語カード生成の実機動作確認(生成→apkg出力→Ankiへの取り込みまで確認済み)
+- 単語カード生成・AIに質問(Grammar Multi)の実機動作確認(生成→apkg出力→
+  Ankiへの取り込みまで確認済み)
+- リポジトリを公開(Public)に変更し、GitHub Pagesを有効化(Settings → Pages
+  → Source「Deploy from a branch」、Branch `master` / `/docs`)
+- **本番用Gemini APIキーはGoogle AI Studio発行のものを使用**(Google Cloud
+  Console発行のキーだと前払いクレジット切れの429エラーが出たため。詳細は
+  下記「Gemini APIキーの運用に関する注意」を参照)。ウェブサイト制限
+  (`https://yoimachihime-tech.github.io/*`)・APIの制限(Gemini APIのみ)
+  とも設定済み
 
-### 未実施(次にやること)
+### 未実施(次にやること、どれを先にやるかは片桐に確認すること)
 
-1. **AIに質問(Grammar Multi)の実機動作確認**(最優先。単語は片桐が確認済み
-   だが、AIに質問タブは検証ツール上でのみ確認できている状態)。
-   `cd docs && python -m http.server 8000`で配信し、⚙設定に開発用Gemini
-   APIキーを入れて「質問入力→AI生成(3問)→プレビュー→.apkgダウンロード→
-   Anki取り込み」を通す。
-2. **GitHub Pagesの有効化**(公開する場合)。Settings → Pages →
-   Source「Deploy from a branch」、Branch `master` / `/docs`。
-   公開後は本番用APIキー(ウェブサイト制限あり)に差し替える。
-3. その後の拡張候補(どれを先にやるかは片桐に確認すること):
-   - 習熟用(音読)のWeb版対応。`card_defs.json`(または`build_shuujuku_v1.py`
-     を直接読む独立実装)への定義移行が前提になる(現状は`build_*.py`側にしか
-     定義が無く、`card_def_builder`の汎用パスに載っていない)。AIに質問
-     (grammar_multi)を追加した際に導入した`guid_scheme`/`due_scheme`の
-     仕組み(下記「Web版フェーズ1の実装状況」参照)がそのまま使えるはず
-   - Web版へのTTS音声の埋め込み。`docs/lib/apkg.js`の`buildApkg()`は
-     既に`media`引数を受け取れるようにしてあるので、Google Cloud TTSを
-     呼んで`Map<ファイル名, Uint8Array>`を渡せばよい
-   - DailyConversation(シート連携)のWeb対応。サービスアカウント鍵は
-     ブラウザに置けないため、OAuth 2.0 (PKCE) が必要(詳細は下記Web版の項)
+- 習熟用(音読)のWeb版対応。`card_defs.json`(または`build_shuujuku_v1.py`
+  を直接読む独立実装)への定義移行が前提になる(現状は`build_*.py`側にしか
+  定義が無く、`card_def_builder`の汎用パスに載っていない)。AIに質問
+  (grammar_multi)を追加した際に導入した`guid_scheme`/`due_scheme`の
+  仕組み(下記「Web版フェーズ1の実装状況」参照)がそのまま使えるはず
+- Web版へのTTS音声の埋め込み。`docs/lib/apkg.js`の`buildApkg()`は
+  既に`media`引数を受け取れるようにしてあるので、Google Cloud TTSを
+  呼んで`Map<ファイル名, Uint8Array>`を渡せばよい
+- DailyConversation(シート連携)のWeb対応。サービスアカウント鍵は
+  ブラウザに置けないため、OAuth 2.0 (PKCE) が必要(詳細は下記Web版の項)
+
+### Gemini APIキーの運用に関する注意(2026-07-28に判明)
+
+同じGoogle Cloudプロジェクトでも、**Google Cloud Console から直接発行した
+Gemini APIキーは課金設定の都合で「前払いクレジット切れ」の429エラーに
+なることがある一方、同じプロジェクトでも Google AI Studio
+(`https://aistudio.google.com/apikey`) から発行したキーは無料枠で問題なく
+動く**ケースが実際にあった(片桐の環境で確認)。Web版・デスクトップ版とも、
+今後Geminiキーを新規発行する際はAI Studio経由を優先すること。
+
+AI Studio発行のキーも実体はCloud ConsoleのAPIキーであり、
+「アプリケーションの制限」「APIの制限」による保護は同様に設定できる。
+ただしAI Studioが自動的にキーを紐づけるプロジェクトは、Cloud Console側で
+普段使っているプロジェクトとは別(例: "Default Gemini Project"のような
+自動生成プロジェクト)になっていることがあり、Cloud Console側で見当たらない
+場合は`https://console.cloud.google.com/apis/credentials?project=<AI Studio
+のプロジェクト一覧に表示されているID>`のように**プロジェクトIDを直接URLに
+指定してアクセスする**と確実(Cloud Console右上のアカウントが、AI Studioで
+使っているGoogleアカウントと一致しているかも合わせて確認すること)。
 
 ### 引き継ぎ時の注意
 
