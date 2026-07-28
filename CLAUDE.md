@@ -1326,15 +1326,27 @@ Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習
 `.apkg`出力時にも自動で音声を合成して埋め込む(未設定なら従来どおり音声
 無しで出力する、他のAI呼び出しと同じ「未設定なら黙ってスキップ」方針)。
 
-- **デスクトップ版との方式の違い**: デスクトップ版が持つ「文を無音で結合し
-  1つの音声にする」方式(`synthesize_with_gaps`、lameencでMP3再エンコード
-  が必要)はブラウザに同等のエンコーダが無いため実装せず、Web版は常に
-  「文ごとに個別MP3を合成し`<br>`区切りで並べる」方式(デスクトップ版の
-  `per_sentence=True`相当)のみ。文と文の間の無音間隔調整は未対応。
+- **音声の分割単位(2026-07-28、片桐の指示で確定。当初は全タブで文ごとに
+  分けていたのを修正した)**:
+  - 単語 / AIに質問 … **フィールド全体で1つのMP3・1つの`[sound:]`タグ**
+    (`synthesizeFieldWithTags`)。複数文が含まれていても文ごとには分けない。
+  - 習熟用(音読) … **例文ごとに個別のMP3・タグ**
+    (`synthesizeExampleAudioTags`)。音読練習で1文ずつ再生したいため、この
+    タブだけ細かく分ける。
+  この変更に伴い、`tts_core.split_into_sentences()`の移植だった
+  `splitIntoSentences`はどの経路からも使われなくなったため`tts.js`から削除
+  した(将来「文と文の間に無音を挟んで1つの音声にする」機能を足す場合は
+  再度移植が必要。「Ex1.」等の見出しラベルを次の文へ結合する処理を含むため
+  単純な句点分割では代用できない点に注意)。
+- **デスクトップ版との方式の違い**: デスクトップ版が持つ「複数文を無音で
+  結合し1つの音声にする」方式(`synthesize_with_gaps`)は、WAVで受け取って
+  結合しlameencでMP3へ再エンコードする実装で、ブラウザに同等のエンコーダが
+  無いため実装していない。Web版はデスクトップ版の`gap_seconds <= 0`のときと
+  同じく、平文をそのまま1回のTTS呼び出しに渡す(文間隔の調整は未対応)。
 - 対象フィールドはデスクトップ版の既定選択("Answer"+"Example"がある場合は
   その2つ、単語のように"Answer"が無ければ"Example"のみ)と揃えた
-  (`app.js`の`TTS_FIELD_KEYS`)。習熟用(音読)だけは例文(`ex-en`)ごとに
-  個別音声を合成し、各例文の直下に挿入する(デスクトップ版の
+  (`app.js`の`TTS_FIELD_KEYS`)。習熟用(音読)は例文(`ex-en`)ごとの
+  個別音声を各例文の直下に挿入する(デスクトップ版の
   `generate_shuujuku_sentence_tts_for_collection()`と同じ挿入位置。
   `docs/lib/shuujuku.js`の`renderItem`/`buildContentHtml`/
   `buildFieldsReadyItems`に`exampleAudioTags`引数を追加して対応、省略時は
@@ -1371,21 +1383,59 @@ Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習
   `tools/test_web_ui.mjs`にはTTS APIキーを設定した場合の通しテスト
   (実際に音声タグがapkgに埋め込まれるか)はまだ追加していない
   (`test_tts.mjs`側でfetchモックによる音声埋め込みの単体検証は済み)。
-- **未検証**: 実際のCloud Text-to-Speech APIキーでの動作確認(音声が正しく
-  合成されAnkiで再生できるか)、および音量ゲイン・音声名の既定値が
-  スマホ実機で妥当か。
+- **実機確認済み(2026-07-28)**: 片桐の環境で、実際のCloud Text-to-Speech
+  APIキーを設定してカード生成→apkg出力まで行い、**TTS音声が問題なく生成
+  された**ことを確認済み。
+- **未検証**: 音量ゲイン・音声名の既定値がスマホ実機で妥当か。また、
+  上記の「フィールド全体で1つのMP3」への変更後の実機確認
+  (変更前の「文ごと」の状態での確認は済んでいる)。
 
-### Gemini APIキーの運用に関する注意(2026-07-28に判明)
+### Gemini APIキーの運用に関する注意(2026-07-28)
 
-同じGoogle Cloudプロジェクトでも、**Google Cloud Console から直接発行した
-Gemini APIキーは課金設定の都合で「前払いクレジット切れ」の429エラーに
-なることがある一方、同じプロジェクトでも Google AI Studio
-(`https://aistudio.google.com/apikey`) から発行したキーは無料枠で問題なく
-動く**ケースが実際にあった(片桐の環境で確認)。Web版・デスクトップ版とも、
-今後Geminiキーを新規発行する際はAI Studio経由を優先すること。
+#### 「前払いクレジットが尽きている」(429)が出たら、まずキーを作り直す
+
+`"Your prepayment credits are depleted. Please go to AI Studio ... to manage
+your project and billing."`(429 RESOURCE_EXHAUSTED)というエラーが出ることが
+ある。文面は課金を促す内容だが、**課金は必須ではない**。
+
+**対処: `https://aistudio.google.com/apikey`で「APIキーを作成」する際、
+既存のプロジェクトではなく新しいプロジェクトを選んでキーを作り直す。**
+これで解決する(2026-07-28、片桐の環境で実証済み。クレジットカードは
+一切登録していない)。キーはlocalStorage(Web版)/config.json(デスクトップ版)
+に保存するだけなので、コード変更・再デプロイは不要。
+
+**経緯・注意点**:
+
+- 片桐の環境では、AI Studioが自動生成した"Default Gemini Project"が、
+  請求先アカウント「My Billing Account」に紐づいた「有料1」ティア
+  (階層の上限$250)・支払い方式は前払い(プリペイド)・クレジット残高¥0、
+  という状態になっており、このプロジェクトのキーが常にこのエラーを返した。
+  **片桐はクレジットカードを登録した記憶が無く、なぜこの状態になったのかは
+  未解明**(新規プロジェクトでは起きなかったため、このプロジェクト固有の
+  問題と考えられる)。
+- **調査時にAI Studioの「利用額」ページの表示を信用しないこと**。このページ
+  では「無料枠」バッジ+「このプロジェクトには現在、請求先が設定されて
+  いません」と表示されていたが、「請求額」ページを見ると実際には請求先
+  アカウントが紐づいていた。2つのページで表示が食い違うため、判断は
+  「請求額」ページ側で行う。
+- 発行元(Google Cloud Console / AI Studio)による違いは**無い**。以前は
+  「AI Studio発行のキーなら無料枠で問題なく動く」と記録していたが、
+  実際にはAI Studio発行の本番キーでもこのエラーが発生した。**問題は
+  発行元ではなくプロジェクト**。
+- アプリ側のエラーメッセージ(`gemini_client._is_billing_error` /
+  `docs/lib/gemini.js`の`isBillingError`)は、Google側が返す
+  `"prepayment credits are depleted"`を正しく検出して専用メッセージを
+  表示できており、コードの不具合ではない。
+
+#### APIキーの制限設定(新しいキーを作ったら毎回設定すること)
 
 AI Studio発行のキーも実体はCloud ConsoleのAPIキーであり、
-「アプリケーションの制限」「APIの制限」による保護は同様に設定できる。
+「アプリケーションの制限」「APIの制限」による保護を同様に設定できる。
+Web版公開用のキーには次を設定する:
+
+- アプリケーションの制限 → ウェブサイト: `https://yoimachihime-tech.github.io/*`
+- APIの制限: Gemini APIのみ
+
 ただしAI Studioが自動的にキーを紐づけるプロジェクトは、Cloud Console側で
 普段使っているプロジェクトとは別(例: "Default Gemini Project"のような
 自動生成プロジェクト)になっていることがあり、Cloud Console側で見当たらない
@@ -1393,6 +1443,9 @@ AI Studio発行のキーも実体はCloud ConsoleのAPIキーであり、
 のプロジェクト一覧に表示されているID>`のように**プロジェクトIDを直接URLに
 指定してアクセスする**と確実(Cloud Console右上のアカウントが、AI Studioで
 使っているGoogleアカウントと一致しているかも合わせて確認すること)。
+
+なお、Gemini APIキーは他のAPIと組み合わせた制限ができないため、
+**Gemini用とCloud Text-to-Speech用でキーを分ける必要がある**。
 
 ### 引き継ぎ時の注意
 
@@ -1404,9 +1457,11 @@ AI Studio発行のキーも実体はCloud ConsoleのAPIキーであり、
   切る構成が必要(未実施)。現状は予算アラートで気付く運用。
 - Gemini APIキーが「前払いクレジット(prepayment credits)」切れで429を
   返すことがある(片桐の環境で実際に発生)。レート制限とは違い待っても
-  回復しない。デスクトップ版(`gemini_client._is_billing_error`)・Web版
+  回復しないが、**課金は必須ではなく、AI Studioで新しいプロジェクトを選んで
+  APIキーを作り直せば解決する**(上記「Gemini APIキーの運用に関する注意」を
+  参照)。デスクトップ版(`gemini_client._is_billing_error`)・Web版
   (`docs/lib/gemini.js`の`isBillingError`)の両方で判定済みで、専用の
-  エラーメッセージ(AI Studioでのクレジット追加を促す)を表示する。
+  エラーメッセージを表示する。
 
 ## 今後の拡張候補(未着手)
 

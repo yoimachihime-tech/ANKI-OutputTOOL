@@ -4,13 +4,21 @@
 // デスクトップ版の tts_core.py(call_google_tts / split_into_sentences /
 // _classify_tts_error 等)に対応する Web 版。
 //
+// 【音声の分割単位(2026-07-28、片桐の指示で確定)】
+// - 単語 / AIに質問タブ … **フィールド全体で1つのMP3・1つの`[sound:]`タグ**
+//   (synthesizeFieldWithTags)。文ごとに分けない。
+// - 習熟用(音読)タブ   … **例文(ex-en)ごとに1つのMP3・1つのタグ**
+//   (synthesizeExampleAudioTags)。音読練習で1文ずつ再生したいため、この
+//   タブだけ細かく分ける(デスクトップ版の
+//   generate_shuujuku_sentence_tts_for_collectionと同じ考え方)。
+//
 // 【方式(デスクトップ版との違い)】
-// デスクトップ版は「文ごとに個別TTS」(per_sentence)と「文を無音で結合して
-// 1つの音声にする」(synthesize_with_gaps、lameencでmp3再エンコードが必要)の
-// 2方式を持つが、ブラウザにはlameenc相当のMP3エンコーダが無い。Google Cloud
-// TTSはaudioEncoding: "MP3"を指定すればサーバー側でMP3を返してくれるため、
-// Web版は常に「文ごとに個別TTS(per_sentence方式)」のみを実装する
-// (音声の結合・無音挿入は行わない。文と文の間の間隔調整機能は今後の課題)。
+// デスクトップ版は複数文を「無音を挟んで結合し1つの音声にする」方式
+// (synthesize_with_gaps)を持つが、これはWAVで受け取って結合しlameencで
+// mp3へ再エンコードする実装で、ブラウザにはlameenc相当のエンコーダが無い。
+// そのためWeb版はデスクトップ版の`gap_seconds <= 0`のときと同じく、
+// フィールドの平文をそのまま1回のTTS呼び出しに渡して返ってきたMP3を使う
+// (文と文の間隔調整は未対応。実装するならlib側に文分割+無音結合の移植が必要)。
 //
 // 【APIキーについて】
 // lib/gemini.js と同じ方針(利用者がページ上で入力しlocalStorageに保存、
@@ -149,12 +157,16 @@ export async function callGoogleTts(text, { voiceName, languageCode, apiKey, vol
 }
 
 // ---------------------------------------------------------------------------
-// 文分割・HTML整形(tts_core.strip_html_for_tts / split_into_sentences の移植)
+// HTML整形(tts_core.strip_html_for_tts の移植)
 // ---------------------------------------------------------------------------
-
-// 「Ex1.」「2.」のような短い見出しラベル1つだけの断片を検出する
-// (tts_core._LABEL_ONLY_RE と同一)。
-const LABEL_ONLY_RE = /^[A-Za-z]{0,6}\d{1,3}\.$/;
+//
+// tts_core.split_into_sentences() に相当する文分割はWeb版には無い。
+// 単語/AIに質問はフィールド全体を1回で読み上げ、習熟用は既にitem側が
+// 例文単位に分かれているため、どちらも文分割を必要としないため
+// (2026-07-28、音声を文ごとに分けるのは習熟用のみという片桐の指示による)。
+// 将来「文と文の間に無音を挟んで1つの音声にする」機能を足す場合は、
+// split_into_sentences(「Ex1.」等の見出しラベルを次の文へ結合する処理を含む)
+// の移植から必要になる。
 
 /** HTMLエンティティをデコードする(&amp; 等)。 */
 function htmlUnescape(text) {
@@ -174,42 +186,18 @@ export function stripHtmlForTts(raw) {
   return text;
 }
 
-/** tts_core.split_into_sentences() と同一。フィールドのHTMLを文単位に分割する。 */
-export function splitIntoSentences(htmlText) {
-  let normalized = htmlText.replace(/<br\s*\/?>/gi, '\n');
-  normalized = normalized.replace(/<\/div>/gi, '\n');
-  normalized = normalized.replace(/<[^>]+>/g, '');
-  normalized = htmlUnescape(normalized);
-
-  const sentences = [];
-  for (const rawLine of normalized.split('\n')) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const rawParts = line.split(/(?<=[.!?])\s+/);
-    const parts = rawParts.map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
-
-    const merged = [];
-    for (const p of parts) {
-      if (merged.length > 0 && LABEL_ONLY_RE.test(merged[merged.length - 1])) {
-        merged[merged.length - 1] = `${merged[merged.length - 1]} ${p}`;
-      } else {
-        merged.push(p);
-      }
-    }
-    sentences.push(...merged);
-  }
-  return sentences;
-}
-
 // ---------------------------------------------------------------------------
 // フィールド単位の音声埋め込み(単語・AIに質問タブ用)
 // ---------------------------------------------------------------------------
 
 /**
- * フィールドの生HTML値を文ごとに個別MP3化し、末尾に[sound:...]タグを追記した
- * HTMLを返す(tts_core.generate_tts_for_collectionのper_sentence=True相当。
- * デスクトップ版と同じく、タグはフィールド末尾に<br>区切りでまとめて追記する
- * 方式で、文の途中には挿入しない)。
+ * フィールドの生HTML値**全体**を1つのMP3にし、末尾に`[sound:...]`タグを1つだけ
+ * 追記したHTMLを返す(tts_core.generate_tts_for_collectionの
+ * per_sentence=False + gap_seconds<=0 のときと同じ挙動)。
+ *
+ * **文ごとに分割しないこと**は2026-07-28に片桐が指示した仕様。文ごとに個別の
+ * MP3・タグを作るのは習熟用(音読)タブだけで、そちらは例文単位の
+ * synthesizeExampleAudioTags()が担当する。
  *
  * @param {string} rawFieldHtml
  * @param {object} opts {voiceName, languageCode, apiKey, volumeGainDb, filenamePrefix}
@@ -218,18 +206,14 @@ export function splitIntoSentences(htmlText) {
  *   読み上げ対象テキストが空の場合は元のHTMLをそのまま返す = 何もしない)
  */
 export async function synthesizeFieldWithTags(rawFieldHtml, opts, media) {
-  const sentences = splitIntoSentences(rawFieldHtml || '').filter((s) => s.trim());
-  if (sentences.length === 0) return rawFieldHtml;
+  const text = stripHtmlForTts(rawFieldHtml || '');
+  if (!text) return rawFieldHtml;
 
-  const tags = [];
-  for (let i = 0; i < sentences.length; i += 1) {
-    const bytes = await callGoogleTts(sentences[i], opts);
-    const filename = `${opts.filenamePrefix}_${i + 1}.mp3`;
-    media.set(filename, bytes);
-    tags.push(`[sound:${filename}]`);
-  }
-  const combinedTags = tags.join('<br>');
-  return rawFieldHtml ? `${rawFieldHtml}<br>${combinedTags}` : combinedTags;
+  const bytes = await callGoogleTts(text, opts);
+  const filename = `${opts.filenamePrefix}.mp3`;
+  media.set(filename, bytes);
+  const tag = `[sound:${filename}]`;
+  return rawFieldHtml ? `${rawFieldHtml}<br>${tag}` : tag;
 }
 
 // ---------------------------------------------------------------------------

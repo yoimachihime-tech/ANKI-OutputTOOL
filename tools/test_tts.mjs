@@ -2,11 +2,14 @@
 // ---------------------------------------------------------------------------
 // docs/lib/tts.js の単体テスト(Node上で直接importして実行、DOM不要)。
 //
-// splitIntoSentences/stripHtmlForTts は tts_core.py の split_into_sentences() /
-// strip_html_for_tts() の移植なので、期待値はPython版の実装(コメントの
-// _LABEL_ONLY_RE = re.compile(r"^[A-Za-z]{0,6}\d{1,3}\.$") 等)から手で
-// 導出した固定ケースで検証する(pythonコマンドは呼ばない。verify_web_parity.mjs
-// 等と違い、このファイルは実行環境にpython3が無くても通ることを意図している)。
+// stripHtmlForTts は tts_core.py の strip_html_for_tts() の移植なので、期待値は
+// Python版の実装から手で導出した固定ケースで検証する(pythonコマンドは呼ばない。
+// verify_web_parity.mjs 等と違い、このファイルは実行環境にpython3が無くても
+// 通ることを意図している)。
+//
+// 音声の分割単位(2026-07-28、片桐の指示で確定)もここで固定している:
+//   - synthesizeFieldWithTags(単語/AIに質問) … フィールド全体で1つのMP3・タグ
+//   - synthesizeExampleAudioTags(習熟用)     … 例文ごとに個別のMP3・タグ
 //
 // 【使い方】 cd tools && node test_tts.mjs
 
@@ -29,52 +32,12 @@ globalThis.document = dom.window.document;
 console.log('lib/tts.js の単体テスト\n');
 
 const {
-  splitIntoSentences, stripHtmlForTts, callGoogleTts, synthesizeFieldWithTags,
+  stripHtmlForTts, callGoogleTts, synthesizeFieldWithTags,
   synthesizeExampleAudioTags, TtsError,
 } = await import(new URL('../docs/lib/tts.js', import.meta.url));
 
-// --- splitIntoSentences ---
-console.log('[1] splitIntoSentences');
-
-{
-  const got = splitIntoSentences('She doesn\'t like it. He likes it too.');
-  const want = ["She doesn't like it.", 'He likes it too.'];
-  if (deepEq(got, want)) ok('句点区切りの1行を2文に分割する');
-  else fail(`1行2文の分割に失敗: ${JSON.stringify(got)}`);
-}
-
-{
-  // 「Ex1.」のような見出しラベル単体の断片は、次の断片(実際の文)に結合される
-  // (_LABEL_ONLY_RE: 英字0〜6文字+数字1〜3文字+句点)。
-  const got = splitIntoSentences('Ex1. She likes coffee.<br>2. He likes tea.');
-  const want = ['Ex1. She likes coffee.', '2. He likes tea.'];
-  if (deepEq(got, want)) ok('見出しラベル("Ex1." "2.")は次の文に結合される(独立した極小文にならない)');
-  else fail(`見出しラベルの結合に失敗: ${JSON.stringify(got)}`);
-}
-
-{
-  // "Yes." "No." のような正当な短文はラベルと誤認しない(数字を含まないため)。
-  const got = splitIntoSentences('Yes. That is correct.');
-  const want = ['Yes.', 'That is correct.'];
-  if (deepEq(got, want)) ok('"Yes."のような数字を含まない短文はラベルと誤認しない');
-  else fail(`短文の誤結合を検出: ${JSON.stringify(got)}`);
-}
-
-{
-  const got = splitIntoSentences('<div>First sentence.</div><div>Second sentence.</div>');
-  const want = ['First sentence.', 'Second sentence.'];
-  if (deepEq(got, want)) ok('</div>も改行として扱い文単位に分割する');
-  else fail(`</div>区切りの分割に失敗: ${JSON.stringify(got)}`);
-}
-
-{
-  const got = splitIntoSentences('  ');
-  if (deepEq(got, [])) ok('空白のみの入力は空配列を返す');
-  else fail(`空白のみの入力で不正な結果: ${JSON.stringify(got)}`);
-}
-
 // --- stripHtmlForTts ---
-console.log('\n[2] stripHtmlForTts');
+console.log('[1] stripHtmlForTts');
 
 {
   const got = stripHtmlForTts('She said &quot;hi&quot;.<br>Bye.');
@@ -83,8 +46,20 @@ console.log('\n[2] stripHtmlForTts');
   else fail(`stripHtmlForTtsの結果が想定と違う: ${JSON.stringify(got)}`);
 }
 
+{
+  const got = stripHtmlForTts('<div>First.</div><div>Second.</div>');
+  const want = 'First.. Second..';
+  if (got === want) ok('</div>も". "に変換する');
+  else fail(`</div>の変換結果が想定と違う: ${JSON.stringify(got)}`);
+}
+
+{
+  if (stripHtmlForTts('  ') === '') ok('空白のみの入力は空文字になる');
+  else fail('空白のみの入力の処理が想定外');
+}
+
 // --- callGoogleTts / エラー分類 ---
-console.log('\n[3] callGoogleTts のエラー処理');
+console.log('\n[2] callGoogleTts のエラー処理');
 
 {
   globalThis.fetch = async () => ({ ok: false, status: 429, text: async () => JSON.stringify({ error: { status: 'RESOURCE_EXHAUSTED', message: 'Quota exceeded for quota metric PerDay' } }) });
@@ -124,7 +99,9 @@ console.log('\n[3] callGoogleTts のエラー処理');
 }
 
 // --- synthesizeFieldWithTags (単語/AIに質問タブ相当) ---
-console.log('\n[4] synthesizeFieldWithTags');
+// 2026-07-28、片桐の指示により「文ごとにMP3・タグを分けるのは習熟用タブのみ、
+// 他のタブはフィールド全体で1つ」に変更した。その仕様を固定するテスト。
+console.log('\n[3] synthesizeFieldWithTags(フィールド全体で1つのMP3・1つのタグ)');
 
 {
   let calls = 0;
@@ -136,21 +113,20 @@ console.log('\n[4] synthesizeFieldWithTags');
   };
   const media = new Map();
   const html = await synthesizeFieldWithTags(
-    'Ex1. She likes coffee.<br>2. He likes tea.',
+    'She likes coffee.<br>He likes tea.',
     { voiceName: 'v', languageCode: 'en-US', apiKey: 'k', filenamePrefix: 'tts_word_0_example' },
     media,
   );
-  const expectedHtml = 'Ex1. She likes coffee.<br>2. He likes tea.<br>'
-    + '[sound:tts_word_0_example_1.mp3]<br>[sound:tts_word_0_example_2.mp3]';
-  if (calls === 2 && deepEq(seenTexts, ['Ex1. She likes coffee.', '2. He likes tea.'])) {
-    ok('見出しラベル結合後の2文に対して2回TTSを呼ぶ');
+  const expectedHtml = 'She likes coffee.<br>He likes tea.<br>[sound:tts_word_0_example.mp3]';
+  if (calls === 1 && deepEq(seenTexts, ['She likes coffee.. He likes tea.'])) {
+    ok('複数文を含むフィールドでもTTS呼び出しは1回だけ(文ごとに分割しない)');
   } else {
     fail(`TTS呼び出し回数/テキストが想定外: calls=${calls}, texts=${JSON.stringify(seenTexts)}`);
   }
-  if (html === expectedHtml) ok('元のフィールドHTMLの末尾に<br>区切りで[sound:...]タグを追記する');
+  if (html === expectedHtml) ok('元のフィールドHTMLの末尾に[sound:...]タグを1つだけ追記する');
   else fail(`生成HTMLが想定外:\n  got : ${html}\n  want: ${expectedHtml}`);
-  if (media.size === 2 && media.has('tts_word_0_example_1.mp3') && media.has('tts_word_0_example_2.mp3')) {
-    ok('media Mapに文ごとのファイル名でmp3が2件登録される');
+  if (media.size === 1 && media.has('tts_word_0_example.mp3')) {
+    ok('media Mapに登録されるmp3は1件だけ(連番サフィックスは付かない)');
   } else {
     fail(`mediaの内容が想定外: ${[...media.keys()]}`);
   }
@@ -167,7 +143,8 @@ console.log('\n[4] synthesizeFieldWithTags');
 }
 
 // --- synthesizeExampleAudioTags (習熟用タブ相当) ---
-console.log('\n[5] synthesizeExampleAudioTags');
+// こちらは逆に「例文ごとに分ける」のが仕様(音読練習で1文ずつ再生するため)。
+console.log('\n[4] synthesizeExampleAudioTags(例文ごとに個別のMP3・タグ)');
 
 {
   let calls = 0;

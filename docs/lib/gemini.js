@@ -132,14 +132,14 @@ export async function callGemini(prompt, apiKey, model) {
     if (res.status === 429) {
       if (isBillingError(lastDetail)) {
         throw new GeminiError(
-          'Gemini APIの前払いクレジットが尽きているため利用できません'
+          'このAPIキーのプロジェクトは前払いクレジットが尽きているため利用できません'
           + '(レート制限ではないので、待っても回復しません)。\n\n'
-          + '対処:\n'
-          + '・無料で使いたい場合 … このAPIキーが「無料利用枠」のプロジェクトの'
-          + 'ものか確認してください。有料設定のプロジェクトのキーだと、'
-          + 'クレジットが尽きた時点で使えなくなります。\n'
-          + '・有料で使う場合 … https://ai.studio/projects でクレジットを追加'
-          + `してください。\n\n詳細: ${lastDetail}`,
+          + '対処: 課金は必須ではありません。'
+          + 'https://aistudio.google.com/apikey で「APIキーを作成」する際に、'
+          + '既存のプロジェクトではなく「新しいプロジェクト」を選んでキーを作り直し、'
+          + '⚙設定のキーを差し替えてください(2026-07-28にこの方法で解決済み)。\n'
+          + '有料のまま使い続ける場合は https://ai.studio/projects で'
+          + `クレジットを追加してください。\n\n詳細: ${lastDetail}`,
         );
       }
       if (isDailyQuotaError(lastDetail)) {

@@ -161,14 +161,16 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> di
             if e.code == 429:
                 if _is_billing_error(detail):
                     raise GeminiClientError(
-                        "Gemini APIの前払いクレジットが尽きているため利用できません"
-                        "(レート制限ではないので、待っても回復しません)。\n\n"
-                        "対処:\n"
-                        "・無料で使いたい場合 … このAPIキーが「無料利用枠」の"
-                        "プロジェクトのものか確認してください。有料設定のプロジェクトの"
-                        "キーだと、クレジットが尽きた時点で使えなくなります。\n"
-                        "・有料で使う場合 … https://ai.studio/projects でクレジットを"
-                        f"追加してください。\n\n詳細: {detail}"
+                        "このAPIキーのプロジェクトは前払いクレジットが尽きているため"
+                        "利用できません(レート制限ではないので、待っても回復しません)。"
+                        "\n\n"
+                        "対処: 課金は必須ではありません。"
+                        "https://aistudio.google.com/apikey で「APIキーを作成」する際に、"
+                        "既存のプロジェクトではなく「新しいプロジェクト」を選んで"
+                        "キーを作り直し、⚙設定のキーを差し替えてください"
+                        "(2026-07-28にこの方法で解決済み)。\n"
+                        "有料のまま使い続ける場合は https://ai.studio/projects で"
+                        f"クレジットを追加してください。\n\n詳細: {detail}"
                     ) from e
                 if _is_daily_quota_error(detail):
                     raise GeminiClientError(
