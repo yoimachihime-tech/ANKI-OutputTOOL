@@ -580,39 +580,149 @@ def analyze_targets(
 # Google Cloud TTS呼び出し
 # ---------------------------------------------------------------------------
 
-def call_google_tts(
-    text: str, voice_name: str, language_code: str, api_key: str, volume_gain_db: float = 0.0
-) -> bytes:
-    body = {
-        "input": {"text": text},
-        "voice": {"languageCode": language_code, "name": voice_name},
-        "audioConfig": {"audioEncoding": "MP3", "volumeGainDb": volume_gain_db},
-    }
+TTS_MAX_RETRIES = 3
+
+
+class TtsApiError(RuntimeError):
+    """Cloud Text-to-Speech API 呼び出しに失敗した場合の例外。
+
+    `message`にはユーザー向けの分かりやすい説明が入り、`detail`にAPIが返した
+    生の本文が入る。呼び出し側(tts_gui.py)はstr(e)をそのままログ・ダイアログに
+    出せばよい。"""
+
+    def __init__(self, message: str, detail: str = "", retryable: bool = False):
+        super().__init__(message if not detail else f"{message}\n\n詳細: {detail}")
+        self.message = message
+        self.detail = detail
+        self.retryable = retryable
+
+
+def _classify_tts_error(status: int, detail: str):
+    """HTTPステータスとレスポンス本文から、(利用者向けメッセージ, リトライすべきか)
+    を判定する(2026-07-28追加)。
+
+    以前は全てのHTTPエラーを一律に3回リトライし、生のJSONをそのまま
+    「TTS API呼び出しに失敗しました: {...}」と表示していた。
+    (a) 割り当て超過や課金停止は待っても回復しないのにリトライで無駄に
+    リクエストを消費する、(b) 何が起きたのか利用者に伝わらない、という
+    2点を解消するために分類する(gemini_client._post_gemini_requestと同じ考え方)。
+    """
+    normalized = re.sub(r"[\s_-]", "", detail or "").lower()
+
+    if status == 429:
+        # 割り当て(Quota)超過。1日あたり等の長い期間の上限は待っても回復
+        # しないため、リトライせず即座に打ち切る。
+        if "perday" in normalized or "perproject" in normalized:
+            return (
+                "Cloud Text-to-Speechの割り当て(Quota)の上限に達しました。"
+                "リトライしても回復しないため打ち切りました。\n"
+                "Google Cloud Consoleの「IAMと管理 → 割り当てとシステム上限」で"
+                "現在の上限を確認してください。",
+                False,
+            )
+        return (
+            "Cloud Text-to-Speechのレート制限に達しました(短時間に送りすぎです)。"
+            "しばらく待ってから再実行してください。",
+            True,
+        )
+
+    if status == 403:
+        if "billing" in normalized:
+            return (
+                "このプロジェクトの課金が無効になっているため、Cloud Text-to-Speechを"
+                "利用できません。\nGoogle Cloud Consoleの「お支払い」で課金アカウントが"
+                "有効か確認してください(予算超過で自動停止する設定にしている場合、"
+                "それが作動した可能性があります)。",
+                False,
+            )
+        if "referer" in normalized or "referrer" in normalized:
+            return (
+                "APIキーの「ウェブサイト(HTTPリファラー)」制限に弾かれました。\n"
+                "このデスクトップ版はリファラーを送らないため、"
+                "アプリケーションの制限が「なし」のキーを使う必要があります"
+                "(Web版用のキーをそのまま設定していないか確認してください)。",
+                False,
+            )
+        if "servicedisabled" in normalized or "hasnotbeenused" in normalized:
+            return (
+                "このプロジェクトでCloud Text-to-Speech APIが有効化されていません。\n"
+                "Google Cloud Consoleの「APIとサービス → ライブラリ」で"
+                "「Cloud Text-to-Speech API」を有効にしてください。",
+                False,
+            )
+        if "apikeyserviceblocked" in normalized:
+            return (
+                "APIキーの「APIの制限」でCloud Text-to-Speech APIが許可されていません。\n"
+                "キーの設定で対象APIに Cloud Text-to-Speech API を含めてください。",
+                False,
+            )
+        return ("Cloud Text-to-Speechへのアクセスが拒否されました(403)。", False)
+
+    if status in (400, 401) or "apikeyinvalid" in normalized:
+        return (
+            "APIキーが無効か、リクエスト内容に誤りがあります。"
+            "⚙設定のAPIキー・言語コード・音声名を確認してください。",
+            False,
+        )
+
+    if status >= 500:
+        return ("Google側で一時的なエラーが発生しました。", True)
+
+    return (f"TTS API呼び出しに失敗しました(HTTP {status})。", False)
+
+
+def _call_tts_api(body: dict, api_key: str) -> bytes:
+    """Cloud Text-to-Speech に合成をリクエストし、音声データ(バイト列)を返す。
+
+    注意: ?key=... のクエリパラメータ形式は Cloud Text-to-Speech API では
+    "API keys are not supported by this API" エラーになる。
+    正しくは X-Goog-Api-Key ヘッダーで渡す。
+    """
     data = json.dumps(body).encode("utf-8")
-    # 注意: ?key=... のクエリパラメータ形式は Cloud Text-to-Speech API では
-    # "API keys are not supported by this API" エラーになる。
-    # 正しくは X-Goog-Api-Key ヘッダーで渡す。
-    req = urllib.request.Request(
-        TTS_ENDPOINT,
-        data=data,
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-            "X-Goog-Api-Key": api_key,
-        },
-    )
-    last_err = None
-    for attempt in range(3):
+    last_error = None
+
+    for attempt in range(TTS_MAX_RETRIES):
+        # HTTPErrorで本文を読むとリクエストは再利用できないため、毎回作り直す
+        req = urllib.request.Request(
+            TTS_ENDPOINT,
+            data=data,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "X-Goog-Api-Key": api_key,
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 return base64.b64decode(result["audioContent"])
         except urllib.error.HTTPError as e:
-            last_err = e.read().decode("utf-8", errors="replace")
-            time.sleep(1.5 * (attempt + 1))
+            detail = e.read().decode("utf-8", errors="replace")
+            message, retryable = _classify_tts_error(e.code, detail)
+            last_error = TtsApiError(message, detail, retryable)
+            # 割り当て超過・課金停止・設定ミスは待っても回復しないので即座に諦める
+            # (リトライすると無駄に割り当てを消費してしまう)
+            if not retryable:
+                raise last_error from e
         except Exception as e:  # noqa: BLE001
-            last_err = str(e)
+            last_error = TtsApiError(f"TTS API呼び出しに失敗しました: {e}", retryable=True)
+
+        if attempt < TTS_MAX_RETRIES - 1:
             time.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(f"TTS API呼び出しに失敗しました: {last_err}")
+
+    raise last_error
+
+
+def call_google_tts(
+    text: str, voice_name: str, language_code: str, api_key: str, volume_gain_db: float = 0.0
+) -> bytes:
+    return _call_tts_api(
+        {
+            "input": {"text": text},
+            "voice": {"languageCode": language_code, "name": voice_name},
+            "audioConfig": {"audioEncoding": "MP3", "volumeGainDb": volume_gain_db},
+        },
+        api_key,
+    )
 
 
 def call_google_tts_wav(
@@ -624,37 +734,18 @@ def call_google_tts_wav(
     volume_gain_db: float = 0.0,
 ) -> bytes:
     """LINEAR16(WAV)形式で音声を取得する。文と文の間に無音を挟んで結合するために使う。"""
-    body = {
-        "input": {"text": text},
-        "voice": {"languageCode": language_code, "name": voice_name},
-        "audioConfig": {
-            "audioEncoding": "LINEAR16",
-            "sampleRateHertz": sample_rate_hertz,
-            "volumeGainDb": volume_gain_db,
+    return _call_tts_api(
+        {
+            "input": {"text": text},
+            "voice": {"languageCode": language_code, "name": voice_name},
+            "audioConfig": {
+                "audioEncoding": "LINEAR16",
+                "sampleRateHertz": sample_rate_hertz,
+                "volumeGainDb": volume_gain_db,
+            },
         },
-    }
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        TTS_ENDPOINT,
-        data=data,
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-            "X-Goog-Api-Key": api_key,
-        },
+        api_key,
     )
-    last_err = None
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                return base64.b64decode(result["audioContent"])
-        except urllib.error.HTTPError as e:
-            last_err = e.read().decode("utf-8", errors="replace")
-            time.sleep(1.5 * (attempt + 1))
-        except Exception as e:  # noqa: BLE001
-            last_err = str(e)
-            time.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(f"TTS API呼び出しに失敗しました: {last_err}")
 
 
 def concat_wav_with_silence(wav_chunks: list, gap_seconds: float) -> bytes:

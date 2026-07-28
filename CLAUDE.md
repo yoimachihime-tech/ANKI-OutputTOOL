@@ -198,6 +198,20 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
   `self.exclude_japanese_var`(③のチェックボックス)がONの時だけ、
   `_get_source_transform_for()`がノートタイプ固有の変換(習熟用の
   `extract_shuujuku_tts_text`等、無ければNone)の後段にこれを合成して返す。
+- **TTS APIエラーの分類(`_classify_tts_error` / `TtsApiError`、2026-07-28追加)**:
+  以前は`call_google_tts` / `call_google_tts_wav`がHTTPエラーを一律3回
+  リトライし、生のJSONを`RuntimeError`で投げていた。(a)割り当て超過・課金
+  停止・キー設定ミスは待っても回復しないのにリトライで無駄に割り当てを
+  消費する、(b)何が起きたか利用者に伝わらない、の2点を解消するため、
+  HTTPステータスと本文から原因を判定して日本語の説明を返すようにした
+  (`gemini_client._post_gemini_request`と同じ考え方)。
+  リトライするのは「短期のレート制限」と「5xx(Google側の一時障害)」だけで、
+  それ以外(429の長期割り当て超過・403の課金停止/リファラー制限/API未有効/
+  APIの制限/キー無効)は**1回で打ち切る**。
+  実際のHTTP呼び出しは`_call_tts_api()`に一本化してあり、mp3版・WAV版の
+  どちらも同じ経路を通る(以前は同じリトライ処理が2箇所に重複していた)。
+  `TtsApiError`は`str(e)`で「利用者向けの説明 + 詳細(生のレスポンス)」を
+  返すため、`tts_gui.py`側は従来どおり`str(e)`をそのまま表示すればよい。
 - **音量ゲイン(`volume_gain_db`)**(2026-07-27追加): 「TTSの音声が小さい場合が
   ある」への対応。`call_google_tts` / `call_google_tts_wav` / `synthesize_per_sentence`
   / `synthesize_with_gaps` / `generate_tts_for_collection`すべてに
