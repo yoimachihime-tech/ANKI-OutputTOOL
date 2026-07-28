@@ -1305,6 +1305,52 @@ example_ja/example_blank/noteの7キーを受け取る。
     切り出し、Python側は`open()`で、Web側は`fetch()`で同じファイルを読む。
     プロンプトを改善したときに、片方だけ直して不一致になる事故を防ぐため。
 
+### Web版フェーズ1の実装状況(2026-07-28、単語カードの一通しが完成)
+
+`docs/`配下に静的Webページとして実装済み。詳細は`docs/README.md`を参照。
+**単語入力→AI生成→プレビュー→apkgダウンロード**までブラウザだけで完結し、
+バックエンドは不要。
+
+```text
+docs/
+  index.html / style.css / app.js   画面・UI(ストックはlocalStorage)
+  lib/gemini.js                     Gemini呼び出し(gemini_client.pyのWeb版)
+  lib/guid.js                       genanki.guid_for()と同一のguid生成
+  lib/apkg.js                       .apkgの組み立て(sql.js + JSZip)
+  shared/                           デスクトップ版と共有する資産
+tools/
+  export_shared_card_defs.py        docs/shared/*.json を生成
+  dump_python_apkg.py               検証用にPython版のapkg中身を出力
+  verify_web_parity.mjs             両者の一致を検証(npm run verify)
+```
+
+- **共有資産を`docs/shared/`に置いている理由**: GitHub Pagesは`docs/`配下
+  しか配信しないため。リポジトリ直下の`prompts/`等に置くとWeb版から
+  `fetch()`できない。プロンプト(`word_card_prompt.txt`)はPython側の
+  `gemini_client._load_shared_prompt()`も同じファイルを読む。
+  プレースホルダは`str.format()`ではなく`{{word}}`形式の単純置換にしてある
+  (format()だとJSON例の波括弧を`{{`にエスケープする必要があり、JS側と
+  文面が一致しなくなるため)。
+- **`docs/shared/card_defs.json` / `anki_schema.json`は自動生成物**。
+  ⚙設定「カード定義」タブでノートタイプを編集したら
+  `python tools/export_shared_card_defs.py`を実行して再生成すること
+  (でないとWeb版とデスクトップ版でカードの見た目がズレる)。
+  ノートタイプJSON(`req`やfldsのord/font等を含む)はgenankiに組み立てさせた
+  結果をそのまま運ぶ設計で、JS側では再構築しない。
+- **`docs/`配下を変更したら必ず`cd tools && npm run verify`を通すこと**。
+  同じ入力からデスクトップ版(genanki)とWeb版それぞれでapkgを生成し、
+  guid・フィールド・カード構成・ノートタイプ定義を突き合わせる。
+  初回のみ`npm install`が必要(`tools/node_modules/`はGit管理外)。
+  実装中に実際に2件の差異(cards.dueの採番、models.modの扱い)を検出しており、
+  この検証を省くと気付かないまま学習履歴を壊す変更が入る。
+- 実装時に判明した注意点:
+  - `card_def_builder.build_deck_from_def()`は`due`を指定しないため、
+    全カードの`due`は0になる。Web版もこれに合わせている。
+  - `models.mod`はgenankiが書き出し時刻で埋める値。共有JSONには固定値
+    (0)で入っているので、apkg生成時に現在時刻で上書きしている。
+  - 日本語Windowsでは標準入出力の既定がcp932になるため、
+    `verify_web_parity.mjs`はPython呼び出し時に`PYTHONUTF8=1`を渡している。
+
 ### ブラウザだけでのapkg生成(2026-07-28に実現可能と確認)
 
 「apkgをスマホで完結できないか」という片桐の質問を受けて調査し、

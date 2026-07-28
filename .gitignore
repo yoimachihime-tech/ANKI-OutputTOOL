@@ -1,11 +1,15 @@
 # 平文でAPIキー等を含む設定・実データ(このソフト実行時に自動生成される)
-config.json
-shuujuku_stock.json
-word_stock.json
-card_defs.json
-daily_pending_exclusions.json
-grammar_multi_stock.json
-tab_notes_state.json
+# 先頭の`/`でリポジトリ直下に限定している。これが無いと同名のパターンが
+# どの階層にも一致してしまい、Web版と共有する docs/shared/card_defs.json
+# (tools/export_shared_card_defs.py が生成する、コミットすべきファイル)まで
+# 除外されてしまうため。
+/config.json
+/shuujuku_stock.json
+/word_stock.json
+/card_defs.json
+/daily_pending_exclusions.json
+/grammar_multi_stock.json
+/tab_notes_state.json
 
 # サービスアカウントJSONキー等の認証情報(万一このフォルダに置かれても除外)
 *serviceaccount*.json
@@ -29,6 +33,10 @@ output/
 # Python
 __pycache__/
 *.pyc
+
+# Web版の互換性検証ツールの依存関係(検証時にnpm installで取得する)
+tools/node_modules/
+tools/package-lock.json
 
 # ビルド成果物(PyInstaller)
 build/

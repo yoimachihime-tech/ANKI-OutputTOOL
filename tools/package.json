@@ -1,0 +1,13 @@
+{
+  "name": "anki-tool-web-parity-tests",
+  "private": true,
+  "type": "module",
+  "description": "Web版(docs/)が生成するapkgが、デスクトップ版(genanki)の出力と一致することを検証するためのテスト用パッケージ。アプリ本体はCDNから読み込むため、この依存関係は検証時にしか使わない。",
+  "scripts": {
+    "verify": "node verify_web_parity.mjs"
+  },
+  "dependencies": {
+    "jszip": "3.10.1",
+    "sql.js": "1.10.3"
+  }
+}

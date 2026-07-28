@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ANKI出力ツール (Web版)</title>
+<link rel="stylesheet" href="./style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+
+<header class="app-header">
+  <h1>ANKI出力ツール <span class="badge">Web版</span></h1>
+  <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
+</header>
+
+<!-- ⚙ 設定 -->
+<section id="settings" class="card" hidden>
+  <h2>設定</h2>
+  <p class="hint">
+    APIキーはこのブラウザ内(localStorage)にのみ保存され、サーバーには送信されません。
+    共用の端末では使用後に「キーを消去」してください。
+  </p>
+
+  <label for="api-key">Gemini APIキー</label>
+  <div class="row">
+    <input type="password" id="api-key" autocomplete="off" spellcheck="false"
+           placeholder="AI Studio または Google Cloud で発行したキー">
+    <button type="button" id="toggle-key" class="ghost" title="表示/非表示">👁</button>
+  </div>
+
+  <label for="model">モデル</label>
+  <div class="row">
+    <input type="text" id="model" list="model-list" spellcheck="false" value="gemini-2.0-flash">
+    <datalist id="model-list"></datalist>
+    <button type="button" id="fetch-models" class="ghost">一覧を取得</button>
+  </div>
+
+  <div class="row">
+    <button type="button" id="clear-key" class="danger">キーを消去</button>
+  </div>
+</section>
+
+<!-- ① 単語を入力 -->
+<section class="card">
+  <h2>① 単語を入力</h2>
+  <p class="hint">
+    1行に1件、「単語 | 文脈」の形式で入力します。文脈は省略可で、完全な文である必要も
+    ありません(句動詞や単語の組み合わせだけでも構いません)。
+  </p>
+  <textarea id="word-input" rows="6" spellcheck="false"
+placeholder="slated | The update is slated for release next month.
+give up
+resilient | She remained resilient."></textarea>
+  <button type="button" id="generate" class="primary">AIでカードを生成</button>
+  <p id="generate-status" class="status" role="status" aria-live="polite"></p>
+</section>
+
+<!-- ② 生成結果 -->
+<section class="card">
+  <h2>② 生成結果 <span id="stock-count" class="count"></span></h2>
+  <p class="hint">
+    生成したカードはこのブラウザに保存され、再訪しても残ります。
+    不要なものは選んで削除できます。
+  </p>
+  <div id="stock-empty" class="empty">まだカードがありません。</div>
+  <ul id="stock-list" class="stock"></ul>
+  <div class="row">
+    <button type="button" id="delete-selected">選択項目を削除</button>
+    <button type="button" id="clear-stock" class="danger">すべて削除</button>
+  </div>
+</section>
+
+<!-- ③ Ankiに取り込む -->
+<section class="card">
+  <h2>③ Ankiに取り込む</h2>
+  <p class="hint">
+    .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
+    同じ単語のカードは既存のものが更新されるだけなので、学習履歴は失われません。
+  </p>
+  <button type="button" id="export" class="primary">.apkg をダウンロード</button>
+  <p id="export-status" class="status" role="status" aria-live="polite"></p>
+</section>
+
+<!-- カードプレビュー -->
+<dialog id="preview-dialog">
+  <div class="dialog-head">
+    <strong id="preview-title">プレビュー</strong>
+    <button type="button" id="preview-close" class="ghost">閉じる</button>
+  </div>
+  <iframe id="preview-frame" title="カードプレビュー"></iframe>
+</dialog>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

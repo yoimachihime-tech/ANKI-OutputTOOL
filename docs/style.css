@@ -1,0 +1,163 @@
+/* ANKI出力ツール Web版
+   デスクトップ版(sv-ttk の Windows 11 Fluent 風)に合わせ、
+   ダーク/ライト両対応にする。スマホからの利用を主眼に置いた1カラム構成。 */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f3f3f3;
+  --surface: #ffffff;
+  --fg: #1a1a1a;
+  --sub: #5c6370;
+  --border: #d8dade;
+  --accent: #4f6bed;
+  --accent-fg: #ffffff;
+  --danger: #c94a3f;
+  --warn-bg: #fdf3d8;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1c1f;
+    --surface: #232629;
+    --fg: #f0f1f3;
+    --sub: #9aa1ab;
+    --border: #383c40;
+    --accent: #6b83f0;
+    --accent-fg: #ffffff;
+    --danger: #e0705f;
+    --warn-bg: #3a3116;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto;
+  padding: 0 16px 48px;
+  max-width: 720px;
+  font-family: -apple-system, "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Meiryo", sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 0 8px;
+}
+
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0 0 4px; }
+
+.badge {
+  font-size: .7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  vertical-align: middle;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.hint { color: var(--sub); font-size: .85rem; margin: 4px 0 12px; }
+label { display: block; font-size: .85rem; font-weight: 600; margin: 10px 0 4px; }
+
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row > input[type="text"], .row > input[type="password"] { flex: 1 1 12rem; }
+
+input, textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+textarea { resize: vertical; font-size: .95rem; }
+input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+button {
+  padding: 10px 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+button.primary {
+  width: 100%;
+  margin-top: 12px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+button.ghost { padding: 8px 12px; font-weight: 500; }
+button.danger { color: var(--danger); border-color: var(--danger); }
+
+.status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }
+.status.error { color: var(--danger); }
+
+.count { font-size: .8rem; font-weight: 400; color: var(--sub); }
+.empty { color: var(--sub); font-size: .9rem; padding: 12px 0; }
+
+.stock { list-style: none; margin: 0; padding: 0; }
+
+.stock li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 4px;
+  border-top: 1px solid var(--border);
+}
+
+.stock li.duplicate { background: var(--warn-bg); }
+.stock input[type="checkbox"] { width: auto; margin-top: 4px; flex: none; }
+.stock .word { font-weight: 600; }
+.stock .meaning { color: var(--sub); font-size: .85rem; }
+.stock .body { flex: 1; min-width: 0; }
+.stock .dup-tag { color: var(--danger); font-size: .75rem; font-weight: 600; }
+
+#preview-dialog {
+  width: min(680px, 94vw);
+  height: min(80vh, 900px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--fg);
+}
+
+#preview-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+#preview-frame { width: 100%; height: calc(100% - 52px); border: 0; background: #fff; }

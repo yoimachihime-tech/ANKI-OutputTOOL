@@ -34,6 +34,7 @@ config.jsonの"gemini_api_key"に平文で保存する(既存のGoogle Cloud TTS
 """
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -509,53 +510,37 @@ def generate_shuujuku_item_from_question(question: str, api_key: str, model: str
     )
 
 
-_WORD_TO_ITEM_PROMPT = """あなたは、言語学習、特に読書を通じて遭遇した「未知の英単語の記憶定着」と
-「本質的理解」を最大化するAnkiカード作成のエキスパートです。
+# 単語カード生成プロンプトは、Web版と共有するため外部ファイルに切り出してある
+# (2026-07-28、片桐の合意により実施)。プロンプトを改善したときに、
+# デスクトップ版とWeb版のどちらか片方だけ直して不一致になる事故を防ぐのが目的。
+#
+# 置き場所を`docs/shared/`にしているのは、GitHub Pagesが`docs/`配下しか
+# 配信しないため。リポジトリ直下の`prompts/`に置くとWeb版から`fetch()`できない。
+#   - Python側: 下の_load_shared_prompt()が`open()`で読む
+#   - Web側   : `fetch('./shared/word_card_prompt.txt')`で読む
+#
+# プレースホルダは`str.format()`ではなく`{{word}}`形式の単純置換にしてある。
+# format()だとプロンプト内のJSON例の波括弧を`{{`にエスケープする必要があり、
+# JS側と文面が一致しなくなるため(共有ファイルの意味が薄れる)。
+SHARED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "shared")
+WORD_PROMPT_PATH = os.path.join(SHARED_DIR, "word_card_prompt.txt")
 
-ユーザーから「読書中に出会った英単語」と、その文脈が提示されます。
-**文脈は完全な英文とは限りません**(句動詞や、単語同士の組み合わせ・
-コロケーションの一部だけが渡されることもあります)。文脈が完全な文でない
-場合は、無理に1つの文として解釈しようとせず、その断片が使われる典型的な
-状況を踏まえてカードを作成してください。また、文脈が空欄の場合は、対象単語の
-最も一般的な用法を基準にカードを作成してください。
-単純な1対1の和訳暗記を避け、直感的なコアイメージや語源を軸とした情報を
-生成してください。
 
-## 禁止事項・スタイル(最優先)
-- アスタリスク禁止: 出力テキスト内でアスタリスク`*`は一切使用しないでください。
-- 強調表現: 対象単語やアクセント、重要な語根など強調したい箇所は、必ずHTMLタグ
-  <b>と</b>で囲んでください。ダブルクォーテーション"は強調目的では使用せず、
-  本来の「引用」等の目的のみに使用してください(TTSでの不要なポーズを防ぐため)。
-- 角括弧禁止: 半角の角括弧[ ]は英語TTSソフトで読み上げエラーの原因となるため、
-  絶対に使用しないでください。日本語の見出しには【 】や＜ ＞を使用してよい。
-- 言語分離: reading/pos/exampleフィールドなど英語のみを出力すべき箇所に、
-  日本語や全角記号を一切含めないでください。
-- 改行: 文章の区切りには物理的な改行ではなく<br>を使用してください。
+def _load_shared_prompt(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        raise GeminiClientError(
+            f"共有プロンプトファイルを読み込めませんでした: {path}\n{e}"
+        ) from e
 
-## 対象単語
-単語: {word}
-文脈(完全な文とは限らない。句動詞・単語の組み合わせのみのこともある。
-空欄の場合は最も一般的な用法を基準にすること): {context_sentence}
 
-## 出力するフィールド
-以下のキーちょうど7つだけを持つJSONオブジェクトを、JSON以外の文字を
-含めずに出力してください:
-
-{{
-  "reading": "発音記号(IPA)。アクセントのある音節を<b></b>で囲む。例: /<b>ˈsleɪ</b>tɪd/",
-  "pos": "品詞(英語で簡潔に)。例: adj. (Past Participle)",
-  "meaning": "日本語での簡潔な意味。例: 予定されている",
-  "example": "文脈の英文を元にした例文(対象単語を<b></b>で囲む)を1文作り、続けて<br>で区切って
-    Ex1. ...<br>Ex2. ... という形式で、上記の課題文とは別の新しい例文を2つ追加する
-    (それぞれの例文でも対象単語は<b></b>で囲む)",
-  "example_ja": "exampleの各文に対応する日本語訳を<br>区切りで(Ex1/Ex2などの接頭辞は付けない)",
-  "example_blank": "exampleの最初の例文について、対象単語をハイフン7つ(-------)で置き換えた
-    穴埋め文",
-  "note": "日本語での補足説明。まず文体・ニュアンスの解説を書き、<br><br>で段落を分けて
-    【派生語・共起表現・対義語】<br>派生語: ...<br>共起表現: ...<br>対義語: ...
-    <br><br>【語源・コアイメージ】<br>(語源やコアイメージの解説)という構成にする"
-}}
-"""
+def _fill_placeholders(template: str, **values) -> str:
+    """`{{name}}`形式のプレースホルダを置換する(Web版のJSと同じ方式)。"""
+    for name, value in values.items():
+        template = template.replace("{{" + name + "}}", str(value))
+    return template
 
 
 def generate_vocab_card_from_word(word: str, context_sentence: str, api_key: str, model: str) -> dict:
@@ -566,7 +551,11 @@ def generate_vocab_card_from_word(word: str, context_sentence: str, api_key: str
     **注意: 「習熟用(音読)」ストックとは無関係。この関数の戻り値はword_stock.pyでのみ
     扱い、shuujuku_stock.pyには一切渡さないこと(2026-07-27、片桐の明示的な指示)。**
     """
-    prompt = _WORD_TO_ITEM_PROMPT.format(word=word, context_sentence=context_sentence)
+    prompt = _fill_placeholders(
+        _load_shared_prompt(WORD_PROMPT_PATH),
+        word=word,
+        context_sentence=context_sentence,
+    )
     text = call_gemini(prompt, api_key, model)
     parsed = _extract_json(text)
     return {

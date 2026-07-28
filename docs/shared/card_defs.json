@@ -1,0 +1,181 @@
+{
+  "_comment": "このファイルは tools/export_shared_card_defs.py が生成します。直接編集せず、⚙設定の「カード定義」タブで編集してからスクリプトを再実行してください。",
+  "defs": {
+    "word": {
+      "key": "word",
+      "label": "単語",
+      "notetype_name": "Vocab (単語 v1)",
+      "model_id": 1907245001123,
+      "deck_id": 1785112749312,
+      "deck_name": "02.単語・MindTips::単語",
+      "dedup_key": "word",
+      "fields": [
+        {
+          "anki_name": "Word",
+          "item_key": "word"
+        },
+        {
+          "anki_name": "Reading",
+          "item_key": "reading"
+        },
+        {
+          "anki_name": "POS",
+          "item_key": "pos"
+        },
+        {
+          "anki_name": "Meaning",
+          "item_key": "meaning"
+        },
+        {
+          "anki_name": "Example",
+          "item_key": "example"
+        },
+        {
+          "anki_name": "ExampleJA",
+          "item_key": "example_ja"
+        },
+        {
+          "anki_name": "ExampleBlank",
+          "item_key": "example_blank"
+        },
+        {
+          "anki_name": "Note",
+          "item_key": "note"
+        }
+      ],
+      "anki_model": {
+        "css": "\n.card {\n  font-family: -apple-system, \"Hiragino Sans\", \"Helvetica Neue\", Arial, sans-serif;\n  font-size: 17px;\n  line-height: 1.75;\n  text-align: left;\n  max-width: 640px;\n  margin: 0 auto;\n  padding: 8px 4px 28px 4px;\n\n  --bg: #e7e9ec;\n  --fg: #1f2328;\n  --sub: #6b7280;\n  --word-bg: #eef2ff;\n  --word-fg: #4338ca;\n  --head-bg: #ccd1d7;\n  --head-border: #b3b9c1;\n  --meaning-bg: #ecdca0;\n  --meaning-border: #c7a83a;\n  --example-bg: #c7d3e2;\n  --example-border: #5c85cf;\n  --note-bg: #d6cde6;\n  --note-border: #8567bd;\n  --word-color: #000000;\n  color: var(--fg);\n  background: var(--bg);\n}\n\n.night_mode .card {\n  --bg: #1a1c1f;\n  --fg: #f0f1f3;\n  --sub: #9aa1ab;\n  --word-bg: #2b2f6b;\n  --word-fg: #c7cdff;\n  --head-bg: #212326;\n  --head-border: #34373b;\n  --meaning-bg: #332b10;\n  --meaning-border: #8c7620;\n  --example-bg: #182130;\n  --example-border: #4d76b3;\n  --note-bg: #201b28;\n  --note-border: #7a5fc0;\n  --word-color: var(--fg);\n}\n\n@media (prefers-color-scheme: dark) {\n  .card {\n    --bg: #1a1c1f;\n    --fg: #f0f1f3;\n    --sub: #9aa1ab;\n    --word-bg: #2b2f6b;\n    --word-fg: #c7cdff;\n    --head-bg: #212326;\n    --head-border: #34373b;\n    --meaning-bg: #332b10;\n    --meaning-border: #8c7620;\n    --example-bg: #182130;\n    --example-border: #4d76b3;\n    --note-bg: #201b28;\n    --note-border: #7a5fc0;\n    --word-color: var(--fg);\n  }\n}\n\n.head-block {\n  background: var(--head-bg);\n  border: 1px solid var(--head-border);\n}\n.word-head {\n  display: flex;\n  align-items: baseline;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n.word-main { font-size: 28px; font-weight: 700; color: var(--word-color); }\n.word-reading { color: var(--sub); font-size: 15px; font-family: \"SF Mono\", Menlo, monospace; }\n.word-pos {\n  display: inline-block;\n  background: var(--word-bg);\n  color: var(--word-fg);\n  font-size: 12.5px;\n  font-weight: 700;\n  padding: 3px 10px;\n  border-radius: 999px;\n}\n\n.block { border-radius: 12px; padding: 14px 16px; margin: 12px 0; }\n.label { font-weight: 700; font-size: 12.5px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n\n.meaning-block { background: var(--meaning-bg); border-left: 5px solid var(--meaning-border); }\n.meaning-block .label { color: var(--meaning-border); }\n.meaning-text { font-size: 19px; font-weight: 600; }\n\n.example-block { background: var(--example-bg); border-left: 5px solid var(--example-border); }\n.example-block .label { color: var(--example-border); }\n.example-sentence { font-size: 16px; }\n.example-ja { color: var(--sub); font-size: 14.5px; margin-top: 4px; }\n\n.note-block { background: var(--note-bg); border-left: 5px solid var(--note-border); font-size: 15px; color: var(--word-color); }\n.note-block .label { color: var(--note-border); }\n\n.context-hint { color: var(--sub); font-size: 13px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }\n.blank-sentence { font-size: 17px; background: var(--head-bg); border: 1px solid var(--head-border); border-radius: 12px; padding: 14px 16px; }\n\nb { color: inherit; }\nhr.sep { border: none; border-top: 1px solid var(--head-border); margin: 18px 0; }\n",
+        "did": 1785112749312,
+        "flds": [
+          {
+            "name": "Word",
+            "ord": 0,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Reading",
+            "ord": 1,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "POS",
+            "ord": 2,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Meaning",
+            "ord": 3,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Example",
+            "ord": 4,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "ExampleJA",
+            "ord": 5,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "ExampleBlank",
+            "ord": 6,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Note",
+            "ord": 7,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          }
+        ],
+        "id": "1907245001123",
+        "latexPost": "\\end{document}",
+        "latexPre": "\\documentclass[12pt]{article}\n\\special{papersize=3in,5in}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amssymb,amsmath}\n\\pagestyle{empty}\n\\setlength{\\parindent}{0in}\n\\begin{document}\n",
+        "latexsvg": false,
+        "mod": 0,
+        "name": "Vocab (単語 v1)",
+        "req": [
+          [
+            0,
+            "any",
+            [
+              0,
+              1,
+              2
+            ]
+          ],
+          [
+            1,
+            "any",
+            [
+              2,
+              3,
+              6
+            ]
+          ]
+        ],
+        "sortf": 0,
+        "tags": [],
+        "tmpls": [
+          {
+            "name": "1. 意味想起(英→日)",
+            "qfmt": "\n<div class=\"block head-block\">\n  <div class=\"word-head\">\n    <span class=\"word-main\">{{Word}}</span>\n    <span class=\"word-reading\">{{Reading}}</span>\n    <span class=\"word-pos\">{{POS}}</span>\n  </div>\n</div>\n",
+            "afmt": "\n<div class=\"block head-block\">\n  <div class=\"word-head\">\n    <span class=\"word-main\">{{Word}}</span>\n    <span class=\"word-reading\">{{Reading}}</span>\n    <span class=\"word-pos\">{{POS}}</span>\n  </div>\n</div>\n\n<hr class=\"sep\">\n<div class=\"block meaning-block\">\n  <div class=\"label\">Meaning</div>\n  <div class=\"meaning-text\">{{Meaning}}</div>\n</div>\n\n<div class=\"block example-block\">\n  <div class=\"label\">Example</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n\n{{#Note}}\n<div class=\"block note-block\">\n  <div class=\"label\">Note</div>\n  {{Note}}\n</div>\n{{/Note}}\n",
+            "ord": 0,
+            "bafmt": "",
+            "bqfmt": "",
+            "bfont": "",
+            "bsize": 0,
+            "did": null
+          },
+          {
+            "name": "2. 語彙想起(文脈→英単語)",
+            "qfmt": "\n<div class=\"context-hint\">この意味を表す単語を、下の空所に当てはめてください</div>\n<div class=\"block meaning-block\">\n  <div class=\"label\">Meaning</div>\n  <div class=\"meaning-text\">{{Meaning}} <span class=\"word-pos\">{{POS}}</span></div>\n</div>\n<div class=\"blank-sentence\">{{ExampleBlank}}</div>\n",
+            "afmt": "\n<div class=\"block head-block\">\n  <div class=\"word-head\">\n    <span class=\"word-main\">{{Word}}</span>\n    <span class=\"word-reading\">{{Reading}}</span>\n    <span class=\"word-pos\">{{POS}}</span>\n  </div>\n</div>\n<hr class=\"sep\">\n<div class=\"block example-block\">\n  <div class=\"label\">Example</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{#Note}}\n<div class=\"block note-block\">\n  <div class=\"label\">Note</div>\n  {{Note}}\n</div>\n{{/Note}}\n",
+            "ord": 1,
+            "bafmt": "",
+            "bqfmt": "",
+            "bfont": "",
+            "bsize": 0,
+            "did": null
+          }
+        ],
+        "type": 0,
+        "usn": -1,
+        "vers": []
+      }
+    }
+  }
+}
