@@ -16,6 +16,21 @@ tts_core.pyのGoogle Cloud TTS呼び出しと同様、urllib.requestで直接RES
 config.jsonの"gemini_api_key"に平文で保存する(既存のGoogle Cloud TTSの
 "api_key"と同じ方針)。呼び出し側(tts_gui.py)がconfigから読んで渡す。
 このモジュール自体はconfig.jsonに依存しない(sheets_writer.py等と同じ設計方針)。
+
+【API消費量の目安(2026-07-28、無料枠の上限に達しやすいため)】
+1操作あたりのGemini呼び出し回数:
+    - 単語タブ「AIに生成させる」      : 入力した単語1件につき1回(直列)
+    - AIに質問タブ「AIに生成させる」  : 2回
+      (Grammar Multi 3問で1回 + 習熟用の4問目で1回。この4問目は
+       2026-07-28に片桐の要望で追加したもので、消費量が2倍になっている。
+       無料枠が厳しい場合はここを任意ボタンに分離する余地がある)
+    - DailyConversation「まとめてノート一覧に出力」
+                                      : デッキに採用された行1件につき1回(直列)
+    - DailyConversation「AIに添削させてシートに追加」
+                                      : 1回(複数文をまとめて渡しても1回)
+429時のリトライは_MAX_RETRIESで最大2回まで。ただし1日あたりの上限
+(_is_daily_quota_error)と判定できた場合は、待っても回復しないため
+リトライせず即座に打ち切る。
 """
 
 import json
@@ -32,7 +47,10 @@ GEMINI_ENDPOINT_TMPL = (
 # の3回リトライと同じ考え方(2026-07-27追加)。無料枠は「1日あたり」の上限
 # であることが多く、リトライしても解決しない場合があるため、無限リトライは
 # せずここで打ち切ってGeminiClientErrorとしてユーザーに伝える。
-_MAX_RETRIES = 3
+# 2026-07-28、片桐から「上限に達している時にリトライで無駄にAPIを消費して
+# しまう」との指摘を受け、3回→2回に減らした(_is_daily_quota_errorで
+# 1日あたりの上限と判定できた場合は、この回数を待たずに即打ち切る)。
+_MAX_RETRIES = 2
 _DEFAULT_RETRY_DELAY_SECONDS = 5.0
 _MAX_RETRY_DELAY_SECONDS = 60.0
 
@@ -58,10 +76,25 @@ def _extract_retry_delay_seconds(error_detail_text: str):
     return None
 
 
+def _is_daily_quota_error(error_detail_text: str) -> bool:
+    """429エラーのJSON本文が「1日あたり」の上限(RPD: Requests Per Day)を
+    示しているかを判定する(2026-07-28追加)。GeminiのQuotaFailure詳細には
+    通常 quotaId に "PerDay" のような文字列が含まれる(例:
+    "GenerateRequestsPerDayPerProjectPerModel-FreeTier")。1日あたりの
+    上限は数分待っても回復しないため、この場合はリトライしても無駄にAPIを
+    消費するだけ(片桐からの指摘)。一方、1分あたり等の短期的なレート制限は
+    リトライで解決する見込みがあるため区別する。判定できない場合は
+    Falseを返し、従来通りのリトライ動作にフォールバックする。"""
+    normalized = re.sub(r"[\s_-]", "", (error_detail_text or "")).lower()
+    return "perday" in normalized
+
+
 def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> dict:
     """Gemini APIへのPOSTリクエストを行い、レスポンスのJSONをdictで返す共通処理。
     429(レート制限/無料枠上限)が返った場合は、Google側が示すretryDelay
-    (無ければ既定値)だけ待って最大_MAX_RETRIES回リトライする。"""
+    (無ければ既定値)だけ待って最大_MAX_RETRIES回リトライする。ただし
+    1日あたりの上限超過と判定できる場合は、リトライしても短時間では
+    回復しないため即座に打ち切る(_is_daily_quota_error)。"""
     data = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type": "application/json; charset=utf-8",
@@ -77,15 +110,21 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> di
             detail = e.read().decode("utf-8", errors="replace")
             last_detail = detail
             if e.code == 429:
+                if _is_daily_quota_error(detail):
+                    raise GeminiClientError(
+                        "Gemini APIの1日あたりのリクエスト数上限に達しました。"
+                        "時間を置いてもすぐには回復しないため、リトライは行わず"
+                        "打ち切りました。翌日まで待つか、⚙設定でモデルを変更する、"
+                        f"または有料プランへの切り替えをご検討ください。\n詳細: {detail}"
+                    ) from e
                 if attempt < _MAX_RETRIES - 1:
                     delay = _extract_retry_delay_seconds(detail) or _DEFAULT_RETRY_DELAY_SECONDS
                     time.sleep(min(delay, _MAX_RETRY_DELAY_SECONDS))
                     continue
                 raise GeminiClientError(
-                    "Gemini APIの利用上限(レート制限または無料枠の1日あたりの"
-                    "リクエスト数上限)に達しました。しばらく時間をおくか、"
-                    "⚙設定でモデルを変更する、または有料プランへの切り替えを"
-                    f"ご検討ください。\n詳細: {detail}"
+                    "Gemini APIの利用上限(レート制限)に達しました。しばらく"
+                    "時間をおくか、⚙設定でモデルを変更する、または有料プランへの"
+                    f"切り替えをご検討ください。\n詳細: {detail}"
                 ) from e
             raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {detail}") from e
         except Exception as e:  # noqa: BLE001
@@ -264,6 +303,8 @@ _GRAMMAR_MULTI_PROMPT = """あなたは英文法学習カードの作成アシ�
    選択問題以外では空配列にすること。
 9. choicesは選択問題の場合のみ {{"opt": "A", "text": "..."}} 形式の
    オブジェクトの配列(3択)。選択問題以外では空配列にすること。
+10. correct_optは選択問題の場合のみ、正解の選択肢のopt(例: "B")を
+    入れること。選択問題以外では空文字""にすること。
 
 以下のJSON形式で、JSON以外の文字を含めずに出力してください(必ず3要素の配列):
 [
@@ -272,6 +313,7 @@ _GRAMMAR_MULTI_PROMPT = """あなたは英文法学習カードの作成アシ�
     "question": "...",
     "choices": [{{"opt": "A", "text": "..."}}, {{"opt": "B", "text": "..."}}, {{"opt": "C", "text": "..."}}],
     "answer": "...",
+    "correct_opt": "B",
     "examples": [["English sentence.", "日本語訳。"]],
     "why": "...",
     "whynot": [{{"opt": "B", "reason": "..."}}, {{"opt": "C", "reason": "..."}}]
@@ -281,6 +323,7 @@ _GRAMMAR_MULTI_PROMPT = """あなたは英文法学習カードの作成アシ�
     "question": "...(誤りを含む英文を提示)",
     "choices": [],
     "answer": "...",
+    "correct_opt": "",
     "examples": [],
     "why": "...",
     "whynot": []
@@ -290,6 +333,7 @@ _GRAMMAR_MULTI_PROMPT = """あなたは英文法学習カードの作成アシ�
     "question": "...",
     "choices": [],
     "answer": "...",
+    "correct_opt": "",
     "examples": [],
     "why": "...",
     "whynot": []
@@ -306,6 +350,59 @@ def _extract_json_array(text: str) -> list:
         return json.loads(candidate)
     except json.JSONDecodeError as e:
         raise GeminiClientError(f"Gemini応答をJSON配列として解析できませんでした: {text[:300]}") from e
+
+
+# 日本語の指示文(「〜しなさい。」等)の直後に、改行なしで引用符付き英文が
+# 続く箇所を検出する(2026-07-28追加)。Grammar MultiのQuestionフィールドは
+# Geminiが「指示文+英文」を1つの文字列として返すため、そのままでは
+# 「選びなさい。'She showed...'」のように改行なしで並んでしまい読みにくい
+# (Ankiフィールドはmustacheで生HTML展開されるため、改行させるには明示的な
+# <br>が必要)。
+_JA_EN_BOUNDARY_RE = re.compile(r"([。！？])\s*(?=[\"'“”‘’A-Za-z])")
+# 英文側が複数文にわたる場合、文末(.!?)+空白+次の文の頭(引用符/大文字)の
+# 境目でも改行する。
+_EN_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[\"'A-Z])")
+
+
+def _format_question_html(text: str) -> str:
+    """日本語の指示文と、それに続く英文の間、および英文が複数文ある場合は
+    文と文の間に<br>を挿入する。"""
+    if not text:
+        return text
+    text = _JA_EN_BOUNDARY_RE.sub(r"\1<br><br>", text)
+    # 既存の<br>を境に分割し、<br>以外の断片だけに文区切りの<br>を適用する
+    # (挿入済みの<br><br>自体を誤って再分割しないため)。
+    parts = re.split(r"(<br\s*/?>)", text)
+    return "".join(
+        p if re.match(r"<br\s*/?>", p) else _EN_SENTENCE_BREAK_RE.sub("<br>", p)
+        for p in parts
+    )
+
+
+def _prefix_answer_with_correct_opt(answer: str, choices: list, correct_opt: str) -> str:
+    """選択問題(choicesが空でない)の場合、Answerフィールドの先頭に正解の
+    選択肢ラベル(例: "(B) ")を付ける(2026-07-28追加。選択肢のうちどれが
+    正解かカード裏面を見ただけでは分からないという指摘への対応)。
+    誤り訂正・記述式問題(choicesが空)の場合はanswerをそのまま返す。
+
+    correct_opt(Geminiが返す正解のopt)がchoicesの実際のoptと一致しない・
+    空文字などの場合は、answerとchoicesの各textを突き合わせて(前後空白・
+    大小文字を無視)一致するものを探すフォールバックを行う。それでも
+    特定できなければ記号無しのまま返す(誤った記号を付けるより安全)。"""
+    if not choices or not answer:
+        return answer
+    valid_opts = {c.get("opt", "").strip().upper() for c in choices if c.get("opt")}
+    opt = (correct_opt or "").strip().upper()
+    if opt not in valid_opts:
+        normalized_answer = answer.strip().casefold()
+        opt = ""
+        for c in choices:
+            if (c.get("text") or "").strip().casefold() == normalized_answer:
+                opt = c.get("opt", "").strip().upper()
+                break
+    if not opt:
+        return answer
+    return f"({opt}) {answer}"
 
 
 def generate_grammar_multi_items_from_question(question: str, api_key: str, model: str) -> list:
@@ -338,11 +435,13 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
         examples = [tuple(ex) for ex in note.get("examples", [])]
         items.append({
             "pattern": note.get("pattern", ""),
-            "question": note.get("question", ""),
+            "question": _format_question_html(note.get("question", "")),
             "choices": "".join(
                 _grammar_multi_canon.choice(c.get("opt", ""), c.get("text", "")) for c in choices
             ),
-            "answer": note.get("answer", ""),
+            "answer": _prefix_answer_with_correct_opt(
+                note.get("answer", ""), choices, note.get("correct_opt", "")
+            ),
             "example": _grammar_multi_canon.example_en(examples) if examples else "",
             "example_ja": _grammar_multi_canon.example_ja(examples) if examples else "",
             "why": note.get("why", ""),
@@ -355,6 +454,59 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
             "source_label": "由来: AIに質問",
         })
     return items
+
+
+# ---------------------------------------------------------------------------
+# 「AIに質問」タブ → 習熟用(音読)ストックへの4問目(2026-07-28再追加)
+# ---------------------------------------------------------------------------
+#
+# 以前あったanswer_question_as_shuujuku_item()は、Grammar Multiとの内容
+# 重複("習熟用タブに飛ぶ内容と同じでダブっている")を理由に2026-07-27に
+# 削除したが、片桐から「AIに質問で出力される3問以外に、4問目として習熟用の
+# カードを作って習熟用タブのストックに送ってほしい」との要望を受け、
+# generate_grammar_multi_items_from_question()とは別枠の"4問目"として再度
+# 追加した。生成される3件(選択問題/誤り訂正問題/記述式)とは出題形式が
+# 根本的に異なる(パターン穴埋め+音読用例文)ため、Grammar Multi用の
+# プロンプトを流用せず、generate_shuujuku_item_from_row()と同じ構造の
+# 専用プロンプト・専用のGemini呼び出しで生成する(1回の質問につき
+# Gemini呼び出しが1回増える)。
+
+_QUESTION_TO_SHUUJUKU_ITEM_PROMPT = """あなたは英語学習カード作成のアシスタントです。
+以下は、学習者からの英文法に関する質問です。
+
+質問: {question}
+
+この質問の背景にある「文法パターン」を抽象化し、音読練習用のカードを1つ作ってください。
+以下のルールを厳守してください:
+
+1. pattern: 可変部分をプレースホルダー語(動詞、代名詞、否定文、形容詞、名詞、主語、時制、数など)
+   に置き換えた、穴埋め形式の英語パターン(例: "She doesn't 動詞")
+2. examples: そのパターンを使った例文を2〜3個(英文と日本語訳のペア)
+3. meaning: そのパターンの意味・使い方の日本語での簡潔な説明
+4. expl: 質問への回答・解説を1〜2文で
+
+以下のJSON形式で、JSON以外の文字を含めずに出力してください:
+{{
+  "pattern": "...",
+  "meaning": "...",
+  "examples": [["English sentence.", "日本語訳。"], ["English sentence 2.", "日本語訳2。"]],
+  "expl": "..."
+}}
+"""
+
+
+def generate_shuujuku_item_from_question(question: str, api_key: str, model: str) -> dict:
+    """「AIに質問」タブの質問文から、build_shuujuku_v1.build_deck()に渡せる
+    item dictを1つ生成する(「3問+習熟用4問目」のうちの4問目)。"""
+    prompt = _QUESTION_TO_SHUUJUKU_ITEM_PROMPT.format(question=question)
+    text = call_gemini(prompt, api_key, model)
+    parsed = _extract_json(text)
+    topic_key = " ".join(question.strip().casefold().split())
+    return _item_from_parsed(
+        parsed,
+        source_key=("chat", topic_key),
+        source_label="由来: AIに質問",
+    )
 
 
 _WORD_TO_ITEM_PROMPT = """あなたは、言語学習、特に読書を通じて遭遇した「未知の英単語の記憶定着」と
@@ -538,3 +690,45 @@ def correct_english_text(text: str, api_key: str, model: str, timeout: int = 60)
         raise GeminiClientError(f"Gemini応答が配列ではありません: {corrections}")
 
     return corrections
+
+
+def consolidate_no_error_corrections(corrections: list) -> list:
+    """correct_english_text()が返したcorrectionsのうち、category=="誤りなし"の
+    ものが複数あっても、シートには1行だけ書き込むよう1件に要約する
+    (2026-07-28追加。片桐から「誤りなしの文をわざわざ複数行に分ける必要は
+    ない、誤りなしと分かった時点で1つだけシートに入るようにしたい」との
+    要望)。誤りがある行(category!="誤りなし")は1文=1行のまま素通しする
+    (それぞれ個別にカード化する必要があるため)。
+
+    誤りなしが0件・1件の場合はそのまま返す(要約する意味が無いため)。
+    複数ある場合、元のoriginalを改行で連結した1件に要約し、誤りなしの
+    最初の出現位置に差し込む(誤りのある文と誤りなしの文が混在していた
+    場合も、シート上の並び順が大きく崩れないようにするため)。要約行は
+    scoreを持たない(複数文の点数を平均する等の意味付けが無いため空欄)。"""
+    no_error = [c for c in corrections if c.get("category") == "誤りなし"]
+    if len(no_error) <= 1:
+        return corrections
+
+    originals = [c.get("original", "") for c in no_error]
+    merged = {
+        "original": "\n".join(originals),
+        "corrected": "\n".join(originals),
+        "explanation": f"{len(no_error)}文とも誤りなしでした。",
+        "category": "誤りなし",
+        "similar_expressions": [],
+        "grammar_score": "",
+        "naturalness_score": "",
+        "comprehensibility_score": "",
+        "score_comment": "",
+    }
+
+    result = []
+    inserted = False
+    for c in corrections:
+        if c.get("category") == "誤りなし":
+            if not inserted:
+                result.append(merged)
+                inserted = True
+        else:
+            result.append(c)
+    return result

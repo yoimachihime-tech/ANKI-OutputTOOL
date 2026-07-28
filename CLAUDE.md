@@ -110,10 +110,41 @@ card_defs.py      各タブ出力用ノートタイプ定義(フィールド・�
 card_def_builder.py
                   card_defsの定義から動的にgenanki Model/Deckを組み立てる
                   汎用モジュール(実装済み)
+tab_notes_state.py
+                  各タブが「まとめてノート一覧に出力」した内容を、アプリを
+                  再起動しても保持するための永続化モジュール(2026-07-28追加、
+                  下記「ノート一覧の永続化」参照)
 config.json       APIキー・音声設定などの保存先(平文注意・Git管理対象外)
 backup/           自動バックアップされた.apkgの保存先
+pending_decks/    各タブの「まとめてノート一覧に出力」が生成する作業用デッキ
+                  (タブごとに固定名 <tab>.apkg。④のTTS生成成功時に削除される)
+output/           ④のTTS音声生成の最終成果物(Ankiに取り込むapkg)の既定の
+                  置き場所。pending_decks/(作業用)とは意図的に分けてある
 ANKI出力ツール.bat 起動用バッチファイル(pythonw tts_gui.py を実行)
 ```
+
+### ノート一覧の永続化(tab_notes_state.py、2026-07-28追加)
+
+「まとめてノート一覧に出力」した内容は、アプリを再起動しても保持される。
+④の「TTS音声を生成する」が**成功した時点でノート一覧から消える**
+(キャンセル時は消さず、途中状態を保持して再開できるようにする)。
+
+- 作業用デッキの実体は`pending_decks/<tab>.apkg`(タブごとに固定名で上書き)。
+  OSのtempフォルダはクリーンアップで消える可能性があるため使わない。
+- メタデータ(apkg/出力先/row_map/ストックの出力済みマーク待ち)は
+  `tab_notes_state.json`に保存する。対象は
+  `PERSISTED_TAB_KEYS`(daily/shuujuku/word/ai_ask)のみで、apkgインポート
+  タブは対象外(外部apkgを都度手動で読み込む使い方のため)。
+- `AnkiTTSApp._snapshot_tab_output_state` / `_restore_tab_output_state` /
+  `_clear_tab_output_state` が入口。タブ切り替え時と起動時に復元される。
+- **`run_generate`は開始時点で`generated_apkg_path`と`generated_tab_key`を
+  ローカル変数に固定すること**(2026-07-28修正)。TTS生成は数分かかるため、
+  完了時に`self.source_tab_var.get()`を読む方式だと、その間に別タブへ
+  切り替えられていた場合に無関係なタブのノート一覧を消してしまう。
+- **記録されたapkgが実在しない場合は未出力タブと同じ扱いにフォールバック
+  すること**(2026-07-28修正)。このフォルダはGoogle Drive同期下にあり、
+  `pending_decks/`内のapkgが同期の都合で消えることがあるため、存在確認を
+  しないと起動直後に「読み込みエラー」ダイアログが出てしまう。
 
 ### tts_core.py
 
@@ -1222,9 +1253,13 @@ example_ja/example_blank/noteの7キーを受け取る。
 - コミットのauthor情報(`user.name`/`user.email`)は、このリポジトリの
   ローカル設定(`git config`に`--global`を付けない)のみに設定してあり、
   PC全体のgit設定は変更していない。
-- リモート(GitHub)へのpushはまだ手動("gh" CLIがこの環境に無いため、
-  片桐がブラウザ/GitHub Desktop等でリポジトリを作成し、そのURLを教えて
-  もらってから`git remote add`→`git push`する運用)。
+- リモートは設定済み(2026-07-28確認):
+  `origin` = `https://github.com/yoimachihime-tech/ANKI-OutputTOOL.git`(**非公開**)。
+  この環境に`gh` CLIは無いため、pushは通常の`git push`で行う
+  (認証情報が無い場合は片桐がGitHub Desktop等で行う)。
+  **非公開リポジトリだが、Web版をGitHub Pages等で公開する場合、公開される
+  ページのJavaScriptは誰でも読めるため、APIキーをソースに埋め込んでは
+  いけない**(下記「Web版」の項を参照)。
 
 ## 今後の拡張候補(未着手)
 
@@ -1238,15 +1273,30 @@ example_ja/example_blank/noteの7キーを受け取る。
   (またはCLAUDE.md冒頭の「①Googleフォーム→Apps Script→Gemini添削」という
   このプロジェクトの範囲外のパイプライン側の話なのか)、片桐から詳細確認待ち。
   **保留中につき、指示なく調査・修正に着手しないこと。**
-- **Web版(2026-07-27、方針だけ決定・実装は未着手)**: 片桐の希望により、
+- **Web版(2026-07-28に方針確定・実装は未着手)**: 片桐の希望により、
   既存の「それ以外の修正・改修」がすべて終わった後に着手する予定
-  (2026-07-27時点でその前提条件は満たされている)。
+  (2026-07-28の総点検・バグ修正をもって前提条件は満たされている)。
   - 進め方は「まずAI生成だけの軽量版を作り、後でapkg生成を追加」を採用
-    (片桐が選択)。フェーズ1: 単語カード生成(Gemini呼び出し)のみを行う
-    静的Webページ(サーバー不要、ブラウザから直接Gemini/TTS APIを呼ぶ、
-    GitHub Pages等の無料ホスティングを想定)。フェーズ2: Cloud Run等の
-    無料枠でPythonバックエンドを追加し、apkg生成(genanki/ankiパッケージ)
-    まで対応。
+    (片桐が選択)。フェーズ1: サーバー不要の静的Webページとして、ブラウザ
+    から直接Gemini/Google Cloud TTS APIを呼ぶ(GitHub Pages等の無料
+    ホスティングを想定)。フェーズ2: Cloud Run等の無料枠でPython
+    バックエンドを追加し、apkg生成(genanki/ankiパッケージ)まで対応。
+  - **フェーズ1の対象機能(2026-07-28に片桐が選択)**: 単語カード生成 /
+    AIに質問(Grammar Multi 3問生成) / 習熟用(音読)カード生成 /
+    TTS音声の試聴 の4つ。いずれもAPI呼び出しだけで完結するため、
+    バックエンド無しで実現できる。
+  - **DailyConversation(シート連携)はフェーズ1の対象外**。
+    `sheets_reader.py`/`sheets_writer.py`は**サービスアカウント方式**の
+    認証を使っており、その秘密鍵(JSON)をブラウザに置くことは絶対に
+    できない(鍵を持つ者はスプレッドシートを自由に読み書きできてしまう)。
+    ブラウザから使うには (a) OAuth 2.0 (PKCE) でGoogleログインさせる、
+    (b) Cloud Run等のバックエンドに鍵を置いて中継する、のいずれかが必要。
+    どちらを採るかは着手時に片桐へ確認すること。
+  - **APIキーの扱い(2026-07-28に片桐が選択)**: 利用者が自分のAPIキーを
+    ページ上で入力し、ブラウザの`localStorage`に保存する方式。
+    **リポジトリにもページのソースにもAPIキーを一切含めないこと。**
+    リポジトリ自体は非公開だが、GitHub Pagesで公開したページのJavaScriptは
+    誰でも閲覧できるため、ハードコードは鍵の流出・不正課金に直結する。
   - ソフトウェア版とWeb版のプロンプト同期方法として、`gemini_client.py`内の
     `_WORD_TO_ITEM_PROMPT`をリポジトリ内の共有ファイル(例:
     `prompts/word_card_prompt.txt`)に切り出し、Python側は`open()`で、

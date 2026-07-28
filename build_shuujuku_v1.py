@@ -153,7 +153,7 @@ def build_guid(item):
     return genanki.guid_for('shuujuku', kind, key)
 
 
-def build_deck(items, deck_title_label="習熟用"):
+def build_deck(items, deck_title_label="習熟用", start_num=1):
     """items: 1項目=1カードで生成される。各itemは以下の形式:
         {
             "pattern": str,
@@ -163,9 +163,18 @@ def build_deck(items, deck_title_label="習熟用"):
             "source_key": ("chat"|"dailyconv", 一意な文字列),
             "source_label": str または None (カード右上の出典表示、任意),
         }
+
+    start_num: Numフィールド(ソートフィールド)の開始番号(既定1、呼び出し元が
+    省略した場合は従来通りの挙動)。呼び出し元(tts_gui.py)が
+    shuujuku_stock.get_next_num()で「これまでにAnkiへ出力した総数+1」を渡す
+    ことで、出力するたびに001から採番し直して既存ノートと番号が重複する
+    (2026-07-28、片桐からの指摘)のを避けられる。このファイル自体はこの
+    引数を受け取って使うだけで、続き番号の管理はしない(正典との差分を
+    最小限にするための局所的な変更)。
     """
     deck = genanki.Deck(DECK_ID, DECK_NAME)
-    for idx, item in enumerate(items, start=1):
+    for offset, item in enumerate(items):
+        idx = start_num + offset
         content = (
             f'<div class="deck-title">{esc(deck_title_label)} &nbsp;No.{idx:03d}</div>'
             + render_item(idx, item)

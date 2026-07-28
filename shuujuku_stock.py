@@ -157,6 +157,38 @@ def remove_pending_at(index: int, path: str = None):
     return removed
 
 
+def get_next_num(path: str = None) -> int:
+    """次に払い出すNumフィールド(ソートフィールド)の開始番号を返す
+    (2026-07-28追加)。build_shuujuku_v1.build_deck()は元々「呼び出しの
+    たびに001から採番」する作りだったため、①ノート一覧をクリアするたびに
+    改めて「まとめて習熟用として出力」すると、Anki側に既にある過去の
+    出力(001, 002, ...)と番号が重複してしまう問題があった。このカウンタで
+    出力するたびに続き番号を払い出す。
+
+    このカウンタ導入前から使っていたユーザー(exported_keysは既にあるが
+    next_numキーがまだ無い)向けに、初回は「これまでの累計出力件数+1」を
+    安全な初期値として使う(1バッチあたりの件数は累計出力件数を超えない
+    ため、過去にAnki側へ実際に出力された最大のNumと衝突しない)。"""
+    stock = load_stock(path)
+    if "next_num" in stock:
+        return stock["next_num"]
+    return len(stock.get("exported_keys", [])) + 1
+
+
+def advance_next_num(count: int, path: str = None) -> None:
+    """get_next_num()が返す次回開始番号をcount件分進める。mark_exportedと
+    同じタイミング(④のTTS音声生成が実際に成功した後)に呼ぶこと
+    (出力に至らなかった場合に番号を消費しないため)。"""
+    if count <= 0:
+        return
+    stock = load_stock(path)
+    current = stock.get("next_num")
+    if current is None:
+        current = len(stock.get("exported_keys", [])) + 1
+    stock["next_num"] = current + count
+    save_stock(stock, path)
+
+
 def mark_exported(items: list, path: str = None) -> None:
     """指定したitemたちのsource_keyを「出力済み」にし、pendingから取り除く。
     build_deck()でのapkg生成が実際に成功した後に呼ぶこと。"""

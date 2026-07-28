@@ -5,6 +5,7 @@ word_stock.json
 card_defs.json
 daily_pending_exclusions.json
 grammar_multi_stock.json
+tab_notes_state.json
 
 # サービスアカウントJSONキー等の認証情報(万一このフォルダに置かれても除外)
 *serviceaccount*.json
@@ -16,6 +17,8 @@ grammar_multi_stock.json
 *.apkg
 *.row_map.json
 backup/
+pending_decks/
+output/
 
 # Anki作業用コレクション(実行時に一時生成)
 *.anki2
