@@ -122,6 +122,8 @@ input, textarea {
 textarea { resize: vertical; font-size: .95rem; }
 input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
+#settings hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+
 button {
   padding: 10px 16px;
   font: inherit;

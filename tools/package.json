@@ -7,7 +7,8 @@
     "verify": "node verify_web_parity.mjs",
     "verify:grammar-multi": "node verify_grammar_multi_parity.mjs",
     "test:ui": "node test_web_ui.mjs",
-    "test": "node verify_web_parity.mjs && node verify_grammar_multi_parity.mjs && node test_web_ui.mjs"
+    "test:tts": "node test_tts.mjs",
+    "test": "node verify_web_parity.mjs && node verify_grammar_multi_parity.mjs && node test_web_ui.mjs && node test_tts.mjs"
   },
   "dependencies": {
     "jszip": "3.10.1",

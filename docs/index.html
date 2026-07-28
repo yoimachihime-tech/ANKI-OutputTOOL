@@ -41,6 +41,33 @@
   <div class="row">
     <button type="button" id="clear-key" class="danger">キーを消去</button>
   </div>
+
+  <hr>
+
+  <label for="tts-api-key">Cloud Text-to-Speech APIキー(任意)</label>
+  <p class="hint">
+    設定すると、.apkg 出力時に例文の音声を自動で合成して埋め込みます。空欄のままなら
+    従来どおり音声無しの .apkg を出力します。
+  </p>
+  <div class="row">
+    <input type="password" id="tts-api-key" autocomplete="off" spellcheck="false"
+           placeholder="Google Cloud で発行したCloud Text-to-Speech用のキー">
+    <button type="button" id="toggle-tts-key" class="ghost" title="表示/非表示">👁</button>
+  </div>
+
+  <label for="tts-voice">音声名</label>
+  <label for="tts-lang">言語コード</label>
+  <div class="row">
+    <input type="text" id="tts-voice" spellcheck="false" value="en-US-Chirp3-HD-Iapetus">
+    <input type="text" id="tts-lang" spellcheck="false" value="en-US" style="max-width:6em">
+  </div>
+
+  <label for="tts-volume-gain">音量ゲイン(dB、-20.0〜16.0、既定0)</label>
+  <input type="number" id="tts-volume-gain" value="0" min="-20" max="16" step="0.5">
+
+  <div class="row">
+    <button type="button" id="clear-tts-key" class="danger">TTSキーを消去</button>
+  </div>
 </section>
 
 <!-- ⚙設定を開いている間は、これより下(タブバー+各タブの中身)をまとめて
@@ -91,6 +118,7 @@ resilient | She remained resilient."></textarea>
     <p class="hint">
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       同じ単語のカードは既存のものが更新されるだけなので、学習履歴は失われません。
+      ⚙設定でTTS APIキーを設定していれば、例文の音声も自動で合成して埋め込みます。
     </p>
     <button type="button" id="word-export" class="primary">.apkg をダウンロード</button>
     <p id="word-export-status" class="status" role="status" aria-live="polite"></p>
@@ -135,6 +163,7 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       同じ問題(同じ質問から生成された同じ番目のカード)は既存のものが更新されるだけなので、
       学習履歴は失われません。
+      ⚙設定でTTS APIキーを設定していれば、例文の音声も自動で合成して埋め込みます。
     </p>
     <button type="button" id="ai-ask-export" class="primary">.apkg をダウンロード</button>
     <p id="ai-ask-export-status" class="status" role="status" aria-live="polite"></p>
@@ -174,6 +203,7 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       出力した内容はこの一覧から取り除かれます(番号の重複を避けるため、出力するたびに
       続き番号を採番します)。
+      ⚙設定でTTS APIキーを設定していれば、各例文の音声も自動で合成して埋め込みます。
     </p>
     <button type="button" id="shuujuku-export" class="primary">.apkg をダウンロード</button>
     <p id="shuujuku-export-status" class="status" role="status" aria-live="polite"></p>

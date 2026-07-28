@@ -59,15 +59,25 @@ function highlightExampleEn(enText, hlWords) {
 /**
  * render_item(item_num, item) と同一のHTMLを返す(Numのdeck-title行は含まない。
  * buildContentHtml()側で付与する)。
+ *
+ * @param {string[]|null} exampleAudioTags 例文ごとの`[sound:...]`タグ(2026-07-28
+ *   TTS埋め込み追加時に追加)。渡すとitem.examplesと同じ順序でex-en divの内側
+ *   (英文の直後)に`<br>`区切りで挿入する。tts_core.
+ *   generate_shuujuku_sentence_tts_for_collection()の
+ *   `<div class="ex-en">{inner_html}<br>[sound:{stored_name}]</div>`と同じ位置。
+ *   要素が空文字/未指定の例文には何も挿入しない。省略時(null)は従来どおり
+ *   音声無し(この関数の呼び出し元を増やしても既存の呼び出しは無変更で動く)。
  */
-function renderItem(itemNum, item) {
+function renderItem(itemNum, item, exampleAudioTags = null) {
   const numStr = String(itemNum).padStart(3, '0');
   const patternHtml = markPattern(esc(item.pattern));
   const glossHtml = item.meaning ? markPlaceholders(esc(item.meaning)) : '';
-  const exHtml = (item.examples || []).map((ex) => {
+  const exHtml = (item.examples || []).map((ex, i) => {
     const [en, jp, hlWords] = ex;
     const enHtml = highlightExampleEn(en, hlWords);
-    return `<div class="ex-row"><div class="ex-en">${enHtml}</div><div class="ex-jp">${esc(jp)}</div></div>`;
+    const audioTag = exampleAudioTags ? (exampleAudioTags[i] || '') : '';
+    const enWithAudio = audioTag ? `${enHtml}<br>${audioTag}` : enHtml;
+    return `<div class="ex-row"><div class="ex-en">${enWithAudio}</div><div class="ex-jp">${esc(jp)}</div></div>`;
   }).join('');
   const explBlock = item.expl
     ? `<div class="expl-box"><div class="expl-label">解説</div>${esc(item.expl)}</div>`
@@ -83,9 +93,10 @@ function renderItem(itemNum, item) {
 }
 
 /** build_deck() 内の content 組み立てと同一(deck-title行 + render_item)。 */
-export function buildContentHtml(itemNum, item, deckTitleLabel = '習熟用') {
+export function buildContentHtml(itemNum, item, deckTitleLabel = '習熟用', exampleAudioTags = null) {
   const numStr = String(itemNum).padStart(3, '0');
-  return `<div class="deck-title">${esc(deckTitleLabel)} &nbsp;No.${numStr}</div>` + renderItem(itemNum, item);
+  return `<div class="deck-title">${esc(deckTitleLabel)} &nbsp;No.${numStr}</div>`
+    + renderItem(itemNum, item, exampleAudioTags);
 }
 
 /**
@@ -96,15 +107,20 @@ export function buildContentHtml(itemNum, item, deckTitleLabel = '習熟用') {
  *
  * @param {object[]} items ストックの生item配列
  * @param {number} startNum 開始番号(getNextNum()で取得した値を渡す)
+ * @param {string[][]|null} audioTagsByItem itemsと同じ順序・同じ長さの配列で、
+ *   各要素はその item の examples に対応する audio tag 配列(renderItem()の
+ *   exampleAudioTagsにそのまま渡す。2026-07-28 TTS埋め込み追加時に追加)。
+ *   省略時(null)は従来どおり音声無し。
  * @returns {object[]} { num, content, source_kind, source_topic } の配列
  */
-export function buildFieldsReadyItems(items, startNum) {
+export function buildFieldsReadyItems(items, startNum, audioTagsByItem = null) {
   return items.map((item, offset) => {
     const idx = startNum + offset;
+    const tags = audioTagsByItem ? audioTagsByItem[offset] : null;
     return {
       ...item,
       num: String(idx).padStart(3, '0'),
-      content: buildContentHtml(idx, item),
+      content: buildContentHtml(idx, item, '習熟用', tags),
     };
   });
 }

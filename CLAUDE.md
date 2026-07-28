@@ -1301,11 +1301,66 @@ Web版フェーズ1の**単語カード生成・AIに質問(Grammar Multi)・習
 
 ### 未実施(次にやること、どれを先にやるかは片桐に確認すること)
 
-- Web版へのTTS音声の埋め込み。`docs/lib/apkg.js`の`buildApkg()`は
-  既に`media`引数を受け取れるようにしてあるので、Google Cloud TTSを
-  呼んで`Map<ファイル名, Uint8Array>`を渡せばよい
 - DailyConversation(シート連携)のWeb対応。サービスアカウント鍵は
   ブラウザに置けないため、OAuth 2.0 (PKCE) が必要(詳細は下記Web版の項)
+
+### Web版TTS音声の埋め込み(2026-07-28実装、片桐による実機確認・push待ち)
+
+`docs/lib/tts.js`(新設)がGoogle Cloud Text-to-SpeechをブラウザからCall
+する(`tts_core.py`の`call_google_tts`/`split_into_sentences`/
+`_classify_tts_error`の移植)。⚙設定に「Cloud Text-to-Speech APIキー」欄を
+追加し、**設定されている場合のみ**、単語/AIに質問/習熟用(音読)いずれの
+`.apkg`出力時にも自動で音声を合成して埋め込む(未設定なら従来どおり音声
+無しで出力する、他のAI呼び出しと同じ「未設定なら黙ってスキップ」方針)。
+
+- **デスクトップ版との方式の違い**: デスクトップ版が持つ「文を無音で結合し
+  1つの音声にする」方式(`synthesize_with_gaps`、lameencでMP3再エンコード
+  が必要)はブラウザに同等のエンコーダが無いため実装せず、Web版は常に
+  「文ごとに個別MP3を合成し`<br>`区切りで並べる」方式(デスクトップ版の
+  `per_sentence=True`相当)のみ。文と文の間の無音間隔調整は未対応。
+- 対象フィールドはデスクトップ版の既定選択("Answer"+"Example"がある場合は
+  その2つ、単語のように"Answer"が無ければ"Example"のみ)と揃えた
+  (`app.js`の`TTS_FIELD_KEYS`)。習熟用(音読)だけは例文(`ex-en`)ごとに
+  個別音声を合成し、各例文の直下に挿入する(デスクトップ版の
+  `generate_shuujuku_sentence_tts_for_collection()`と同じ挿入位置。
+  `docs/lib/shuujuku.js`の`renderItem`/`buildContentHtml`/
+  `buildFieldsReadyItems`に`exampleAudioTags`引数を追加して対応、省略時は
+  従来どおり音声無しで動くため既存呼び出しは無変更)。
+- ストックの生item自体は変更せず、`buildApkg()`に渡す直前のコピーにのみ
+  音声タグを追記する(`app.js`の`embedTtsAudioIntoItems()`/
+  `embedShuujukuTtsAudio()`。再エクスポート時に二重タグが付くのを防ぐため)。
+- 詳細・音声名/言語コードの既定値は`docs/README.md`の「TTS音声の自動埋め込み」
+  節を参照。
+- **テスト**: `tools/test_tts.mjs`(新設、`npm run test:tts`)が
+  `lib/tts.js`単体(文分割・エラー分類判定・429/5xx/403の挙動・
+  `synthesizeFieldWithTags`/`synthesizeExampleAudioTags`の音声タグ埋め込み)を
+  fetchモックで検証、**このセッションで実行し全項目成功を確認済み**。
+  既存の`tools/test_web_ui.mjs`(TTS APIキー未設定のまま単語/AIに質問/習熟用の
+  通しフローを検証するテスト)も、shuujuku.jsの引数追加(`exampleAudioTags`/
+  `audioTagsByItem`はいずれも省略時`null`で従来動作を維持)後に**再実行し
+  従来どおり全項目成功することを確認済み**(TTS未設定時に既存フローへの
+  影響が無いことの裏付け)。
+  **`verify_web_parity.mjs`/`verify_grammar_multi_parity.mjs`は実行できな
+  かった**(`execFileSync('python3', ...)`とハードコードされているが、この
+  Claude Code検証環境には`python3`という名前の実行ファイルが無く
+  `C:\Python314\python.exe`のみだったため。`C:\Python314\`にも`python3.exe`
+  は存在しない。`.cmd`シムを一時PATHに追加しても解決しなかった原因は未特定)。
+  これはword/grammar_multiのapkg生成ロジック自体(`apkg.js`/`guid.js`)を
+  今回変更していないため実害は無いはずだが、**このverifyスクリプトが
+  片桐の実機でも同じ理由で動いていない可能性がある**(このリポジトリの
+  過去のコミットメッセージ等から少なくとも一度は動いた実績があるはずだが、
+  今回未確認)。片桐の実機で`cd tools && npm run verify`単体を試し、
+  `python3`が見つからないエラーが出る場合は、`verify_web_parity.mjs`/
+  `verify_grammar_multi_parity.mjs`の`'python3'`を実際に使えるPythonコマンド
+  (例: `'python'`または`C:\Python314\python.exe`のフルパス)に直す対応が
+  必要(Google Drive同期フォルダ配下のためnode_modules初回アクセスが遅く、
+  このセッションでは`npm run test:ui`/`test:tts`単体でも数分かかった)。
+  `tools/test_web_ui.mjs`にはTTS APIキーを設定した場合の通しテスト
+  (実際に音声タグがapkgに埋め込まれるか)はまだ追加していない
+  (`test_tts.mjs`側でfetchモックによる音声埋め込みの単体検証は済み)。
+- **未検証**: 実際のCloud Text-to-Speech APIキーでの動作確認(音声が正しく
+  合成されAnkiで再生できるか)、および音量ゲイン・音声名の既定値が
+  スマホ実機で妥当か。
 
 ### Gemini APIキーの運用に関する注意(2026-07-28に判明)
 

@@ -14,6 +14,7 @@
 import { generateVocabCard, generateGrammarMultiItems, generateShuujukuItem, listModels, GeminiError } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
 import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
+import { synthesizeFieldWithTags, synthesizeExampleAudioTags } from './lib/tts.js';
 
 const STORAGE = {
   apiKey: 'anki_tool_gemini_api_key',
@@ -21,6 +22,20 @@ const STORAGE = {
   wordStock: 'anki_tool_word_stock',
   aiAskStock: 'anki_tool_ai_ask_stock',
   shuujukuStock: 'anki_tool_shuujuku_stock',
+  ttsApiKey: 'anki_tool_tts_api_key',
+  ttsVoice: 'anki_tool_tts_voice',
+  ttsLang: 'anki_tool_tts_lang',
+  ttsVolumeGainDb: 'anki_tool_tts_volume_gain_db',
+};
+
+/**
+ * TTS埋め込み対象フィールド(item_key)。tts_gui.on_notetype_selected()の
+ * デフォルト候補選択("Answer"/"Example"がある場合はその2つ、単語のように
+ * Answerが無ければExampleのみ)と揃えてある。
+ */
+const TTS_FIELD_KEYS = {
+  word: ['example'],
+  ai_ask: ['answer', 'example'],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -46,6 +61,10 @@ async function init() {
   bindEvents();
   $('api-key').value = localStorage.getItem(STORAGE.apiKey) || '';
   $('model').value = localStorage.getItem(STORAGE.model) || 'gemini-2.0-flash';
+  $('tts-api-key').value = localStorage.getItem(STORAGE.ttsApiKey) || '';
+  $('tts-voice').value = localStorage.getItem(STORAGE.ttsVoice) || $('tts-voice').value;
+  $('tts-lang').value = localStorage.getItem(STORAGE.ttsLang) || $('tts-lang').value;
+  $('tts-volume-gain').value = localStorage.getItem(STORAGE.ttsVolumeGainDb) || $('tts-volume-gain').value;
   renderWordStock();
   renderAiAskStock();
   renderShuujukuStock();
@@ -104,6 +123,25 @@ function bindEvents() {
   });
   $('clear-key').addEventListener('click', onClearKey);
   $('fetch-models').addEventListener('click', onFetchModels);
+
+  // TTS設定(全タブ共通)
+  $('toggle-tts-key').addEventListener('click', () => {
+    const el = $('tts-api-key');
+    el.type = el.type === 'password' ? 'text' : 'password';
+  });
+  $('tts-api-key').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.ttsApiKey, e.target.value.trim());
+  });
+  $('tts-voice').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.ttsVoice, e.target.value.trim());
+  });
+  $('tts-lang').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.ttsLang, e.target.value.trim());
+  });
+  $('tts-volume-gain').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.ttsVolumeGainDb, e.target.value.trim());
+  });
+  $('clear-tts-key').addEventListener('click', onClearTtsKey);
 
   // 単語タブ
   $('word-generate').addEventListener('click', onWordGenerate);
@@ -207,6 +245,86 @@ async function onFetchModels() {
   } finally {
     btn.disabled = false;
   }
+}
+
+function onClearTtsKey() {
+  if (!confirm('保存したTTS APIキーをこのブラウザから消去します。よろしいですか？')) return;
+  localStorage.removeItem(STORAGE.ttsApiKey);
+  $('tts-api-key').value = '';
+}
+
+// ---------------------------------------------------------------------------
+// TTS音声の埋め込み(2026-07-28追加)
+// 現在の設定欄からCloud Text-to-SpeechのAPIキー等を読み、apkg出力の直前に
+// 音声を合成して[sound:...]タグを埋め込む。TTS APIキーが空なら何もしない
+// (従来どおり音声無しのapkgを出力する。他のAI呼び出しと同じ「未設定なら
+// 黙ってスキップ」方針)。
+// ---------------------------------------------------------------------------
+
+function getTtsOptions() {
+  const apiKey = $('tts-api-key').value.trim();
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    voiceName: $('tts-voice').value.trim() || 'en-US-Chirp3-HD-Iapetus',
+    languageCode: $('tts-lang').value.trim() || 'en-US',
+    volumeGainDb: Number($('tts-volume-gain').value) || 0,
+  };
+}
+
+/**
+ * 単語/AIに質問タブ用: itemsのコピーを作り、fieldKeysで指定したフィールド
+ * (item_key)に音声タグを追記する。元のストック(items引数)は変更しない
+ * (再エクスポート時に二重にタグが付くのを防ぐため、buildApkg直前の
+ * 一時的なコピーに対してのみ行う)。
+ *
+ * @returns {Promise<{items: object[], media: Map<string, Uint8Array>}>}
+ */
+async function embedTtsAudioIntoItems(items, fieldKeys, tabKey, status) {
+  const media = new Map();
+  const opts = getTtsOptions();
+  if (!opts || fieldKeys.length === 0) return { items, media };
+
+  const out = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const item = { ...items[i] };
+    for (const key of fieldKeys) {
+      if (!item[key]) continue;
+      showLoading(status, `音声を生成中... (${i + 1}/${items.length})`);
+      item[key] = await synthesizeFieldWithTags(
+        item[key],
+        { ...opts, filenamePrefix: `tts_${tabKey}_${i}_${key}` },
+        media,
+      );
+    }
+    out.push(item);
+  }
+  return { items: out, media };
+}
+
+/**
+ * 習熟用(音読)タブ用: 各itemのexamplesごとに音声タグを合成する。
+ * buildFieldsReadyItems()のaudioTagsByItem引数にそのまま渡せる形で返す。
+ *
+ * @returns {Promise<{audioTagsByItem: string[][]|null, media: Map<string, Uint8Array>}>}
+ */
+async function embedShuujukuTtsAudio(items, status) {
+  const media = new Map();
+  const opts = getTtsOptions();
+  if (!opts) return { audioTagsByItem: null, media };
+
+  const audioTagsByItem = [];
+  for (let i = 0; i < items.length; i += 1) {
+    showLoading(status, `音声を生成中... (${i + 1}/${items.length})`);
+    const tags = await synthesizeExampleAudioTags(
+      items[i].examples || [],
+      opts,
+      media,
+      `tts_shuujuku_${i}`,
+    );
+    audioTagsByItem.push(tags);
+  }
+  return { audioTagsByItem, media };
 }
 
 // ---------------------------------------------------------------------------
@@ -499,8 +617,11 @@ async function onExportShuujuku() {
     // 避けるため)。そのためbuildFieldsReadyItems()でNum/Contentを確定させて
     // から渡す(ストックの生item自体はNum/Contentを持たない)。
     const startNum = getNextNum();
-    const readyItems = buildFieldsReadyItems(shuujukuStock, startNum);
-    const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items: readyItems });
+    // TTS APIキーが設定されていれば、例文ごとに音声を合成してContentに
+    // 埋め込む(未設定なら従来どおり音声無し)。
+    const { audioTagsByItem, media } = await embedShuujukuTtsAudio(shuujukuStock, status);
+    const readyItems = buildFieldsReadyItems(shuujukuStock, startNum, audioTagsByItem);
+    const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items: readyItems, media });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `shuujuku_${stamp}.apkg`);
 
@@ -669,10 +790,17 @@ async function onExport(tabKey) {
   btn.disabled = true;
   try {
     setStatus(status, '.apkg を生成中...');
+    // TTS APIキーが設定されていれば、対象フィールド(単語:Example、
+    // AIに質問:Answer+Example)に音声を合成して埋め込む(未設定なら
+    // 従来どおり音声無し。cfg.stock自体は変更しない、下記embedTtsAudioIntoItems参照)。
+    const { items, media } = await embedTtsAudioIntoItems(
+      cfg.stock, TTS_FIELD_KEYS[tabKey] || [], tabKey, status,
+    );
     const blob = await buildApkg({
       cardDef,
       ankiSchema: shared.ankiSchema,
-      items: cfg.stock,
+      items,
+      media,
     });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `${tabKey}_${stamp}.apkg`);

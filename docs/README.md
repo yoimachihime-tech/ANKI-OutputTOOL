@@ -5,7 +5,8 @@ AnkiMobile / AnkiDroid に取り込むための静的Webページ。サーバー
 すべてブラウザ内で完結する。
 
 **対応機能**: 単語カード生成 / AIに質問(Grammar Multi、3問生成 + 習熟用4問目) /
-習熟用(音読)
+習熟用(音読) / TTS音声の自動埋め込み(Cloud Text-to-Speech APIキーを設定した
+場合のみ)
 
 ## 構成
 
@@ -16,8 +17,9 @@ docs/
   app.js                UI・タブ切り替え・ストック管理(localStorage)
   lib/
     gemini.js           Gemini API 呼び出し(gemini_client.py の Web 版)
+    tts.js               Cloud Text-to-Speech 呼び出し + 文分割(tts_core.py の Web 版)
     guid.js             genanki.guid_for() と同一の guid 生成
-    apkg.js             .apkg の組み立て(sql.js + JSZip)
+    apkg.js             .apkg の組み立て(sql.js + JSZip、mediaも埋め込み可能)
     shuujuku.js          習熟用(音読)のContentフィールド組み立て + 続き番号管理
                          (build_shuujuku_v1.py の Web 版)
   shared/               ← デスクトップ版と共有する資産(自動生成あり)
@@ -54,6 +56,36 @@ python -m http.server 8000
 
 初回に「⚙ 設定」から Gemini API キーを入力する。キーはこのブラウザの
 localStorage にのみ保存され、どこにも送信されない。
+
+## TTS音声の自動埋め込み(2026-07-28追加)
+
+「⚙ 設定」の「Cloud Text-to-Speech APIキー」を設定すると、各タブの `.apkg`
+出力時に対象フィールドの音声を自動で合成し、`[sound:...]`タグを埋め込む。
+**空欄のままなら従来どおり音声無しの `.apkg` を出力する**(他のAI呼び出しと
+同じ「未設定なら黙ってスキップ」方針)。
+
+- 対象フィールド: 単語は `Example`、AIに質問(Grammar Multi)は `Answer` +
+  `Example`(デスクトップ版 `tts_gui.on_notetype_selected()` の既定選択と
+  揃えてある)。習熟用(音読)は `Content` 内の例文(`ex-en`)ごとに個別の音声を
+  合成し、各例文の直下に埋め込む(デスクトップ版の
+  `generate_shuujuku_sentence_tts_for_collection()` と同じ挿入位置)。
+- **デスクトップ版との方式の違い**: デスクトップ版は「文を無音で結合して
+  1つの音声にする」方式(`synthesize_with_gaps`、lameencでMP3再エンコードが
+  必要)も持つが、ブラウザには同等のMP3エンコーダが無いため、Web版は常に
+  「文ごとに個別のMP3を合成し、`<br>`区切りで並べる」方式(デスクトップ版の
+  `per_sentence=True`相当)のみを実装している。文と文の間の無音間隔の調整は
+  Web版では未対応(今後の課題)。
+- 音声名・言語コードの既定値はデスクトップ版の既定(`en-US-Chirp3-HD-Iapetus` /
+  `en-US`)と同じ。音量ゲイン(dB)も設定できる(Google Cloud TTSの
+  `audioConfig.volumeGainDb`にそのまま渡す)。
+- **Gemini用とCloud Text-to-Speech用でAPIキーを分ける必要がある**(下記
+  「注意」参照)。
+- 実装は `lib/tts.js`(Cloud Text-to-Speech 呼び出し・文分割・エラー分類。
+  `tts_core.py`の`call_google_tts`/`split_into_sentences`/
+  `_classify_tts_error`に対応)と、`app.js`の`embedTtsAudioIntoItems()`
+  (単語・AIに質問)/`embedShuujukuTtsAudio()`(習熟用)が担う。どちらも
+  ストックの生item自体は変更せず、`buildApkg()`に渡す直前のコピーにのみ
+  音声タグを追記する(再エクスポート時に二重にタグが付くのを防ぐため)。
 
 ## 共有ファイルの再生成
 
@@ -109,6 +141,7 @@ npm test        # 下記3つをまとめて実行
 | `npm run verify` | 同じ入力からデスクトップ版(genanki)と Web 版それぞれで `.apkg` を作り(word・grammar_multi・shuujuku の3カード種別)、guid・フィールド・カード構成・ノートタイプ定義を突き合わせる |
 | `npm run verify:grammar-multi` | Grammar Multi 固有の後処理(日本語指示文と英文の間の改行整形、選択問題の正解記号 `(B)` の付与、choices/whynot/example の HTML 化)が Python 版と一致するかを、生の Gemini 応答 JSON を固定して突き合わせる |
 | `npm run test:ui` | jsdom 上で `index.html` + `app.js` を実際に動かし、単語タブ・AIに質問タブ(3問+習熟用4問目)・習熟用(音読)タブそれぞれで 生成 → 一覧 → プレビュー → apkg 出力 → 削除 の通し動作を確認する(Gemini API はモックするのでキー・割り当てを消費しない) |
+| `npm run test:tts` | `lib/tts.js`(Cloud Text-to-Speech 呼び出し・文分割・エラー分類・音声埋め込み)を fetch モックで単体テストする(Text-to-Speech API キー・割り当ては消費しない) |
 
 `npm run test:ui` は Gemini を呼ばないため、**実際の Gemini が期待どおりの JSON を
 返すか**は確認できない。そこだけは実機での確認が必要。
