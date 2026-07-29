@@ -1162,7 +1162,21 @@ async function onDailyCorrect() {
     // デスクトップ版と同じく、追記に成功したらそのまま③の読み込みまで連鎖させる
     // (確認導線が上下バラバラになるのを避けるため)。
     await refreshDailyPending(null);
-    setStatus(status, `${newIds.length} 件をシートに追加し、③の一覧を更新しました。`);
+
+    // デスクトップ版の_generate_shuujuku_candidates_from_rowsと同じく、今回
+    // シートに追記した行(「誤りなし」を除く)ごとに習熟用(音読)候補を自動生成
+    // する(2026-07-29、片桐の指示で④の.apkgダウンロード時からこのタイミング
+    // へ変更。デスクトップ版は直接入力→①への自動連鎖でこのタイミングに
+    // 相当する挙動になっており、それに揃えた。「誤りなし」の行には
+    // 抽出すべき「誤りの背景にある文法パターン」が無いため対象外)。
+    const rowsForShuujuku = corrections
+      .map((c, i) => ({
+        id: newIds[i], original: c.original, corrected: c.corrected, explanation: c.explanation,
+      }))
+      .filter((_, i) => corrections[i].category !== '誤りなし');
+    const shuujukuNote = await generateShuujukuCandidatesFromRows(rowsForShuujuku, status);
+
+    setStatus(status, `${newIds.length} 件をシートに追加し、③の一覧を更新しました。${shuujukuNote}`);
   } catch (e) {
     hideLoading(status);
     setStatus(status, e.message, true);
@@ -1221,17 +1235,20 @@ function onDailyResetExported() {
 }
 
 /**
- * DailyConversationの「④ .apkgをダウンロード」で実際にカード化された行
- * それぞれについて、Gemini APIで習熟用(音読)候補を自動生成し習熟用ストックへ
- * 追加する(デスクトップ版の`_generate_shuujuku_candidates_from_rows`と同じ
- * 挙動。デスクトップ版は「①シートから読み込む」でデッキを組み立てる
- * 都度これを呼ぶが、Web版はシート読み込みとデッキ組み立てが同じ操作
- * (④の.apkgダウンロード)に統合されているため、onDailyExport()から呼ぶ)。
+ * DailyConversationで新たにシートへ追記した行(「誤りなし」を除く)それぞれ
+ * について、Gemini APIで習熟用(音読)候補を自動生成し習熟用ストックへ追加
+ * する(デスクトップ版の`_generate_shuujuku_candidates_from_rows`に対応)。
+ * `onDailyCorrect()`(②添削→シート追記の成功直後)から呼ぶ(2026-07-29、
+ * 片桐の指示で④の.apkgダウンロード時からこのタイミングへ変更。デスクトップ版は
+ * 直接入力→①シートから読み込むへの自動連鎖でこのタイミングに相当する挙動に
+ * なっており、それに揃えた。「AIに質問」タブの4問目生成(`onAiAskGenerate()`)が
+ * 生成直後に習熟用ストックへ追加するのと同じ即時性)。
  * Gemini APIキー未設定なら黙ってスキップする。この処理の失敗はdaily側の
- * .apkg出力自体を無効にしない(非ブロッキング。onAiAskGenerateの4問目生成と
+ * シート追記自体を無効にしない(非ブロッキング。onAiAskGenerateの4問目生成と
  * 同じ考え方)。重複していても常に追加する(shuujukuDuplicateIndices()が
  * source_topic基準で一覧に⚠表示する)。
- * @param {object[]} rows dailyconv.processSheetRows() が返す出力対象行
+ * @param {object[]} rows 今回シートへ追記した行({id, original, corrected,
+ *   explanation}、「誤りなし」除外済み)
  * @param {HTMLElement} status 進捗表示先
  * @returns {Promise<string>} 呼び出し元のstatusメッセージに追記する短いメモ
  */
@@ -1315,10 +1332,6 @@ async function onDailyExport() {
 
     let note = '';
     if (duplicateIds.length > 0) note += `\nID重複の ${duplicateIds.length} 件は除外しました。`;
-
-    // デスクトップ版と同じく、実際にカード化した行ごとに習熟用(音読)候補も
-    // 自動生成する。失敗してもdaily側の出力自体は成功として扱う(非ブロッキング)。
-    note += await generateShuujukuCandidatesFromRows(rows, status);
 
     // 「Anki出力済み」のマークは、.apkg の生成に**実際に成功してから**行う
     // (デスクトップ版と同じ2段階設計。失敗した行を出力済みにしないため)。

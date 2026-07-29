@@ -238,6 +238,14 @@ dlg.close = () => { dialogOpened = false; };
 // 切り替える方が単純で確実)。
 let geminiMode = 'word';
 let geminiCalls = 0;
+// 添削(correctEnglishText)呼び出しだけを数える別カウンタ(2026-07-29追加)。
+// onDailyCorrect()が添削の後に続けて習熟用(音読)候補生成も呼ぶようになり、
+// geminiCallsの値だけでは「添削が正確に1回だけ呼ばれたか」を、両呼び出しが
+// 同一tick内で連続して起こりうる(pollingでの中間状態観測がレースする)ため
+// 判定できなくなった。添削のリクエストボディだけが`system_instruction`
+// (構造化出力/JSON Mode)を含む(docs/lib/gemini.jsのcorrectEnglishText参照)
+// ことを目印に区別する。
+let correctionCalls = 0;
 let sheetsCalls = 0;
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url);
@@ -248,6 +256,8 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (u.includes('generativelanguage.googleapis.com')) {
     geminiCalls += 1;
+    const isCorrectionRequest = typeof init.body === 'string' && init.body.includes('system_instruction');
+    if (isCorrectionRequest) correctionCalls += 1;
     // grammar_multi モードでは、onAiAskGenerate()が「3問生成」の後に続けて
     // 「習熟用4問目」も生成するため、1回目と2回目で別の応答を返す必要がある
     // (呼び出し順は実装上always 3問→4問目の順で固定)。
@@ -255,9 +265,11 @@ globalThis.fetch = async (url, init = {}) => {
     if (geminiMode === 'grammar_multi') {
       text = geminiCalls === 1 ? JSON.stringify(FAKE_GRAMMAR_MULTI_NOTES) : JSON.stringify(FAKE_SHUUJUKU_ITEM);
     } else if (geminiMode === 'correction') {
-      text = JSON.stringify(FAKE_CORRECTIONS);
-    } else if (geminiMode === 'daily_shuujuku') {
-      text = JSON.stringify(FAKE_SHUUJUKU_FROM_ROW);
+      // onDailyCorrect()は添削の後、続けて追記した行(「誤りなし」を除く)
+      // ごとに習熟用(音読)候補も生成する。添削リクエストにだけ
+      // system_instructionが付くので、それで判別する(呼び出し順のカウントに
+      // 依存しない。連続する2呼び出しが同一tick内で起こりレースするため)。
+      text = isCorrectionRequest ? JSON.stringify(FAKE_CORRECTIONS) : JSON.stringify(FAKE_SHUUJUKU_FROM_ROW);
     } else {
       text = JSON.stringify(FAKE_WORD_CARD);
     }
@@ -814,13 +826,16 @@ if (tokenRequests === 1 && $('daily-auth-status').textContent.includes('ログ�
 console.log('\n[17] DailyConversation: 英文入力 → AI添削 → シートへ追記');
 geminiMode = 'correction';
 geminiCalls = 0;
+correctionCalls = 0;
 $('daily-input').value = 'I go to the park yesterday.';
 $('daily-correct').click();
-for (let i = 0; i < 200 && geminiCalls < 1; i += 1) await sleep(50);
+// onDailyCorrect()は添削の後、続けて追記した行(今回は1件)ごとに習熟用
+// (音読)候補も生成する(2026-07-29追加)ため、合計2回のGemini呼び出しを待つ。
+for (let i = 0; i < 200 && geminiCalls < 2; i += 1) await sleep(50);
 await sleep(300);
 
-if (geminiCalls === 1) ok('Gemini を1回だけ呼んだ(複数文はGemini側が分割するため)');
-else fail(`Gemini 呼び出し回数: ${geminiCalls}(期待:1)`);
+if (correctionCalls === 1) ok('Gemini の添削呼び出しは1回だけ(複数文はGemini側が分割するため)');
+else fail(`添削のGemini呼び出し回数: ${correctionCalls}(期待:1)`);
 
 if (sheetRows.length === 4) {
   const added = sheetRows[3];
@@ -857,6 +872,23 @@ if ($('daily-pending-list').textContent.includes('誤りなし(出力対象外)'
   fail('「誤りなし」の行にバッジが付いていない');
 }
 
+// デスクトップ版の_generate_shuujuku_candidates_from_rowsと同じく、②の
+// 添削→シート追記の成功直後(④の.apkgダウンロードを待たず)に習熟用(音読)
+// 候補が自動生成されることを確認する(2026-07-29追加)。「誤りなし」は
+// 対象外なので、今回追記した1行(カテゴリ「文法」)についてのみ生成される。
+const newRowId = sheetRows[3][0];
+const shuujukuFromDaily = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (shuujukuFromDaily.length === 1 && shuujukuFromDaily[0].pattern === FAKE_SHUUJUKU_FROM_ROW.pattern) {
+  ok('添削→シート追記の成功直後に習熟用(音読)ストックへ1件追加された(「誤りなし」は対象外)');
+} else {
+  fail(`習熟用ストック: ${JSON.stringify(shuujukuFromDaily)}`);
+}
+if (shuujukuFromDaily[0]?.source_kind === 'dailyconv' && shuujukuFromDaily[0]?.source_topic === newRowId) {
+  ok('習熟用アイテムのsource_kind/source_topicが今回追記した行のID由来で正しく付与されている');
+} else {
+  fail(`習熟用アイテムのsource_kind/source_topic: ${JSON.stringify([shuujukuFromDaily[0]?.source_kind, shuujukuFromDaily[0]?.source_topic])}(期待: ['dailyconv', ${JSON.stringify(newRowId)}])`);
+}
+
 console.log('\n[18] DailyConversation: カードプレビュー');
 $('daily-pending-list').querySelector('button').click();
 await sleep(100);
@@ -873,8 +905,6 @@ if (dialogOpened) {
 dlg.close();
 
 console.log('\n[19] DailyConversation: .apkg の書き出し → シートの「Anki出力済み」マーク');
-geminiMode = 'daily_shuujuku';
-geminiCalls = 0;
 downloaded = null;
 $('daily-export').click();
 for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
@@ -889,29 +919,6 @@ if (!downloaded) {
   });
 }
 await sleep(300);
-
-// デスクトップ版の_generate_shuujuku_candidates_from_rowsと同じく、実際に
-// カード化した行(2件)ごとに習熟用(音読)候補が自動生成されることを確認する
-// (2026-07-29追加)。習熟用ストックは[14]の出力成功時に空になっているため、
-// ここで増える2件がそのまま新規分になる。
-if (geminiCalls === 2) {
-  ok('カード化された行の数(2件)だけGeminiを呼んで習熟用(音読)候補を生成した');
-} else {
-  fail(`習熟用候補生成のGemini呼び出し回数: ${geminiCalls}(期待:2)`);
-}
-const shuujukuFromDaily = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
-if (shuujukuFromDaily.length === 2 && shuujukuFromDaily.every((it) => it.pattern === FAKE_SHUUJUKU_FROM_ROW.pattern)) {
-  ok('DailyConversationの出力行から習熟用(音読)ストックに2件追加された');
-} else {
-  fail(`習熟用ストック: ${JSON.stringify(shuujukuFromDaily)}`);
-}
-const dailyShuujukuTopics = new Set(shuujukuFromDaily.map((it) => it.source_topic));
-if (shuujukuFromDaily.every((it) => it.source_kind === 'dailyconv')
-  && dailyShuujukuTopics.size === 2 && !dailyShuujukuTopics.has('')) {
-  ok('習熟用アイテムのsource_kind/source_topicがシートの行ID由来で正しく付与されている');
-} else {
-  fail(`習熟用アイテムのsource_kind/source_topic: ${JSON.stringify(shuujukuFromDaily.map((it) => [it.source_kind, it.source_topic]))}`);
-}
 
 const markedIds = sheetRows.filter((r) => r[EXPORTED_COL]).map((r) => r[0]);
 if (markedIds.includes('id-a') && !markedIds.includes('id-b') && markedIds.length === 3) {

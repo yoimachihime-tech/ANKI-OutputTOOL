@@ -1493,30 +1493,39 @@ DailyConversationいずれの
   `shuujuku_prompt.txt`(「AIに質問」タブの4問目用、質問文ベース)とは
   プレースホルダが異なる別ファイル(`{{original}}`/`{{corrected}}`/
   `{{explanation}}`、行ベース)であり、混同しないこと。
-- **トリガーのタイミングがデスクトップ版と異なる**: デスクトップ版は
-  「①シートから読み込む→デッキ組み立て」の時点(TTS生成・apkg出力より前)で
-  発火するが、Web版はシート読み込みとデッキ組み立てが同じ操作
-  (④の`.apkgをダウンロード`、`onDailyExport()`)に統合されているため、
-  Web版はそこに合わせて`onDailyExport()`内、`dailyconv.processSheetRows()`で
-  実際にapkgへ含めた行(`rows`)に対して呼ぶ
-  (`generateShuujukuCandidatesFromRows(rows, status)`、`app.js`)。
-  「誤りなし」の行・ID重複行は元々デッキに含まれないため、習熟用候補も
-  自動的に生成対象外になる(デスクトップ版と同じ絞り込み)。
+- **トリガーのタイミング(2026-07-29、実装当日中に片桐の指示で変更)**:
+  当初は④の`.apkgをダウンロード`(`onDailyExport()`)時点で発火する実装に
+  していたが、「AIに質問タブは生成させた時点で習熟用タブに飛ばしている」
+  ことと足並みを揃えたいとの指示を受け、**②「AIに添削させてシートに追加」
+  (`onDailyCorrect()`)の成功直後**に変更した。これはデスクトップ版の
+  実質的な挙動(直接入力→①シートから読み込むへの自動連鎖)にも一致する
+  タイミングであり、「AIに質問」タブの4問目生成(`onAiAskGenerate()`が
+  3問生成の直後に習熟用4問目も生成する)と同じ即時性になった。
+  `generateShuujukuCandidatesFromRows(rows, status)`(`app.js`)は
+  `onDailyCorrect()`内、`correctEnglishText()`→`appendCorrectionRows()`→
+  `refreshDailyPending()`の後に呼ばれ、対象行は「今回シートへ追記した行
+  (`corrections`と`appendCorrectionRows()`が返す`newIds`をゼップして
+  組み立てる)のうち`category !== '誤りなし'`のもの」(誤りが無ければ
+  抽出すべき文法パターンが無いため)。`onDailyExport()`側の呼び出しは
+  削除済み(重複呼び出しにしない。1つのイベントでのみ発火する設計)。
 - **非ブロッキング**: Gemini APIキー未設定、または行ごとの生成失敗があっても
-  daily側の`.apkg`出力自体は成功として扱う(「AIに質問」タブの4問目生成と
-  同じ設計)。成功件数・失敗件数はステータス文言に追記される
-  (messageboxではなくWeb版の通常のstatus表示に統一)。
+  シート追記自体は成功として扱う(「AIに質問」タブの4問目生成と同じ設計)。
+  成功件数・失敗件数はステータス文言に追記される。
 - **重複の扱いはデスクトップ版と同じく「常に追加、一覧で警告表示」方式**:
-  同じ行から複数回(再エクスポート等で)生成しても黙ってスキップしない。
   `app.js`の`shuujukuDuplicateIndices()`(source_topic基準)が既存の仕組みで
   検出・⚠表示する(pattern類似度によるファジー重複検出はデスクトップ版のみで
   Web版には元々無く、これは今回のスコープ外)。
-- **テスト**: `tools/test_web_ui.mjs`のセクション[19]に、DailyConversationの
-  `.apkg`出力時にカード化された行の数だけGeminiが呼ばれ、習熟用(音読)
-  ストックに`source_kind: 'dailyconv'` / `source_topic: 行ID`を持つ項目が
-  追加されることを検証するアサーションを追加した(`FAKE_SHUUJUKU_FROM_ROW`・
-  `geminiMode = 'daily_shuujuku'`)。`npm test`(6本)全てが通過することを
-  確認済み(2026-07-29)。
+- **テスト**: `tools/test_web_ui.mjs`のセクション[17](②添削→シート追記)に、
+  シート追記成功直後にGeminiが呼ばれ、習熟用(音読)ストックに
+  `source_kind: 'dailyconv'` / `source_topic: 追記した行のID`を持つ項目が
+  追加されることを検証するアサーションを追加した(`FAKE_SHUUJUKU_FROM_ROW`)。
+  **添削(`correctEnglishText`)と習熟用候補生成(`callGemini`)は同一tick内で
+  連続して発火しうるため、`geminiCalls`(全体の呼び出し回数)を経過観察する
+  poll中に「添削は1回だけ」を検証しようとすると値のスナップショットが
+  レースする(実際に一度このレースで誤って失敗させてしまった)。添削の
+  リクエストボディだけが`system_instruction`(構造化出力)を含むことを目印に
+  `correctionCalls`という別カウンタで区別するようにした**。`npm test`
+  (6本)全てが通過することを確認済み(2026-07-29)。
 
 ### Web版のDailyConversation(スプレッドシート連携、2026-07-29実装)
 

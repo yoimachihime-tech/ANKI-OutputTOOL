@@ -45,11 +45,12 @@ docs/
 - 「AIに質問」タブで質問を送信すると、Grammar Multiの3問に加えて、同じ質問の
   背景にある文法パターンを音読練習用にまとめた4問目が自動的に追加される
   (`app.js`の`onAiAskGenerate()`を参照)。
-- DailyConversationタブで「④ .apkgをダウンロード」すると、実際にカード化
-  された行それぞれについて、その添削・解説の背景にある文法パターンを
-  まとめた候補が自動的に追加される(2026-07-29追加、`app.js`の
-  `generateShuujukuCandidatesFromRows()`を参照。デスクトップ版の
-  `_generate_shuujuku_candidates_from_rows`に対応)。
+- DailyConversationタブで「② AIに添削させてシートに追加」に成功すると、
+  今回シートへ追記した行(「誤りなし」を除く)それぞれについて、その添削・
+  解説の背景にある文法パターンをまとめた候補が自動的に追加される
+  (2026-07-29追加、`app.js`の`generateShuujukuCandidatesFromRows()`を参照。
+  デスクトップ版の`_generate_shuujuku_candidates_from_rows`に対応。「AIに
+  質問」タブの4問目と同じく生成直後に追加される即時性を持たせてある)。
 
 `shared/` に置いているのは、GitHub Pages が `docs/` 配下しか配信しないため。
 リポジトリ直下に置くと Web 版から `fetch()` できない。
