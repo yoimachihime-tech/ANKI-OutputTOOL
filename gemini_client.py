@@ -364,10 +364,16 @@ def _extract_json_array(text: str) -> list:
 # 「選びなさい。'She showed...'」のように改行なしで並んでしまい読みにくい
 # (Ankiフィールドはmustacheで生HTML展開されるため、改行させるには明示的な
 # <br>が必要)。
-_JA_EN_BOUNDARY_RE = re.compile(r"([。！？])\s*(?=[\"'“”‘’A-Za-z])")
-# 英文側が複数文にわたる場合、文末(.!?)+空白+次の文の頭(引用符/大文字)の
-# 境目でも改行する。
-_EN_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[\"'A-Z])")
+# 次の断片の先頭が引用符・英字に加えて「(1)」のような連番ラベルの場合も
+# 境界とみなす(2026-07-29追加)。「記述式・書き換え問題」でGeminiが
+# 「(1) Good lighting helps. (2) It makes the room look spacious.」のように
+# 引用符を使わず連番ラベルだけで文を並べることがあり、そのままだと
+# 改行が一切入らず1つの段落になってしまっていたための対応。
+_SENTENCE_BOUNDARY_LOOKAHEAD = r"(?:[\"'“”‘’A-Za-z]|\(\d+\))"
+_JA_EN_BOUNDARY_RE = re.compile(r"([。！？])\s*(?=" + _SENTENCE_BOUNDARY_LOOKAHEAD + r")")
+# 英文側が複数文にわたる場合、文末(.!?)+空白+次の文の頭(引用符/大文字/
+# 連番ラベル)の境目でも改行する。
+_EN_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=" + _SENTENCE_BOUNDARY_LOOKAHEAD + r")")
 
 
 def _format_question_html(text: str) -> str:

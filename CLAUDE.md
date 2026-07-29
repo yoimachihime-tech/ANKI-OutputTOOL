@@ -1169,6 +1169,21 @@ example_ja/example_blank/noteの7キーを受け取る。
   「まとめて出力」と同じ2段階設計(`self._pending_grammar_multi_stock_items`
   に`(apkg_path, items)`を保持し、`run_generate`が④のapkg出力に成功して
   初めて`mark_exported`を呼ぶ。apkg_pathの完全一致チェックも同様)。
+- **Questionフィールドの改行位置検出に連番ラベル「(1)」「(2)」を追加
+  (2026-07-29修正)**: `_format_question_html`(`gemini_client.py`)/
+  `formatQuestionHtml`(`docs/lib/gemini.js`)は、日本語の指示文と英文の間・
+  英文が複数文にわたる場合の文と文の間に`<br>`を挿入する処理だが、
+  次の断片の先頭が引用符または英大文字であることしか境界として認識して
+  いなかった。「記述式・書き換え問題」でGeminiが引用符を使わず
+  「(1) Good lighting helps. (2) It makes the room look spacious.」の
+  ように連番ラベルだけで複数文を並べて返すケースがあり、この形式だと
+  日本語指示文・(1)・(2)がすべて改行なしの1段落として出力されてしまう
+  不具合が実機で報告された。`_SENTENCE_BOUNDARY_LOOKAHEAD`(Python)/
+  `SENTENCE_BOUNDARY_LOOKAHEAD`(JS)という共通の先読みパターンに切り出し、
+  引用符・英大文字に加えて`\(\d+\)`(半角括弧+数字+半角括弧)も境界として
+  マッチするよう両実装に追加した。`tools/verify_grammar_multi_parity.mjs`
+  の記述式・書き換え問題フィクスチャに、この実例をそのまま追加してPython版・
+  Web版の一致を固定してある。
 
 ## カード定義エディタ(⚙設定「カード定義」タブ)
 

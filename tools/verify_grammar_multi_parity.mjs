@@ -39,7 +39,12 @@ const RAW_NOTES = [
   },
   {
     pattern: '記述式・書き換え問題',
-    question: '次の2文を1文にまとめてください。それぞれの意味を保ちながら自然な英語にすること。',
+    // 2026-07-29に報告された実例: 引用符を使わず「(1)」「(2)」の連番ラベルで
+    // 文を並べる形式。修正前は日本語の指示文・(1)・(2)がすべて改行なしの
+    // 1段落になってしまっていた(_JA_EN_BOUNDARY_RE / _EN_SENTENCE_BREAK_RE
+    // が引用符・大文字始まりしか境界と認識していなかったため)。
+    question: '以下の2つの文を1文にまとめ、「良い照明は部屋を広く見せるのに役立つ」'
+      + 'という意味の文を作りなさい。 (1) Good lighting helps. (2) It makes the room look spacious.',
     choices: [],
     // correct_opt無しでも choices が空ならそのまま answer が使われることを確認
     answer: 'It was raining, but we went out anyway.',
