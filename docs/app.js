@@ -398,19 +398,26 @@ function getTtsOptions() {
  * 主目的)。連打時は前の再生を止めてからやり直す(desktop版のPlaySound
  * SND_PURGEと同じ考え方)。
  */
-// テスト再生用の再生専用AudioContext。ブラウザのAudioContext数上限・
-// オートプレイポリシー(ユーザー操作なしでのresume禁止)を踏まえ、初回の
-// テスト再生クリック(=ユーザー操作)時に一度だけ作って使い回す
-// (decodeAudioSamples()内部で解析用に作る一時的なAudioContextとは別物)。
-let testPlaybackCtx = null;
-let testPlaybackSource = null;
+// テスト再生用の状態(2026-07-29、実機で「音が鳴らない」と報告されたため
+// AudioBufferSourceNode方式から<audio>要素方式に変更)。
+//
+// 当初はWeb Audio API(AudioContext.createBufferSource)で再生していたが、
+// AudioContextは生成直後「suspended」状態になることがあり、ユーザー操作
+// (クリック)と再生の間にawait(TTS合成・デコード)を挟むと、ブラウザによっては
+// 「ユーザー操作起因」と見なされず自動でrunning状態に遷移しない
+// (=source.start()を呼んでも無音のまま)。<audio>要素のplay()は同様の
+// オートプレイ制限があっても失敗時に明確に例外を投げるため検知でき、
+// かつAudioContextの状態管理を自前で扱う必要が無く実績も豊富なため、
+// 再生自体は<audio>要素に戻した。波形解析(decodeAudioSamples等)は
+// 再生の成否と無関係にWeb Audio APIのデコード機能だけを使うので変更なし。
+let testPlayAudio = null;
 let testAnimationFrameId = null;
 
 /** 再生中のテスト音声・波形アニメーションを止める(連打時の多重再生防止)。 */
 function stopTestPlayback() {
-  if (testPlaybackSource) {
-    try { testPlaybackSource.stop(); } catch { /* 既に停止済み */ }
-    testPlaybackSource = null;
+  if (testPlayAudio) {
+    testPlayAudio.pause();
+    testPlayAudio = null;
   }
   if (testAnimationFrameId !== null) {
     cancelAnimationFrame(testAnimationFrameId);
@@ -446,38 +453,31 @@ function drawTestWaveform(buckets, progress, clipped) {
 }
 
 /**
- * 事前計算した波形(buckets)を見ながらAudioBufferを再生し、経過時間に応じて
- * 波形アニメーションを進める(tts_core.pyの「再生前に全サンプルから概形を
- * 事前計算しておき、再生開始からの経過時間でその配列を参照しながら描画する」
- * 方式と同じ考え方。デスクトップ版はwinsound+time.monotonic()、Web版は
- * AudioContext.currentTime基準)。
+ * 事前計算した波形(buckets)を見ながらMP3を<audio>要素で再生し、経過時間に
+ * 応じて波形アニメーションを進める(tts_core.pyの「再生前に全サンプルから
+ * 概形を事前計算しておき、再生開始からの経過時間でその配列を参照しながら
+ * 描画する」方式と同じ考え方。デスクトップ版はwinsound+time.monotonic()、
+ * Web版は<audio>要素のcurrentTime基準)。
+ * @returns {Promise<void>} play()が実際に始まる(または失敗する)まで待つ
  */
-function playTestWaveform(audioBuffer, buckets, clipped) {
-  if (!testPlaybackCtx) {
-    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-    testPlaybackCtx = new AudioContextCtor();
-  }
-  const ctx = testPlaybackCtx;
-  const source = ctx.createBufferSource();
-  source.buffer = audioBuffer;
-  source.connect(ctx.destination);
-  testPlaybackSource = source;
-
-  const duration = audioBuffer.duration;
-  const startTime = ctx.currentTime;
-  source.start();
+async function playTestWaveform(mp3Bytes, duration, buckets, clipped) {
+  const blob = new Blob([mp3Bytes], { type: 'audio/mpeg' });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  testPlayAudio = audio;
+  audio.addEventListener('ended', () => URL.revokeObjectURL(url));
 
   const tick = () => {
-    const progress = Math.min(1, (ctx.currentTime - startTime) / duration);
+    const progress = Math.min(1, audio.currentTime / duration);
     drawTestWaveform(buckets, progress, clipped);
-    if (progress < 1 && testPlaybackSource === source) {
+    if (progress < 1 && testPlayAudio === audio) {
       testAnimationFrameId = requestAnimationFrame(tick);
     } else {
       testAnimationFrameId = null;
-      if (testPlaybackSource === source) testPlaybackSource = null;
     }
   };
   tick();
+  await audio.play();
 }
 
 async function onTestPlay() {
@@ -501,7 +501,7 @@ async function onTestPlay() {
     setStatus(statusEl, clipped
       ? '再生中...(⚠ 音割れの可能性があります。音量ゲインを下げることを推奨します)'
       : '再生中...');
-    playTestWaveform(audioBuffer, buckets, clipped);
+    await playTestWaveform(bytes, audioBuffer.duration, buckets, clipped);
   } catch (e) {
     hideLoading(statusEl);
     setStatus(statusEl, e.message, true);

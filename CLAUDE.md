@@ -1517,19 +1517,24 @@ DailyConversationいずれの
   フェイクで単体テストできる(実ブラウザのFloat32Arrayでなく普通の配列を
   渡しても、添字アクセスと`.length`しか使わないため動作は同一。丸め誤差を
   避けるためテストでは意図的にFloat32Arrayを使っていない)。
-- **再生・アニメーションはWeb Audio APIに統一**(`app.js`):
-  波形デコード結果(`AudioBuffer`)をそのまま`AudioBufferSourceNode`で再生し、
-  `AudioContext.currentTime`基準の経過時間で`requestAnimationFrame`ループ
-  (`playTestWaveform()`)を回して`<canvas id="tts-test-waveform">`に
-  再生位置までをアクセントカラー(音割れ時は`--danger`)で塗り分ける
-  (`drawTestWaveform()`、デスクトップ版の`self.after(40,...)`+
-  `time.monotonic()`に相当)。この変更に伴い、旧実装が使っていた
-  `<audio>`要素+`URL.createObjectURL`は廃止した(波形解析用に既にデコード
-  済みのPCMをそのまま再生にも使い、二重デコードを避けるため)。
-  再生用の`AudioContext`はブラウザのオートプレイポリシー(ユーザー操作なしの
-  resume禁止)を踏まえ、初回のテスト再生クリック時に一度だけ生成して
-  使い回す(`decodeAudioSamples()`内部で解析用に使う一時的な`AudioContext`
-  とは別物。こちらは解析後に`close()`する)。
+- **再生は`<audio>`要素、波形解析だけWeb Audio API(2026-07-29、実機で
+  「テスト音声が再生されない」と報告されすぐ修正)**: 実装当初は
+  `AudioBufferSourceNode`で再生も行う設計にしていたが、`AudioContext`は
+  生成直後「suspended」状態になることがあり、ユーザー操作(クリック)と
+  `source.start()`の間に`await`(TTS合成・デコード)を挟むと、ブラウザに
+  よっては「ユーザー操作起因」と見なされず自動でrunning状態に遷移しない
+  (=無音のまま何も鳴らない、エラーも出ない)ことが実機で判明した。
+  `<audio>`要素の`play()`は同様のオートプレイ制限があっても失敗時に
+  明確にPromiseがrejectされる(=エラーとして検知できる)ため、再生自体は
+  `<audio>`要素+`URL.createObjectURL`に戻した(`playTestWaveform()`)。
+  波形解析(`decodeAudioSamples`等)は再生の成否と無関係にWeb Audio APIの
+  デコード機能だけを使うため変更なし(結果としてMP3を「解析用」
+  `decodeAudioData`と「再生用」`<audio>`要素の2つのデコーダで二重に
+  デコードすることになるが、テスト再生というたまにしか使わない機能の
+  ための小さなオーバーヘッドとして許容している)。波形アニメーションは
+  `<audio>`要素の`currentTime`(0〜`audioBuffer.duration`)を
+  `requestAnimationFrame`ループで参照して進める(デスクトップ版の
+  `self.after(40,...)`+`time.monotonic()`に相当)。
 - **`findSafeVolumeGainDb(opts, {...})`**(`docs/lib/tts.js`)が
   `tts_core.find_safe_volume_gain_db`に対応する。アルゴリズムは同一
   (ゲイン0dBでの基準ピークを測る→目標ピーク(0dBFSから既定1.0dBの余裕)まで

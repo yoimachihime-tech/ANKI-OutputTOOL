@@ -172,9 +172,12 @@ id>`)。タブ切り替えやページの再読み込みをまたいでON/OFFが
   直接WAVを取得するが、Web版はMP3合成のみのためデコードで代用)、
   再生前にバケットごとの最小値・最大値を計算しておく
   (`lib/tts.js`の`computeWaveformMinMax()`、`tts_core.compute_waveform_minmax`
-  に対応)。再生は`AudioBufferSourceNode`で行い、`AudioContext.currentTime`
-  基準の経過時間で`<canvas id="tts-test-waveform">`に再生位置までを
-  アクセントカラーで塗り分けるアニメーションを描く
+  に対応)。**再生自体は`<audio>`要素で行う**(`AudioContext`は生成直後
+  suspended状態になることがあり、クリックから再生開始までの間にawaitを
+  挟むとブラウザによっては自動でrunning状態に遷移せず無音のままになる
+  ことが実機で判明したため。波形解析用のデコードとは別)。`<audio>`要素の
+  `currentTime`基準の経過時間で`<canvas id="tts-test-waveform">`に
+  再生位置までをアクセントカラーで塗り分けるアニメーションを描く
   (`app.js`の`playTestWaveform()`/`drawTestWaveform()`)。
 - **0dBクリッピング検出**: `lib/tts.js`の`computePeakAmplitude()`/
   `isClipped()`(閾値`CLIPPING_THRESHOLD = 0.999`、いずれも
@@ -189,9 +192,6 @@ id>`)。タブ切り替えやページの再読み込みをまたいでON/OFFが
   localStorageの両方に即座に反映される。デスクトップ版と異なり
   `gap_seconds`(文間隔)引数は無い(上記「デスクトップ版との方式の違い」と
   同じ理由)。
-- テスト再生の音声再生自体も、この機能追加にあわせて`<audio>`要素から
-  Web Audio API(`AudioBufferSourceNode`)に変更した(波形デコード結果を
-  再生にもそのまま使い、二重デコードを避けるため)。
 
 ## DailyConversation(スプレッドシート連携、2026-07-29追加)
 
