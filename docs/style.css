@@ -223,6 +223,9 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .stock input[type="checkbox"] { width: auto; margin-top: 4px; flex: none; }
 .stock .body { flex: 1; min-width: 0; }
 .stock .dup-tag { color: var(--danger); font-size: .75rem; font-weight: 600; }
+/* 「✓ 出力済み」等、警告ではなく単なる状態表示のタグ(2026-07-29追加)。
+   .dup-tagの警告色(--danger)とは意図的に区別する。 */
+.stock .done-tag { color: var(--sub); font-size: .75rem; font-weight: 600; }
 
 /* 一覧項目のタイトル/サブタイトル(単語タブでは単語名/意味、
    AIに質問タブでは出題形式/質問の抜粋、というように内容はタブごとに違うが

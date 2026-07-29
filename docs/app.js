@@ -29,6 +29,12 @@ import {
 } from './lib/sheets.js';
 import * as dailyconv from './lib/dailyconv.js';
 
+// フィルターチェックボックスの状態をlocalStorageに永続化する際のキー接頭辞
+// (bindPersistentCheckbox()参照)。init()がモジュール読み込み直後に即時
+// 呼び出されるため、この定数は必ずその呼び出しより前(モジュール先頭側)に
+// 置くこと(TDZで「初期化前にアクセスされた」エラーになる)。
+const FILTER_STORAGE_PREFIX = 'anki_tool_filter_';
+
 const STORAGE = {
   apiKey: 'anki_tool_gemini_api_key',
   model: 'anki_tool_gemini_model',
@@ -148,6 +154,28 @@ function loadJson(key) {
   }
 }
 
+/**
+ * フィルターチェックボックスの状態をlocalStorageに永続化する
+ * (2026-07-29追加。タブ切り替え・再読み込みをまたいで、片桐が選んだ
+ * 表示/非表示の設定が保持されるようにするため)。`bindEvents()`内、
+ * 各タブの初回描画(`render*Stock`/`renderDailyPending`)より前に
+ * 呼び出す必要がある(復元した値を初回描画に反映させるため)。
+ *
+ * @param {string} id チェックボックスの要素ID
+ * @param {boolean} defaultValue 保存された値が無い場合の初期状態
+ * @param {() => void} onChange 変更のたびに呼ぶ再描画関数
+ */
+function bindPersistentCheckbox(id, defaultValue, onChange) {
+  const el = $(id);
+  const key = FILTER_STORAGE_PREFIX + id;
+  const stored = localStorage.getItem(key);
+  el.checked = stored === null ? defaultValue : stored === '1';
+  el.addEventListener('change', () => {
+    localStorage.setItem(key, el.checked ? '1' : '0');
+    onChange();
+  });
+}
+
 function bindEvents() {
   // タブ切り替え
   document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -206,12 +234,16 @@ function bindEvents() {
   $('word-generate').addEventListener('click', onWordGenerate);
   $('word-delete-selected').addEventListener('click', () => onDeleteSelected('word'));
   $('word-clear-stock').addEventListener('click', () => onClearStock('word'));
+  bindPersistentCheckbox('word-filter-hide-exported', true, renderWordStock);
+  $('word-reset-exported').addEventListener('click', () => onResetExported('word'));
   $('word-export').addEventListener('click', () => onExport('word'));
 
   // AIに質問タブ
   $('ai-ask-generate').addEventListener('click', onAiAskGenerate);
   $('ai-ask-delete-selected').addEventListener('click', () => onDeleteSelected('ai_ask'));
   $('ai-ask-clear-stock').addEventListener('click', () => onClearStock('ai_ask'));
+  bindPersistentCheckbox('ai-ask-filter-hide-exported', true, renderAiAskStock);
+  $('ai-ask-reset-exported').addEventListener('click', () => onResetExported('ai_ask'));
   $('ai-ask-export').addEventListener('click', () => onExport('ai_ask'));
 
   // 習熟用(音読)タブ(入力欄は無く、AIに質問からの4問目でのみ増える)
@@ -224,10 +256,12 @@ function bindEvents() {
   $('daily-signout').addEventListener('click', onDailySignOut);
   $('daily-correct').addEventListener('click', onDailyCorrect);
   $('daily-refresh').addEventListener('click', () => refreshDailyPending($('daily-export-status')));
-  $('daily-filter-hide-no-error').addEventListener('change', renderDailyPending);
-  $('daily-filter-only-duplicates').addEventListener('change', renderDailyPending);
+  bindPersistentCheckbox('daily-filter-hide-no-error', false, renderDailyPending);
+  bindPersistentCheckbox('daily-filter-only-duplicates', false, renderDailyPending);
+  bindPersistentCheckbox('daily-filter-hide-exported', true, renderDailyPending);
   $('daily-exclude-selected').addEventListener('click', onDailyExcludeSelected);
   $('daily-clear-exclusions').addEventListener('click', onDailyClearExclusions);
+  $('daily-reset-exported').addEventListener('click', onDailyResetExported);
   $('daily-export').addEventListener('click', onDailyExport);
 
   // プレビュー(共通)
@@ -415,14 +449,32 @@ function wordDuplicateIndices() {
   return dup;
 }
 
+/**
+ * 単語タブの一覧を描画する。2026-07-29に「出力済みを隠す」フィルターを
+ * 追加した(既定ON、⚙設定と違いページ内のチェックボックス自体に状態を
+ * 持たせ、bindPersistentCheckbox()でlocalStorageと同期する)。
+ * `.apkg`出力に成功した項目は削除せず`exported_at`を付けてストックに
+ * 残すため(onExport参照)、放置すると一覧が際限なく伸びる。既定で隠す
+ * ことで「次に新しい単語を生成したとき、古い出力済みカードと混ざって
+ * 見える」という問題を解消する。
+ */
 function renderWordStock() {
   const list = $('word-stock-list');
   const dup = wordDuplicateIndices();
+  const hideExported = $('word-filter-hide-exported').checked;
   list.textContent = '';
 
+  let visibleCount = 0;
   wordStock.forEach((item, i) => {
+    if (hideExported && item.exported_at) return;
+    visibleCount += 1;
+    const tags = [];
+    if (dup.has(i)) tags.push(' ⚠ 重複');
+    if (item.exported_at) tags.push({ text: ' ✓ 出力済み', kind: 'done' });
     const li = buildStockRow({
       isDuplicate: dup.has(i),
+      tags,
+      rowId: String(i),
       title: item.word,
       subtitle: item.meaning || '(意味なし)',
       meta: formatDateTime(item.generated_at),
@@ -431,8 +483,23 @@ function renderWordStock() {
     list.appendChild(li);
   });
 
-  $('word-stock-empty').hidden = wordStock.length > 0;
-  $('word-stock-count').textContent = wordStock.length ? `(${wordStock.length} 件)` : '';
+  const empty = $('word-stock-empty');
+  if (wordStock.length === 0) {
+    empty.hidden = false;
+    empty.textContent = 'まだカードがありません。';
+  } else if (visibleCount === 0) {
+    // 全件「出力済み」でフィルターに隠れている状態。空のリストだけが
+    // 表示されて理由が分からなくなるのを防ぐ(2026-07-29追加)。
+    empty.hidden = false;
+    empty.textContent = 'すべて出力済みです。「出力済みを隠す」を外すと表示されます。';
+  } else {
+    empty.hidden = true;
+  }
+  $('word-stock-count').textContent = wordStock.length
+    ? (visibleCount === wordStock.length
+      ? `(${wordStock.length} 件)`
+      : `(${visibleCount} / ${wordStock.length} 件表示)`)
+    : '';
 }
 
 /** 「単語 | 文脈」形式の複数行入力をパースする(_parse_word_pairs と同じ)。 */
@@ -537,15 +604,25 @@ function aiAskDuplicateIndices() {
   return dup;
 }
 
+/** 単語タブと同じ理由(2026-07-29追加)で「出力済みを隠す」フィルターを持つ。 */
 function renderAiAskStock() {
   const list = $('ai-ask-stock-list');
   const dup = aiAskDuplicateIndices();
+  const hideExported = $('ai-ask-filter-hide-exported').checked;
   list.textContent = '';
 
+  let visibleCount = 0;
   aiAskStock.forEach((item, i) => {
+    if (hideExported && item.exported_at) return;
+    visibleCount += 1;
     const questionPreview = htmlToPlainText(item.question).slice(0, 40);
+    const tags = [];
+    if (dup.has(i)) tags.push(' ⚠ 重複');
+    if (item.exported_at) tags.push({ text: ' ✓ 出力済み', kind: 'done' });
     const li = buildStockRow({
       isDuplicate: dup.has(i),
+      tags,
+      rowId: String(i),
       title: item.pattern || '(形式未設定)',
       subtitle: questionPreview,
       meta: formatDateTime(item.generated_at),
@@ -554,8 +631,21 @@ function renderAiAskStock() {
     list.appendChild(li);
   });
 
-  $('ai-ask-stock-empty').hidden = aiAskStock.length > 0;
-  $('ai-ask-stock-count').textContent = aiAskStock.length ? `(${aiAskStock.length} 件)` : '';
+  const empty = $('ai-ask-stock-empty');
+  if (aiAskStock.length === 0) {
+    empty.hidden = false;
+    empty.textContent = 'まだカードがありません。';
+  } else if (visibleCount === 0) {
+    empty.hidden = false;
+    empty.textContent = 'すべて出力済みです。「出力済みを隠す」を外すと表示されます。';
+  } else {
+    empty.hidden = true;
+  }
+  $('ai-ask-stock-count').textContent = aiAskStock.length
+    ? (visibleCount === aiAskStock.length
+      ? `(${aiAskStock.length} 件)`
+      : `(${visibleCount} / ${aiAskStock.length} 件表示)`)
+    : '';
 }
 
 /**
@@ -672,6 +762,9 @@ function renderShuujukuStock() {
   shuujukuStock.forEach((item, i) => {
     const li = buildStockRow({
       isDuplicate: dup.has(i),
+      // rowId: フィルターは持たないが、onDeleteSelected()が全タブ共通で
+      // ID方式の選択(checkedRowIdsOf)を使うため必要(2026-07-29)。
+      rowId: String(i),
       title: item.pattern || '(パターン未設定)',
       subtitle: item.meaning || '(意味なし)',
       meta: formatDateTime(item.generated_at),
@@ -861,27 +954,38 @@ function dailyDuplicateOriginalIds(rows) {
  * 2026-07-29に、原文が重複している行の警告表示と、両方をチェックボックスで
  * 絞り込めるフィルター機能を追加した(フィルターは表示のみに影響し、
  * dailyPendingRows自体やシート側のデータは変更しない)。
+ * 同日、3つ目のフィルターとして「出力済み(このブラウザで記録)を隠す」を
+ * 追加した。シート側の「Anki出力済み」列マーク(④のチェックボックス)とは
+ * 独立して、`.apkg`生成に成功した行を`dailyconv.addExportedIds()`で
+ * ローカルに記録しており(`onDailyExport()`参照)、④のチェックボックスを
+ * OFFにして出力した場合やシート書き込みが失敗した場合でも、この一覧上で
+ * 「実は既に一度カード化した」行を見分けられるようにするための保険。
  */
 function renderDailyPending() {
   const list = $('daily-pending-list');
   list.textContent = '';
 
   const duplicateIds = dailyDuplicateOriginalIds(dailyPendingRows);
+  const exportedIds = dailyconv.loadExportedIds();
   const hideNoError = $('daily-filter-hide-no-error').checked;
   const onlyDuplicates = $('daily-filter-only-duplicates').checked;
+  const hideExported = $('daily-filter-hide-exported').checked;
 
   const visibleRows = dailyPendingRows.filter((row) => {
     if (hideNoError && row.category === '誤りなし') return false;
     if (onlyDuplicates && !duplicateIds.has(row.id)) return false;
+    if (hideExported && exportedIds.has(row.id)) return false;
     return true;
   });
 
   visibleRows.forEach((row) => {
     const noError = row.category === '誤りなし';
     const isDup = duplicateIds.has(row.id);
+    const isExported = exportedIds.has(row.id);
     const tags = [];
     if (isDup) tags.push(' ⚠ 重複の可能性');
     if (noError) tags.push(' ⚠ 誤りなし(出力対象外)');
+    if (isExported) tags.push({ text: ' ✓ 出力済み', kind: 'done' });
     const li = buildStockRow({
       isDuplicate: isDup || noError,
       tags,
@@ -1045,6 +1149,25 @@ function onDailyClearExclusions() {
   refreshDailyPending($('daily-export-status'));
 }
 
+/**
+ * 「出力済み履歴をリセット」(2026-07-29追加)。ローカルの出力済み記録
+ * (`dailyconv.loadExportedIds()`)だけを消す。シートの「Anki出力済み」列
+ * には一切触れないため、シート側で既に出力済みマークされている行は
+ * 引き続き③の一覧には出てこない(fetchPendingRowsが除外するため)。
+ */
+function onDailyResetExported() {
+  if (dailyconv.loadExportedIds().size === 0) {
+    alert('出力済みの記録がありません。');
+    return;
+  }
+  if (!confirm(
+    'このブラウザに記録した「出力済み」をすべてリセットします。\n'
+    + '(スプレッドシートの「Anki出力済み」列には影響しません)',
+  )) return;
+  dailyconv.clearExportedIds();
+  renderDailyPending();
+}
+
 async function onDailyExport() {
   const status = $('daily-export-status');
   if (dailyPendingRows.length === 0) {
@@ -1083,6 +1206,13 @@ async function onDailyExport() {
     const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items, media });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `daily_${stamp}.apkg`);
+
+    // シート側の「Anki出力済み」列マーク(④のチェックボックス)とは独立に、
+    // 「このブラウザで.apkgに含めて出力した」ことをローカルへ記録する
+    // (チェックボックスがOFFでも必ず記録する。マークし忘れ・書き込み失敗
+    // 時の保険、renderDailyPending()の「✓ 出力済み」タグ/フィルターが使う)。
+    dailyconv.addExportedIds(rows.map((r) => r.id));
+    renderDailyPending();
 
     let note = '';
     if (duplicateIds.length > 0) note += `\nID重複の ${duplicateIds.length} 件は除外しました。`;
@@ -1154,15 +1284,19 @@ function showDailyPreview(row) {
  * @param {string} [meta] 生成日時などの補足情報(2026-07-29追加)。
  *   空文字・未指定なら何も描画しない(古い形式で保存されたストック項目
  *   ("generated_at"を持たない)でも問題なく表示できるようにするため)。
- * @param {string[]} [tags] 行に付ける警告バッジの文言(2026-07-29追加、
- *   複数指定可)。省略時は`isDuplicate`がtrueなら`[' ⚠ 重複']`を使う
- *   (単語/AIに質問/習熟用タブの既存呼び出しはこのフォールバックのまま
- *   無変更で動く)。DailyConversationタブは「重複の可能性」「誤りなし」を
- *   同時に持つ行があるため、明示的に配列で渡す。
+ * @param {(string|{text: string, kind?: 'warning'|'done'})[]} [tags] 行に付ける
+ *   バッジ(2026-07-29追加、複数指定可)。文字列を渡すと従来通り警告色
+ *   (`.dup-tag`)になる(単語/AIに質問/習熟用タブの既存呼び出しはこの
+ *   フォールバックのまま無変更で動く)。`{text, kind: 'done'}`を渡すと
+ *   警告色ではない控えめな配色(`.done-tag`)になる(「✓ 出力済み」用、
+ *   問題ではなく単なる状態表示のため警告色と区別する)。省略時は
+ *   `isDuplicate`がtrueなら`[' ⚠ 重複']`を使う。DailyConversationタブは
+ *   「重複の可能性」「誤りなし」「出力済み」を同時に持つ行があるため、
+ *   明示的に配列で渡す。
  * @param {string} [rowId] 指定するとチェックボックスに`data-row-id`属性を
- *   付与する(2026-07-29追加)。DailyConversationタブはフィルターで表示行が
- *   絞られると描画順序と元データのインデックスが一致しなくなるため、
- *   位置ベースではなくID経由で選択項目を特定する必要がある。
+ *   付与する(2026-07-29追加)。フィルターで表示行が絞られると描画順序と
+ *   元データのインデックスが一致しなくなるタブがあるため、位置ベースでは
+ *   なくID経由で選択項目を特定する(全タブ共通、checkedRowIdsOf参照)。
  */
 function buildStockRow({ isDuplicate, tags, title, subtitle, meta, rowId, onPreview }) {
   const li = document.createElement('li');
@@ -1180,10 +1314,11 @@ function buildStockRow({ isDuplicate, tags, title, subtitle, meta, rowId, onPrev
   titleEl.className = 'title';
   titleEl.textContent = title;
   const tagList = tags && tags.length > 0 ? tags : (isDuplicate ? [' ⚠ 重複'] : []);
-  tagList.forEach((tagText) => {
+  tagList.forEach((t) => {
+    const spec = typeof t === 'string' ? { text: t, kind: 'warning' } : t;
     const tag = document.createElement('span');
-    tag.className = 'dup-tag';
-    tag.textContent = tagText;
+    tag.className = spec.kind === 'done' ? 'done-tag' : 'dup-tag';
+    tag.textContent = spec.text;
     titleEl.appendChild(tag);
   });
 
@@ -1241,18 +1376,12 @@ const TAB_CONFIG = {
   },
 };
 
-function checkedIndicesOf(listElId) {
-  const checkboxes = [...document.querySelectorAll(`#${listElId} input[type="checkbox"]`)];
-  const indices = [];
-  checkboxes.forEach((cb, i) => { if (cb.checked) indices.push(i); });
-  return indices;
-}
-
 /**
  * `buildStockRow`が`rowId`付きで描画したチェックボックスのうち、選択済みの
- * `data-row-id`を集めて返す(2026-07-29追加)。DailyConversationタブは
- * フィルターで表示行が絞られるため、描画順序に依存する`checkedIndicesOf`
- * (位置ベース)ではなくこちらを使う。
+ * `data-row-id`を集めて返す(2026-07-29追加)。単語/AIに質問/習熟用/
+ * DailyConversationいずれのタブも、フィルターで表示行が絞られると
+ * 描画順序と元データのインデックスが一致しなくなるため、位置ベースでは
+ * なくこちらで選択項目を特定する(全タブで統一)。
  */
 function checkedRowIdsOf(listElId) {
   return [...document.querySelectorAll(`#${listElId} input[type="checkbox"]`)]
@@ -1263,7 +1392,7 @@ function checkedRowIdsOf(listElId) {
 
 function onDeleteSelected(tabKey) {
   const cfg = TAB_CONFIG[tabKey];
-  const indices = checkedIndicesOf(cfg.listEl);
+  const indices = checkedRowIdsOf(cfg.listEl).map(Number);
   if (indices.length === 0) {
     alert('削除する項目を選択してください。');
     return;
@@ -1285,13 +1414,53 @@ function onClearStock(tabKey) {
   cfg.render();
 }
 
+/**
+ * 「出力済み履歴をリセット」(2026-07-29追加、単語/AIに質問タブ)。
+ * カード自体は削除せず、`exported_at`フラグだけを全項目から取り除く
+ * (「✓ 出力済み」タグ・フィルターの対象から外れ、次回の出力対象にも
+ * 再び含まれるようになる)。
+ */
+function onResetExported(tabKey) {
+  const cfg = TAB_CONFIG[tabKey];
+  const exportedCount = cfg.stock.filter((item) => item.exported_at).length;
+  if (exportedCount === 0) {
+    alert('出力済みのカードがありません。');
+    return;
+  }
+  if (!confirm(
+    `${exportedCount} 件の「出力済み」記録をリセットします。カード自体は削除されません。よろしいですか？`,
+  )) return;
+  cfg.setStock(cfg.stock.map((item) => {
+    const { exported_at, ...rest } = item;
+    return rest;
+  }));
+  cfg.render();
+}
+
+/**
+ * 単語/AIに質問タブの「.apkg をダウンロード」。2026-07-29に、出力対象を
+ * ストック全体ではなく**まだ出力していない項目だけ**に変更した(以前は
+ * 出力してもストックから何も変化させず、次回出力時に既出力分と新規分が
+ * 毎回一緒にバンドルされて紛らわしいという指摘を受けた対応)。出力に
+ * 実際に成功した項目だけへ`exported_at`を付ける2段階設計
+ * (デスクトップ版の`mark_exported`と同じ考え方。生成に失敗した項目は
+ * 次回も出力対象に残る)。カード自体はストックから削除しない
+ * (「✓ 出力済み」タグ付きで残り、フィルターで隠す/表示を切り替えられる)。
+ */
 async function onExport(tabKey) {
   const cfg = TAB_CONFIG[tabKey];
   const statusId = tabKey === 'word' ? 'word-export-status' : 'ai-ask-export-status';
   const status = $(statusId);
 
-  if (cfg.stock.length === 0) {
-    setStatus(status, '出力するカードがありません。', true);
+  const pendingItems = cfg.stock.filter((item) => !item.exported_at);
+  if (pendingItems.length === 0) {
+    setStatus(
+      status,
+      cfg.stock.length === 0
+        ? '出力するカードがありません。'
+        : '出力する(未出力の)カードがありません。既に出力済みのカードのみです。',
+      true,
+    );
     return;
   }
   const cardDef = shared.cardDefs?.[cfg.cardDefKey];
@@ -1309,7 +1478,7 @@ async function onExport(tabKey) {
     // AIに質問:Answer+Example)に音声を合成して埋め込む(未設定なら
     // 従来どおり音声無し。cfg.stock自体は変更しない、下記embedTtsAudioIntoItems参照)。
     const { items, media } = await embedTtsAudioIntoItems(
-      cfg.stock, TTS_FIELD_KEYS[tabKey] || [], tabKey, status,
+      pendingItems, TTS_FIELD_KEYS[tabKey] || [], tabKey, status,
     );
     const blob = await buildApkg({
       cardDef,
@@ -1319,9 +1488,21 @@ async function onExport(tabKey) {
     });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `${tabKey}_${stamp}.apkg`);
+
+    // .apkgの生成・ダウンロードに実際に成功した項目だけへexported_atを
+    // 記録する。pendingItemsはcfg.stockの要素をそのまま参照しているため
+    // (filter()は複製しない)、Setでの参照比較でどの項目が対象だったか
+    // 判定できる(インデックス計算は不要)。
+    const exportedAt = new Date().toISOString();
+    const exportedSet = new Set(pendingItems);
+    cfg.setStock(cfg.stock.map((item) => (
+      exportedSet.has(item) ? { ...item, exported_at: exportedAt } : item
+    )));
+    cfg.render();
+
     setStatus(
       status,
-      `${cfg.stock.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。`,
+      `${pendingItems.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。`,
     );
   } catch (e) {
     setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);

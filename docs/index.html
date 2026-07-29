@@ -131,13 +131,19 @@ resilient | She remained resilient."></textarea>
     <h2>② 生成結果 <span id="word-stock-count" class="count"></span></h2>
     <p class="hint">
       生成したカードはこのブラウザに保存され、再訪しても残ります。
-      不要なものは選んで削除できます。
+      不要なものは選んで削除できます。一度「.apkg をダウンロード」した項目には
+      「✓ 出力済み」の印が付き、次回以降の出力対象から自動的に外れます
+      (カード自体は削除されません)。
     </p>
+    <div class="row">
+      <label class="checkbox"><input type="checkbox" id="word-filter-hide-exported">出力済みを隠す</label>
+    </div>
     <div id="word-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="word-stock-list" class="stock"></ul>
     <div class="row">
       <button type="button" id="word-delete-selected">選択項目を削除</button>
       <button type="button" id="word-clear-stock" class="danger">すべて削除</button>
+      <button type="button" id="word-reset-exported">出力済み履歴をリセット</button>
     </div>
   </section>
 
@@ -147,6 +153,7 @@ resilient | She remained resilient."></textarea>
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       同じ単語のカードは既存のものが更新されるだけなので、学習履歴は失われません。
       ⚙設定でTTS APIキーを設定していれば、例文の音声も自動で合成して埋め込みます。
+      対象は②の一覧のうち<b>まだ出力していないカードだけ</b>です。
     </p>
     <button type="button" id="word-export" class="primary">.apkg をダウンロード</button>
     <p id="word-export-status" class="status" role="status" aria-live="polite"></p>
@@ -175,13 +182,19 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     <h2>② 生成結果 <span id="ai-ask-stock-count" class="count"></span></h2>
     <p class="hint">
       生成したカードはこのブラウザに保存され、再訪しても残ります。
-      同じ質問を複数回試した場合は重複として警告表示されます。
+      同じ質問を複数回試した場合は重複として警告表示されます。一度「.apkg を
+      ダウンロード」した項目には「✓ 出力済み」の印が付き、次回以降の出力対象
+      から自動的に外れます(カード自体は削除されません)。
     </p>
+    <div class="row">
+      <label class="checkbox"><input type="checkbox" id="ai-ask-filter-hide-exported">出力済みを隠す</label>
+    </div>
     <div id="ai-ask-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="ai-ask-stock-list" class="stock"></ul>
     <div class="row">
       <button type="button" id="ai-ask-delete-selected">選択項目を削除</button>
       <button type="button" id="ai-ask-clear-stock" class="danger">すべて削除</button>
+      <button type="button" id="ai-ask-reset-exported">出力済み履歴をリセット</button>
     </div>
   </section>
 
@@ -192,6 +205,7 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       同じ問題(同じ質問から生成された同じ番目のカード)は既存のものが更新されるだけなので、
       学習履歴は失われません。
       ⚙設定でTTS APIキーを設定していれば、例文の音声も自動で合成して埋め込みます。
+      対象は②の一覧のうち<b>まだ出力していないカードだけ</b>です。
     </p>
     <button type="button" id="ai-ask-export" class="primary">.apkg をダウンロード</button>
     <p id="ai-ask-export-status" class="status" role="status" aria-live="polite"></p>
@@ -275,7 +289,9 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <p class="hint">
       「Anki出力済み」列が空の行を表示します。ここに出ているものが④の出力対象です。
       重複などで出力したくない行は選んで「一覧から除外」できます(シート自体は
-      変更されず、この端末でのみ非表示になります)。
+      変更されず、この端末でのみ非表示になります)。④で一度.apkgに含めた行には
+      「✓ 出力済み」の印が付きます(④の「Anki出力済みにする」チェックをOFFに
+      していた場合でも、このブラウザ内には記録されます)。
     </p>
     <div class="row">
       <button type="button" id="daily-refresh" class="primary">シートから読み込む</button>
@@ -283,12 +299,14 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <div class="row">
       <label class="checkbox"><input type="checkbox" id="daily-filter-hide-no-error">「誤りなし」を隠す</label>
       <label class="checkbox"><input type="checkbox" id="daily-filter-only-duplicates">重複の可能性がある行のみ表示</label>
+      <label class="checkbox"><input type="checkbox" id="daily-filter-hide-exported">出力済み(このブラウザで記録)を隠す</label>
     </div>
     <div id="daily-pending-empty" class="empty">まだ読み込んでいません。</div>
     <ul id="daily-pending-list" class="stock"></ul>
     <div class="row">
       <button type="button" id="daily-exclude-selected">選択項目を一覧から除外</button>
       <button type="button" id="daily-clear-exclusions" class="danger">除外をすべて解除</button>
+      <button type="button" id="daily-reset-exported">出力済み履歴をリセット</button>
     </div>
   </section>
 

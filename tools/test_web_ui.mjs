@@ -416,7 +416,7 @@ if (dialogOpened) {
 }
 dlg.close();
 
-console.log('\n[5] 単語タブ: .apkg の書き出し');
+console.log('\n[5] 単語タブ: .apkg の書き出し(出力済みタグ・フィルターの検証)');
 downloaded = null;
 $('word-export').click();
 for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
@@ -431,12 +431,96 @@ if (!downloaded) {
   });
 }
 
-console.log('\n[6] 単語タブ: 選択削除');
+const wordAfterExport1 = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
+if (wordAfterExport1.length === 2 && wordAfterExport1.every((it) => it.exported_at)) {
+  ok('出力に成功した2件とも exported_at が付与され、ストックには残る(削除されない)');
+} else {
+  fail(`出力後のストック: ${JSON.stringify(wordAfterExport1)}`);
+}
+
+if ($('word-filter-hide-exported').checked) {
+  ok('「出力済みを隠す」フィルターは既定でON');
+} else {
+  fail('「出力済みを隠す」フィルターの既定値が想定と違う(ON のはず)');
+}
+if ($('word-stock-list').children.length === 0 && $('word-stock-empty').hidden === false
+  && $('word-stock-empty').textContent.includes('すべて出力済み')) {
+  ok('出力済みフィルターONのため、一覧が空表示になり理由も案内される');
+} else {
+  fail(`出力直後の一覧表示: 行数=${$('word-stock-list').children.length} / `
+    + `空表示hidden=${$('word-stock-empty').hidden}`);
+}
+
+$('word-filter-hide-exported').checked = false;
+$('word-filter-hide-exported').dispatchEvent(new window.Event('change'));
+if ($('word-stock-list').children.length === 2
+  && [...$('word-stock-list').querySelectorAll('.done-tag')].every((t) => t.textContent.includes('出力済み'))) {
+  ok('フィルターを外すと出力済みの2件が「✓ 出力済み」タグ付きで表示される');
+} else {
+  fail(`フィルター解除後の表示: 行数=${$('word-stock-list').children.length}`);
+}
+if (localStorage.getItem('anki_tool_filter_word-filter-hide-exported') === '0') {
+  ok('フィルターのON/OFFがlocalStorageに永続化される');
+} else {
+  fail('フィルター状態がlocalStorageに保存されていない');
+}
+$('word-filter-hide-exported').checked = true;
+$('word-filter-hide-exported').dispatchEvent(new window.Event('change'));
+
+console.log('\n[6] 単語タブ: 新規単語を追加して再出力(既出力分と混ざらないことを確認)');
+geminiMode = 'word';
+geminiCalls = 0;
+$('word-input').value = 'resilient | She remained resilient.';
+$('word-generate').click();
+for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
+await sleep(200);
+
+if ($('word-stock-list').children.length === 1) {
+  ok('フィルターON中、新規追加した未出力の1件だけが一覧に表示される(既出力の2件は隠れたまま)');
+} else {
+  fail(`新規追加後の表示行数: ${$('word-stock-list').children.length}(期待:1)`);
+}
+
+downloaded = null;
+$('word-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (!downloaded) {
+  fail('2回目の.apkgが生成されなかった');
+} else {
+  await dumpApkgAndCheck(downloaded, {
+    expectedNoteCount: 1, // 既出力の2件を含まず、新規の1件だけが対象になるはず
+    expectedCardCount: 2,
+    firstFieldEquals: 'resilient',
+    tmpName: '.uitest_word2.anki2',
+  });
+}
+const wordAfterExport2 = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
+if (wordAfterExport2.length === 3 && wordAfterExport2.every((it) => it.exported_at)) {
+  ok('2回目の出力でも削除されず、3件とも出力済みになった');
+} else {
+  fail(`2回目出力後のストック: ${JSON.stringify(wordAfterExport2.map((i) => [i.word, !!i.exported_at]))}`);
+}
+
+console.log('\n[6.5] 単語タブ: 出力済み履歴のリセット');
+$('word-reset-exported').click();
+const wordAfterReset = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
+if (wordAfterReset.every((it) => !it.exported_at)) {
+  ok('「出力済み履歴をリセット」で exported_at がすべて消える(カードは削除されない)');
+} else {
+  fail(`リセット後のストック: ${JSON.stringify(wordAfterReset.map((i) => [i.word, !!i.exported_at]))}`);
+}
+if ($('word-stock-list').children.length === 3) {
+  ok('リセット後、フィルターONのままでも3件とも(未出力扱いになり)表示される');
+} else {
+  fail(`リセット後の表示行数: ${$('word-stock-list').children.length}(期待:3)`);
+}
+
+console.log('\n[6.75] 単語タブ: 選択削除');
 $('word-stock-list').querySelector('input[type="checkbox"]').checked = true;
 $('word-delete-selected').click();
 await sleep(100);
 const wordAfter = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
-if (wordAfter.length === 1 && wordAfter[0].word === 'give up') ok('選択した1件だけが削除された');
+if (wordAfter.length === 2 && wordAfter[0].word === 'give up') ok('選択した1件だけが削除された');
 else fail(`削除後のストック: ${JSON.stringify(wordAfter.map((i) => i.word))}`);
 
 // ===========================================================================
@@ -535,7 +619,7 @@ if (dialogOpened) {
 }
 dlg.close();
 
-console.log('\n[10] AIに質問タブ: .apkg の書き出し');
+console.log('\n[10] AIに質問タブ: .apkg の書き出し(出力済みタグ・フィルターの検証)');
 downloaded = null;
 $('ai-ask-export').click();
 for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
@@ -548,6 +632,31 @@ if (!downloaded) {
     firstFieldEquals: '選択問題',
     tmpName: '.uitest_ai_ask.anki2',
   });
+}
+
+const aiAskAfterExport = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
+if (aiAskAfterExport.length === 3 && aiAskAfterExport.every((it) => it.exported_at)) {
+  ok('出力に成功した3件とも exported_at が付与され、ストックには残る(削除されない)');
+} else {
+  fail(`出力後のストック: ${JSON.stringify(aiAskAfterExport.map((i) => [i.pattern, !!i.exported_at]))}`);
+}
+if ($('ai-ask-filter-hide-exported').checked
+  && $('ai-ask-stock-list').children.length === 0
+  && $('ai-ask-stock-empty').textContent.includes('すべて出力済み')) {
+  ok('「出力済みを隠す」が既定ONのため、出力直後は一覧が空表示になる');
+} else {
+  fail(`出力直後の表示: checked=${$('ai-ask-filter-hide-exported').checked} / `
+    + `行数=${$('ai-ask-stock-list').children.length}`);
+}
+
+// 2回目に出力するとき、既出力の3件が対象に混ざらないことを単語タブと同じ
+// ロジックで確認済みのため、ここでは出力済み履歴のリセットのみ検証する。
+$('ai-ask-reset-exported').click();
+const aiAskAfterReset = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
+if (aiAskAfterReset.every((it) => !it.exported_at) && $('ai-ask-stock-list').children.length === 3) {
+  ok('「出力済み履歴をリセット」で exported_at が消え、フィルターONのままでも3件とも再表示される');
+} else {
+  fail(`リセット後: ${JSON.stringify(aiAskAfterReset.map((i) => [i.pattern, !!i.exported_at]))}`);
 }
 
 console.log('\n[11] AIに質問タブ: 選択削除');
@@ -894,6 +1003,49 @@ if ($('daily-pending-list').children.length === 2
 } else {
   fail(`片方除外後のタグ: ${JSON.stringify(remainingTags)}`);
 }
+
+console.log('\n[23] DailyConversation: 出力済みのローカル記録・フィルター・リセット');
+
+// 「Anki出力済みにする」チェックをOFFにして出力する(シート書き込みを
+// 意図的に行わない、ローカル記録が独立して働くことを確認するケース)。
+$('daily-mark-exported').checked = false;
+downloaded = null;
+$('daily-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (!downloaded) fail('.apkgが生成されなかった');
+else ok('「Anki出力済みにする」OFFでも.apkgは生成される');
+await sleep(200);
+
+const dupRow2 = sheetRows.find((r) => r[0] === 'id-dup-2');
+if (dupRow2 && !dupRow2[EXPORTED_COL]) {
+  ok('チェックをOFFにしたため、シートの「Anki出力済み」列は書き換わらない');
+} else {
+  fail(`id-dup-2のシート上の状態: ${JSON.stringify(dupRow2)}`);
+}
+if (JSON.parse(localStorage.getItem('anki_tool_daily_exported_ids') || '[]').includes('id-dup-2')) {
+  ok('シートへのマークとは独立に、ローカルへ出力済みとして記録される');
+} else {
+  fail('ローカルの出力済み記録が保存されていない');
+}
+
+if ($('daily-filter-hide-exported').checked
+  && $('daily-pending-list').children.length === 1
+  && $('daily-pending-count').textContent === '(1 / 2 件表示)') {
+  ok('「出力済み(このブラウザで記録)を隠す」が既定ONのため、出力済みの行が一覧から隠れる');
+} else {
+  fail(`出力後の一覧: checked=${$('daily-filter-hide-exported').checked} / `
+    + `行数=${$('daily-pending-list').children.length} / count=${$('daily-pending-count').textContent}`);
+}
+
+$('daily-reset-exported').click();
+if (JSON.parse(localStorage.getItem('anki_tool_daily_exported_ids') || '[]').length === 0
+  && $('daily-pending-list').children.length === 2) {
+  ok('「出力済み履歴をリセット」でローカル記録が消え、一覧に2件とも再表示される');
+} else {
+  fail(`リセット後: 記録=${localStorage.getItem('anki_tool_daily_exported_ids')} / `
+    + `行数=${$('daily-pending-list').children.length}`);
+}
+$('daily-mark-exported').checked = true;
 
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`

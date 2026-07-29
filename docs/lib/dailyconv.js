@@ -158,3 +158,45 @@ export function filterOutExcluded(rows) {
   if (excluded.size === 0) return rows;
   return rows.filter((r) => !excluded.has(r.id));
 }
+
+// ---------------------------------------------------------------------------
+// 出力済みのローカル記録(2026-07-29追加)
+// ---------------------------------------------------------------------------
+//
+// シート側の「Anki出力済み」列マーク(④のチェックボックス、markRowsAsExported)
+// とは別に、「このブラウザで少なくとも一度は.apkgに含めて出力した」ことを
+// ローカルに記録する。④のチェックボックスをOFFにして出力した場合や、
+// シートへの書き込みが何らかの理由で失敗した場合でも、③の一覧に残り続ける
+// 行のうち「実は既に一度カード化した」ものを見分けられるようにするための
+// 保険(除外リストとは目的が異なるため別のキーで管理する)。
+
+const EXPORTED_KEY = 'anki_tool_daily_exported_ids';
+
+/** ローカルで「出力済み」と記録した行IDの集合を返す。 */
+export function loadExportedIds() {
+  try {
+    const raw = localStorage.getItem(EXPORTED_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveExportedIds(ids) {
+  localStorage.setItem(EXPORTED_KEY, JSON.stringify([...ids].sort()));
+}
+
+/** 行IDを出力済み記録に追加する(シート側のデータには一切書き込まない)。 */
+export function addExportedIds(rowIds) {
+  const ids = loadExportedIds();
+  for (const rowId of rowIds) {
+    if (rowId) ids.add(rowId);
+  }
+  saveExportedIds(ids);
+}
+
+/** 出力済み記録を空にする(「出力済み履歴をリセット」ボタン用)。 */
+export function clearExportedIds() {
+  localStorage.removeItem(EXPORTED_KEY);
+}
