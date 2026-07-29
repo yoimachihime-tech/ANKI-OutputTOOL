@@ -224,6 +224,8 @@ function bindEvents() {
   $('daily-signout').addEventListener('click', onDailySignOut);
   $('daily-correct').addEventListener('click', onDailyCorrect);
   $('daily-refresh').addEventListener('click', () => refreshDailyPending($('daily-export-status')));
+  $('daily-filter-hide-no-error').addEventListener('change', renderDailyPending);
+  $('daily-filter-only-duplicates').addEventListener('change', renderDailyPending);
   $('daily-exclude-selected').addEventListener('click', onDailyExcludeSelected);
   $('daily-clear-exclusions').addEventListener('click', onDailyClearExclusions);
   $('daily-export').addEventListener('click', onDailyExport);
@@ -830,16 +832,60 @@ async function requireSheetsAccess() {
   return { ...cfg, accessToken };
 }
 
-/** 「誤りなし」の行は④で除外されるため、一覧でもその旨を明示する。 */
+/**
+ * 「原文」が正規化(trim+空白圧縮+小文字化)して一致する行が複数ある場合、
+ * それらの行IDの集合を返す(2026-07-29追加)。IDはuuid4で新規採番される
+ * ため通常重複しない一方、Googleフォーム経由・直接入力経由で同じ英文が
+ * 二重に投稿されてしまうケースがあり得る(CLAUDE.md参照)。判定は
+ * フィルター適用前の全件に対して行う(表示を絞っても判定結果は変わらない
+ * ようにするため)。
+ */
+function dailyDuplicateOriginalIds(rows) {
+  const normalize = (s) => (s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const counts = new Map();
+  rows.forEach((row) => {
+    const key = normalize(row.original);
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const dup = new Set();
+  rows.forEach((row) => {
+    const key = normalize(row.original);
+    if (key && counts.get(key) > 1) dup.add(row.id);
+  });
+  return dup;
+}
+
+/**
+ * 「誤りなし」の行は④で除外されるため、一覧でもその旨を明示する。
+ * 2026-07-29に、原文が重複している行の警告表示と、両方をチェックボックスで
+ * 絞り込めるフィルター機能を追加した(フィルターは表示のみに影響し、
+ * dailyPendingRows自体やシート側のデータは変更しない)。
+ */
 function renderDailyPending() {
   const list = $('daily-pending-list');
   list.textContent = '';
 
-  dailyPendingRows.forEach((row) => {
+  const duplicateIds = dailyDuplicateOriginalIds(dailyPendingRows);
+  const hideNoError = $('daily-filter-hide-no-error').checked;
+  const onlyDuplicates = $('daily-filter-only-duplicates').checked;
+
+  const visibleRows = dailyPendingRows.filter((row) => {
+    if (hideNoError && row.category === '誤りなし') return false;
+    if (onlyDuplicates && !duplicateIds.has(row.id)) return false;
+    return true;
+  });
+
+  visibleRows.forEach((row) => {
     const noError = row.category === '誤りなし';
+    const isDup = duplicateIds.has(row.id);
+    const tags = [];
+    if (isDup) tags.push(' ⚠ 重複の可能性');
+    if (noError) tags.push(' ⚠ 誤りなし(出力対象外)');
     const li = buildStockRow({
-      isDuplicate: noError,
-      tagText: ' ⚠ 誤りなし(出力対象外)',
+      isDuplicate: isDup || noError,
+      tags,
+      rowId: row.id,
       title: `[${row.category || 'カテゴリ未設定'}] ${(row.original || '').slice(0, 40)}`,
       subtitle: row.corrected || '(添削後なし)',
       // シートの「日時」列は "YYYY-MM-DD HH:MM:SS" 形式の文字列(sheets_writer /
@@ -852,8 +898,23 @@ function renderDailyPending() {
   });
 
   const empty = $('daily-pending-empty');
-  empty.hidden = dailyPendingRows.length > 0;
-  $('daily-pending-count').textContent = dailyPendingRows.length ? `(${dailyPendingRows.length} 件)` : '';
+  if (dailyPendingRows.length === 0) {
+    // 「未出力の行がまだ無い/読み込んでいない」場合のメッセージは
+    // 呼び出し元(refreshDailyPendingなど)が事前にtextContentへ設定した
+    // ものをそのまま使う(ここでは上書きしない)。
+    empty.hidden = false;
+  } else if (visibleRows.length === 0) {
+    empty.hidden = false;
+    empty.textContent = 'フィルター条件に一致する行がありません。';
+  } else {
+    empty.hidden = true;
+  }
+
+  $('daily-pending-count').textContent = dailyPendingRows.length
+    ? (visibleRows.length === dailyPendingRows.length
+      ? `(${dailyPendingRows.length} 件)`
+      : `(${visibleRows.length} / ${dailyPendingRows.length} 件表示)`)
+    : '';
 }
 
 /**
@@ -869,8 +930,11 @@ async function refreshDailyPending(status) {
     const cfg = await requireSheetsAccess();
     const rows = await fetchPendingRows(cfg);
     dailyPendingRows = dailyconv.filterOutExcluded(rows);
-    renderDailyPending();
+    // renderDailyPending()より先に設定すること。dailyPendingRowsが空の場合の
+    // 既定メッセージであり、renderDailyPending()内でフィルター一致0件用の
+    // メッセージに上書きされることがあるため、その判定より前に置く必要がある。
     $('daily-pending-empty').textContent = '未出力の行はありません。';
+    renderDailyPending();
 
     if (status) {
       hideLoading(status);
@@ -956,19 +1020,22 @@ async function onDailyCorrect() {
 }
 
 function onDailyExcludeSelected() {
-  const indices = checkedIndicesOf('daily-pending-list');
-  if (indices.length === 0) {
+  // フィルターで表示行が絞られていると、位置ベースのcheckedIndicesOfでは
+  // dailyPendingRowsのインデックスと一致しなくなるため、IDベースで選択項目を
+  // 特定する(2026-07-29、フィルター機能の追加に伴う変更)。
+  const rowIds = checkedRowIdsOf('daily-pending-list');
+  if (rowIds.length === 0) {
     alert('除外する項目を選択してください。');
     return;
   }
   if (!confirm(
-    `選択した ${indices.length} 件を一覧から除外します。\n`
+    `選択した ${rowIds.length} 件を一覧から除外します。\n`
     + '(スプレッドシート自体は変更されません。この端末でのみ非表示になります)',
   )) return;
 
-  const remove = new Set(indices);
-  dailyconv.addExcludedIds(dailyPendingRows.filter((_, i) => remove.has(i)).map((r) => r.id));
-  dailyPendingRows = dailyPendingRows.filter((_, i) => !remove.has(i));
+  dailyconv.addExcludedIds(rowIds);
+  const remove = new Set(rowIds);
+  dailyPendingRows = dailyPendingRows.filter((r) => !remove.has(r.id));
   renderDailyPending();
 }
 
@@ -1087,14 +1154,24 @@ function showDailyPreview(row) {
  * @param {string} [meta] 生成日時などの補足情報(2026-07-29追加)。
  *   空文字・未指定なら何も描画しない(古い形式で保存されたストック項目
  *   ("generated_at"を持たない)でも問題なく表示できるようにするため)。
+ * @param {string[]} [tags] 行に付ける警告バッジの文言(2026-07-29追加、
+ *   複数指定可)。省略時は`isDuplicate`がtrueなら`[' ⚠ 重複']`を使う
+ *   (単語/AIに質問/習熟用タブの既存呼び出しはこのフォールバックのまま
+ *   無変更で動く)。DailyConversationタブは「重複の可能性」「誤りなし」を
+ *   同時に持つ行があるため、明示的に配列で渡す。
+ * @param {string} [rowId] 指定するとチェックボックスに`data-row-id`属性を
+ *   付与する(2026-07-29追加)。DailyConversationタブはフィルターで表示行が
+ *   絞られると描画順序と元データのインデックスが一致しなくなるため、
+ *   位置ベースではなくID経由で選択項目を特定する必要がある。
  */
-function buildStockRow({ isDuplicate, tagText = ' ⚠ 重複', title, subtitle, meta, onPreview }) {
+function buildStockRow({ isDuplicate, tags, title, subtitle, meta, rowId, onPreview }) {
   const li = document.createElement('li');
   if (isDuplicate) li.className = 'duplicate';
 
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.setAttribute('aria-label', `${title} を選択`);
+  if (rowId) cb.dataset.rowId = rowId;
 
   const body = document.createElement('div');
   body.className = 'body';
@@ -1102,12 +1179,13 @@ function buildStockRow({ isDuplicate, tagText = ' ⚠ 重複', title, subtitle, 
   const titleEl = document.createElement('div');
   titleEl.className = 'title';
   titleEl.textContent = title;
-  if (isDuplicate) {
+  const tagList = tags && tags.length > 0 ? tags : (isDuplicate ? [' ⚠ 重複'] : []);
+  tagList.forEach((tagText) => {
     const tag = document.createElement('span');
     tag.className = 'dup-tag';
     tag.textContent = tagText;
     titleEl.appendChild(tag);
-  }
+  });
 
   const subtitleEl = document.createElement('div');
   subtitleEl.className = 'subtitle';
@@ -1168,6 +1246,19 @@ function checkedIndicesOf(listElId) {
   const indices = [];
   checkboxes.forEach((cb, i) => { if (cb.checked) indices.push(i); });
   return indices;
+}
+
+/**
+ * `buildStockRow`が`rowId`付きで描画したチェックボックスのうち、選択済みの
+ * `data-row-id`を集めて返す(2026-07-29追加)。DailyConversationタブは
+ * フィルターで表示行が絞られるため、描画順序に依存する`checkedIndicesOf`
+ * (位置ベース)ではなくこちらを使う。
+ */
+function checkedRowIdsOf(listElId) {
+  return [...document.querySelectorAll(`#${listElId} input[type="checkbox"]`)]
+    .filter((cb) => cb.checked)
+    .map((cb) => cb.dataset.rowId)
+    .filter(Boolean);
 }
 
 function onDeleteSelected(tabKey) {

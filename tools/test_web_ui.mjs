@@ -814,6 +814,87 @@ if ($('daily-pending-list').children.length === 0) {
   fail('読み込み直すと除外が効かなくなっている');
 }
 
+// ===========================================================================
+// DailyConversation: 重複行の警告表示とフィルター(2026-07-29追加)
+// ===========================================================================
+console.log('\n[21] DailyConversation: 重複行の警告表示とフィルター');
+
+// 一覧をクリーンな状態に戻す(前段までの除外登録を解除)。
+$('daily-clear-exclusions').click();
+
+// 同じ原文の行を2件、シートに直接追加する(フォーム経由・直接入力経由での
+// 二重投稿を模した状況)。既存の未出力行は id-b(誤りなし)のみのはず。
+sheetRows.push(
+  ['id-dup-1', '2026-07-29 08:00:00', 'Duplicate original text.', 'Duplicate original text (fixed).',
+    '', '文法', '', '', '', '', '', '', ''],
+  ['id-dup-2', '2026-07-29 08:05:00', 'Duplicate original text.', 'Duplicate original text, fixed differently.',
+    '', '語彙', '', '', '', '', '', '', ''],
+);
+$('daily-refresh').click();
+for (let i = 0; i < 100 && $('daily-pending-list').children.length < 3; i += 1) await sleep(50);
+
+const tagsOf = (li) => [...li.querySelectorAll('.dup-tag')].map((t) => t.textContent.trim());
+const lis = [...$('daily-pending-list').children];
+if (lis.length === 3) ok('未出力3件(誤りなし1件+原文重複2件)が一覧に表示された');
+else fail(`一覧の行数: ${lis.length}(期待:3)`);
+
+if (tagsOf(lis[0]).some((t) => t.includes('誤りなし')) && !tagsOf(lis[0]).some((t) => t.includes('重複'))
+  && tagsOf(lis[1]).some((t) => t.includes('重複')) && !tagsOf(lis[1]).some((t) => t.includes('誤りなし'))
+  && tagsOf(lis[2]).some((t) => t.includes('重複')) && !tagsOf(lis[2]).some((t) => t.includes('誤りなし'))) {
+  ok('原文が重複する行にだけ「⚠ 重複の可能性」バッジが付く(誤りなし行とは別バッジ)');
+} else {
+  fail(`バッジの付与が想定と違う: ${JSON.stringify(lis.map(tagsOf))}`);
+}
+
+console.log('\n[22] DailyConversation: フィルターチェックボックス');
+$('daily-filter-hide-no-error').checked = true;
+$('daily-filter-hide-no-error').dispatchEvent(new window.Event('change'));
+if ($('daily-pending-list').children.length === 2
+  && $('daily-pending-count').textContent === '(2 / 3 件表示)') {
+  ok('「誤りなしを隠す」チェックで該当行が隠れ、件数が「表示/全体」形式になる');
+} else {
+  fail(`フィルター後の行数/件数表示: ${$('daily-pending-list').children.length} / `
+    + `${$('daily-pending-count').textContent}`);
+}
+
+$('daily-filter-hide-no-error').checked = false;
+$('daily-filter-hide-no-error').dispatchEvent(new window.Event('change'));
+$('daily-filter-only-duplicates').checked = true;
+$('daily-filter-only-duplicates').dispatchEvent(new window.Event('change'));
+if ($('daily-pending-list').children.length === 2) {
+  ok('「重複の可能性がある行のみ表示」チェックで重複2件だけになる');
+} else {
+  fail(`重複のみ表示時の行数: ${$('daily-pending-list').children.length}(期待:2)`);
+}
+
+$('daily-filter-only-duplicates').checked = false;
+$('daily-filter-only-duplicates').dispatchEvent(new window.Event('change'));
+if ($('daily-pending-list').children.length === 3
+  && $('daily-pending-count').textContent === '(3 件)') {
+  ok('両方のチェックを外すと全件表示に戻る');
+} else {
+  fail(`フィルター解除後の行数/件数表示: ${$('daily-pending-list').children.length} / `
+    + `${$('daily-pending-count').textContent}`);
+}
+
+// 選択したうちの重複1件だけを除外しても、もう1件の重複判定には影響しない
+// ことを確認する(重複判定はdailyPendingRows全体に対して行われるため、
+// 除外操作の直後に再計算されるのが正しい)。
+$('daily-filter-only-duplicates').checked = true;
+$('daily-filter-only-duplicates').dispatchEvent(new window.Event('change'));
+$('daily-pending-list').querySelector('input[type="checkbox"]').checked = true;
+$('daily-exclude-selected').click();
+await sleep(100);
+$('daily-filter-only-duplicates').checked = false;
+$('daily-filter-only-duplicates').dispatchEvent(new window.Event('change'));
+const remainingTags = [...$('daily-pending-list').children].flatMap(tagsOf);
+if ($('daily-pending-list').children.length === 2
+  && !remainingTags.some((t) => t.includes('重複'))) {
+  ok('重複ペアの片方を除外すると、残った方はもう重複扱いされなくなる');
+} else {
+  fail(`片方除外後のタグ: ${JSON.stringify(remainingTags)}`);
+}
+
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
   : '\n✅ Web版UIの通し動作(単語・AIに質問・習熟用(音読)・DailyConversationの'

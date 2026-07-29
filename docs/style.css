@@ -200,7 +200,16 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .count { font-size: .8rem; font-weight: 400; color: var(--sub); }
 .empty { color: var(--sub); font-size: .9rem; padding: 12px 0; }
 
-.stock { list-style: none; margin: 0; padding: 0; }
+/* 2026-07-29追加: シートの行数やストック件数が増えても画面が際限なく
+   縦に伸びないよう、一覧自体をスクロール可能にする(全タブ共通)。 */
+.stock {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
 
 .stock li {
   display: flex;
