@@ -1354,17 +1354,13 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
 
 - **Web版DailyConversationの実機確認は完了**(2026-07-29、ログイン・シート
   読み込み・英文添削→シート追記・apkg出力→Anki出力済みマークまで確認済み)。
-- **習熟用(ATSU方式)カードの改修**: 片桐から「DailyConversationでカードを
-  作った場合も習熟用に追加してほしい、ただしその前に習熟用カードの様式
-  (ATSU方式)自体を改修したい」との要望あり(2026-07-29)。改修内容は
-  まだ具体化されていない(問い合わせ済み、片桐から具体例待ち)。
-  **着手前に必ず改めて相談すること**。
-  - 参考: デスクトップ版は既にDailyConversation→習熟用の連携を持っている
-    (`_generate_shuujuku_candidates_from_rows`、①シートから読み込む→
-    採用された行ごとにGemini APIを呼び習熟用ストックへ追加。直接入力からも
-    ②への自動連鎖経由で間接的に動く)。Web版にはこの連携が無い
-    (`onDailyCorrect()`はシートへの添削追記のみ)。習熟用カード改修が
-    終わり次第、Web版側にこの連携を追加する想定。
+- **習熟用(ATSU方式)カードの様式改修は不要と判断された(2026-07-29)**:
+  片桐から「DailyConversationでカードを作った場合も習熟用に追加してほしい、
+  ただしその前に習熟用カードの様式(ATSU方式)自体を改修したい」との要望が
+  あったが、現行apkgの実データ確認結果(下記)を踏まえ、「DailyConversationの
+  類似問題がATSU式カードタイプになって習熟用に入ることが前提となっている
+  ならば、それで問題無い」との回答を得た。**様式は現状維持のままでよい**、
+  という結論。
   - **現行フォーマットの実データ確認(2026-07-29)**: 片桐が実機の習熟用デッキを
     エクスポートしたapkg(`【TemporaryFile】\02.単語・MindTips__習熟用.apkg`、
     Google Drive同期フォルダ内・リポジトリ外)を`tts_core.load_collection`で
@@ -1374,9 +1370,12 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
     (`deck-title`/`item-card`/`item-head`/`item-num`/`pattern-line`/
     `gloss-line`/`ex-row`/`ex-en`/`ex-jp`/`expl-box`/`expl-label`/
     `source-tag`)いずれも、このフォルダの`build_shuujuku_v1.py`(正典コピー)の
-    定義と完全に一致しており、ローカルコピーの乖離は無い。改修相談時は
-    この現物確認済みの構造を土台に、具体的にどの要素(フィールド構成/
-    CSS・見た目/AI生成内容)を変えたいかを聞くこと。
+    定義と完全に一致しており、ローカルコピーの乖離は無い。
+- **Web版のDailyConversation→習熟用連携を実装完了(2026-07-29)**: 上記の
+  結論を受け、デスクトップ版が既に持つ連携
+  (`_generate_shuujuku_candidates_from_rows`、①シートから読み込む→採用された
+  行ごとにGemini APIを呼び習熟用ストックへ追加)をWeb版にも追加した。
+  詳細は下記「Web版のDailyConversation→習熟用連携」を参照。
 - exeの再ビルド、サービスアカウントJSONキーの保管場所移動(下記「今後の
   拡張候補」を参照)
 - **デスクトップ版にあってWeb版に無かった機能のうち、TTS試聴・日本語除外
@@ -1475,6 +1474,49 @@ DailyConversationいずれの
   定義・apkg組み立てには影響しないため`tools/export_shared_card_defs.py`の
   再実行は不要)。`tools/test_tts.mjs`の既存テストに変更は加えていないが、
   `npm test`(6本)全てがこの変更後も通過することを確認済み(2026-07-29)。
+
+### Web版のDailyConversation→習熟用連携(2026-07-29実装)
+
+デスクトップ版の`_generate_shuujuku_candidates_from_rows`(①シートから
+読み込む→採用された行ごとにGemini APIを呼び習熟用ストックへ追加)に対応する
+機能をWeb版にも追加した。上記「習熟用(ATSU方式)カードの様式改修は不要と
+判断された」を受けて着手。
+
+- **プロンプトの共有化**: 従来`gemini_client.py`内にのみあったインライン
+  プロンプト`_ROW_TO_ITEM_PROMPT`を、他の共有プロンプトと同じ理由
+  (Web版と片方だけ直して不一致になる事故を防ぐ)で
+  `docs/shared/shuujuku_dailyconv_prompt.txt`へ切り出した。Python側は
+  `gemini_client.ROW_TO_ITEM_PROMPT_PATH`(旧`_ROW_TO_ITEM_PROMPT`定数を
+  置き換え)経由で`_load_shared_prompt()`+`_fill_placeholders()`で読み、
+  Web側の`docs/lib/gemini.js`の`generateShuujukuItemFromRow({row, apiKey,
+  model, promptTemplate})`が同じファイルを読む。既存の
+  `shuujuku_prompt.txt`(「AIに質問」タブの4問目用、質問文ベース)とは
+  プレースホルダが異なる別ファイル(`{{original}}`/`{{corrected}}`/
+  `{{explanation}}`、行ベース)であり、混同しないこと。
+- **トリガーのタイミングがデスクトップ版と異なる**: デスクトップ版は
+  「①シートから読み込む→デッキ組み立て」の時点(TTS生成・apkg出力より前)で
+  発火するが、Web版はシート読み込みとデッキ組み立てが同じ操作
+  (④の`.apkgをダウンロード`、`onDailyExport()`)に統合されているため、
+  Web版はそこに合わせて`onDailyExport()`内、`dailyconv.processSheetRows()`で
+  実際にapkgへ含めた行(`rows`)に対して呼ぶ
+  (`generateShuujukuCandidatesFromRows(rows, status)`、`app.js`)。
+  「誤りなし」の行・ID重複行は元々デッキに含まれないため、習熟用候補も
+  自動的に生成対象外になる(デスクトップ版と同じ絞り込み)。
+- **非ブロッキング**: Gemini APIキー未設定、または行ごとの生成失敗があっても
+  daily側の`.apkg`出力自体は成功として扱う(「AIに質問」タブの4問目生成と
+  同じ設計)。成功件数・失敗件数はステータス文言に追記される
+  (messageboxではなくWeb版の通常のstatus表示に統一)。
+- **重複の扱いはデスクトップ版と同じく「常に追加、一覧で警告表示」方式**:
+  同じ行から複数回(再エクスポート等で)生成しても黙ってスキップしない。
+  `app.js`の`shuujukuDuplicateIndices()`(source_topic基準)が既存の仕組みで
+  検出・⚠表示する(pattern類似度によるファジー重複検出はデスクトップ版のみで
+  Web版には元々無く、これは今回のスコープ外)。
+- **テスト**: `tools/test_web_ui.mjs`のセクション[19]に、DailyConversationの
+  `.apkg`出力時にカード化された行の数だけGeminiが呼ばれ、習熟用(音読)
+  ストックに`source_kind: 'dailyconv'` / `source_topic: 行ID`を持つ項目が
+  追加されることを検証するアサーションを追加した(`FAKE_SHUUJUKU_FROM_ROW`・
+  `geminiMode = 'daily_shuujuku'`)。`npm test`(6本)全てが通過することを
+  確認済み(2026-07-29)。
 
 ### Web版のDailyConversation(スプレッドシート連携、2026-07-29実装)
 

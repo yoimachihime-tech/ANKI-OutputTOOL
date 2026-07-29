@@ -31,17 +31,25 @@ docs/
   shared/               ← デスクトップ版と共有する資産(自動生成あり)
     word_card_prompt.txt      単語カード生成プロンプト
     grammar_multi_prompt.txt  Grammar Multi(3問)生成プロンプト
-    shuujuku_prompt.txt        習熟用(音読・4問目)生成プロンプト
+    shuujuku_prompt.txt        習熟用(音読・「AIに質問」の4問目)生成プロンプト
+    shuujuku_dailyconv_prompt.txt  習熟用(音読・DailyConversation由来)生成プロンプト
     correction_system_instruction.txt  英文添削の system_instruction
     correction_response_schema.json    英文添削の responseSchema(構造化出力)
     card_defs.json             ノートタイプ定義(自動生成)
     anki_schema.json           Anki の SQLite スキーマ(自動生成)
 ```
 
-習熟用(音読)タブには直接の入力欄が無い。「AIに質問」タブで質問を送信すると、
-Grammar Multiの3問に加えて、同じ質問の背景にある文法パターンを音読練習用に
-まとめた4問目が自動的に習熟用ストックへ追加される(デスクトップ版と同じ挙動、
-`app.js`の`onAiAskGenerate()`を参照)。
+習熟用(音読)タブには直接の入力欄が無く、2つの経路から自動的に候補が
+追加される(デスクトップ版と同じ挙動)。
+
+- 「AIに質問」タブで質問を送信すると、Grammar Multiの3問に加えて、同じ質問の
+  背景にある文法パターンを音読練習用にまとめた4問目が自動的に追加される
+  (`app.js`の`onAiAskGenerate()`を参照)。
+- DailyConversationタブで「④ .apkgをダウンロード」すると、実際にカード化
+  された行それぞれについて、その添削・解説の背景にある文法パターンを
+  まとめた候補が自動的に追加される(2026-07-29追加、`app.js`の
+  `generateShuujukuCandidatesFromRows()`を参照。デスクトップ版の
+  `_generate_shuujuku_candidates_from_rows`に対応)。
 
 `shared/` に置いているのは、GitHub Pages が `docs/` 配下しか配信しないため。
 リポジトリ直下に置くと Web 版から `fetch()` できない。

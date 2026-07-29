@@ -17,7 +17,7 @@
 // TAB_CONFIG/onExport/onDeleteSelected の枠組みには載せていない。
 
 import {
-  generateVocabCard, generateGrammarMultiItems, generateShuujukuItem,
+  generateVocabCard, generateGrammarMultiItems, generateShuujukuItem, generateShuujukuItemFromRow,
   correctEnglishText, consolidateNoErrorCorrections, listModels, GeminiError,
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
@@ -71,6 +71,7 @@ const shared = {
   wordPrompt: null,
   grammarMultiPrompt: null,
   shuujukuPrompt: null,
+  shuujukuDailyconvPrompt: null,
   correctionSystemInstruction: null,
   correctionResponseSchema: null,
   cardDefs: null,
@@ -116,12 +117,13 @@ async function init() {
   updateDailyAuthStatus();
 
   const [
-    wordPrompt, grammarMultiPrompt, shuujukuPrompt,
+    wordPrompt, grammarMultiPrompt, shuujukuPrompt, shuujukuDailyconvPrompt,
     correctionSystemInstruction, correctionResponseSchema, cardDefsJson, ankiSchema,
   ] = await Promise.all([
     fetchText('./shared/word_card_prompt.txt'),
     fetchText('./shared/grammar_multi_prompt.txt'),
     fetchText('./shared/shuujuku_prompt.txt'),
+    fetchText('./shared/shuujuku_dailyconv_prompt.txt'),
     fetchText('./shared/correction_system_instruction.txt'),
     fetchJson('./shared/correction_response_schema.json'),
     fetchJson('./shared/card_defs.json'),
@@ -130,6 +132,7 @@ async function init() {
   shared.wordPrompt = wordPrompt;
   shared.grammarMultiPrompt = grammarMultiPrompt;
   shared.shuujukuPrompt = shuujukuPrompt;
+  shared.shuujukuDailyconvPrompt = shuujukuDailyconvPrompt;
   shared.correctionSystemInstruction = correctionSystemInstruction;
   shared.correctionResponseSchema = correctionResponseSchema;
   shared.cardDefs = cardDefsJson.defs;
@@ -1217,6 +1220,53 @@ function onDailyResetExported() {
   renderDailyPending();
 }
 
+/**
+ * DailyConversationの「④ .apkgをダウンロード」で実際にカード化された行
+ * それぞれについて、Gemini APIで習熟用(音読)候補を自動生成し習熟用ストックへ
+ * 追加する(デスクトップ版の`_generate_shuujuku_candidates_from_rows`と同じ
+ * 挙動。デスクトップ版は「①シートから読み込む」でデッキを組み立てる
+ * 都度これを呼ぶが、Web版はシート読み込みとデッキ組み立てが同じ操作
+ * (④の.apkgダウンロード)に統合されているため、onDailyExport()から呼ぶ)。
+ * Gemini APIキー未設定なら黙ってスキップする。この処理の失敗はdaily側の
+ * .apkg出力自体を無効にしない(非ブロッキング。onAiAskGenerateの4問目生成と
+ * 同じ考え方)。重複していても常に追加する(shuujukuDuplicateIndices()が
+ * source_topic基準で一覧に⚠表示する)。
+ * @param {object[]} rows dailyconv.processSheetRows() が返す出力対象行
+ * @param {HTMLElement} status 進捗表示先
+ * @returns {Promise<string>} 呼び出し元のstatusメッセージに追記する短いメモ
+ */
+async function generateShuujukuCandidatesFromRows(rows, status) {
+  const apiKey = $('api-key').value.trim();
+  if (!apiKey || !shared.shuujukuDailyconvPrompt) return '';
+
+  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  const items = [];
+  let failed = 0;
+  for (let i = 0; i < rows.length; i += 1) {
+    showLoading(status, `習熟用(音読)候補を生成中... (${i + 1}/${rows.length})`);
+    try {
+      const item = await generateShuujukuItemFromRow({
+        row: rows[i], apiKey, model, promptTemplate: shared.shuujukuDailyconvPrompt,
+      });
+      items.push({ ...item, generated_at: new Date().toISOString() });
+    } catch {
+      failed += 1;
+    }
+  }
+
+  if (items.length > 0) {
+    shuujukuStock = shuujukuStock.concat(items);
+    localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
+    renderShuujukuStock();
+    return `\n習熟用(音読)ストックに ${items.length} 件追加しました(「習熟用(音読)」タブで確認できます)。`
+      + (failed > 0 ? `(${failed} 件は生成に失敗しました)` : '');
+  }
+  if (failed === rows.length) {
+    return `\n習熟用(音読)候補の生成はすべて失敗しました(${failed} 件)。`;
+  }
+  return '';
+}
+
 async function onDailyExport() {
   const status = $('daily-export-status');
   if (dailyPendingRows.length === 0) {
@@ -1265,6 +1315,10 @@ async function onDailyExport() {
 
     let note = '';
     if (duplicateIds.length > 0) note += `\nID重複の ${duplicateIds.length} 件は除外しました。`;
+
+    // デスクトップ版と同じく、実際にカード化した行ごとに習熟用(音読)候補も
+    // 自動生成する。失敗してもdaily側の出力自体は成功として扱う(非ブロッキング)。
+    note += await generateShuujukuCandidatesFromRows(rows, status);
 
     // 「Anki出力済み」のマークは、.apkg の生成に**実際に成功してから**行う
     // (デスクトップ版と同じ2段階設計。失敗した行を出力済みにしないため)。

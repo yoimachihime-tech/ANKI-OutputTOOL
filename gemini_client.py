@@ -274,31 +274,11 @@ def _item_from_parsed(parsed: dict, source_key: tuple, source_label) -> dict:
     }
 
 
-_ROW_TO_ITEM_PROMPT = """あなたは英語学習カード作成のアシスタントです。
-以下は、ある英作文の添削結果です。
-
-原文: {original}
-添削後: {corrected}
-解説: {explanation}
-
-この解説の背景にある「文法パターン」を抽象化し、音読練習用のカードを1つ作ってください。
-以下のルールを厳守してください:
-
-1. pattern: 可変部分をプレースホルダー語(動詞、代名詞、否定文、形容詞、名詞、主語、時制、数など)
-   に置き換えた、穴埋め形式の英語パターン(例: "She doesn't 動詞")
-2. examples: そのパターンを使った、上記の原文・添削後の文とは別の新しい例文を2〜3個
-   (英文と日本語訳のペア)。上記の添削後の文をそのまま流用しないこと。
-3. meaning: そのパターンの意味・使い方の日本語での簡潔な説明
-4. expl: 上記の解説の内容を、必要なら整理して1〜2文で
-
-以下のJSON形式で、JSON以外の文字を含めずに出力してください:
-{{
-  "pattern": "...",
-  "meaning": "...",
-  "examples": [["English sentence.", "日本語訳。"], ["English sentence 2.", "日本語訳2。"]],
-  "expl": "..."
-}}
-"""
+# プロンプトはWeb版と共有するため外部ファイルに切り出してある(2026-07-29、
+# 他の共有プロンプトと同じ理由。以前はこのモジュール内のみのインライン
+# 文字列だったが、Web版にDailyConversation→習熟用の連携を追加するにあたり
+# 共有化した)。docs/shared/shuujuku_dailyconv_prompt.txt
+ROW_TO_ITEM_PROMPT_PATH = os.path.join(SHARED_DIR, "shuujuku_dailyconv_prompt.txt")
 
 
 def generate_shuujuku_item_from_row(row: dict, api_key: str, model: str) -> dict:
@@ -308,7 +288,8 @@ def generate_shuujuku_item_from_row(row: dict, api_key: str, model: str) -> dict
     row: id, original, corrected, explanation などのキーを持つdict
          (sheets_reader.fetch_pending_rowsの戻り値の要素と同じ形式)
     """
-    prompt = _ROW_TO_ITEM_PROMPT.format(
+    prompt = _fill_placeholders(
+        _load_shared_prompt(ROW_TO_ITEM_PROMPT_PATH),
         original=row.get("original", ""),
         corrected=row.get("corrected", ""),
         explanation=row.get("explanation", ""),

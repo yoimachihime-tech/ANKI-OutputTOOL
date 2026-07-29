@@ -407,6 +407,42 @@ export async function generateShuujukuItem({ question, apiKey, model, promptTemp
 }
 
 // ---------------------------------------------------------------------------
+// 習熟用(音読) — DailyConversationタブからの自動生成(2026-07-29追加)
+// gemini_client.generate_shuujuku_item_from_row() と処理内容を一致させて
+// ある。デスクトップ版は「①シートから読み込む」でデッキに採用された行
+// ごとに自動でこれを呼ぶ(_generate_shuujuku_candidates_from_rows)。Web版は
+// シート読み込みとデッキ組み立てが同じ操作(④の.apkgダウンロード)に統合
+// されているため、app.jsのonDailyExport()内、実際にapkgへ含めた行に対して
+// 呼ぶ(generateShuujukuCandidatesFromRows()参照)。
+// ---------------------------------------------------------------------------
+
+/**
+ * DailyConversationのシート行(1件、fetchPendingRows()の要素と同じ形式)から、
+ * 習熟用(音読)ストックに追加する item を1件生成する
+ * (gemini_client.generate_shuujuku_item_from_row() に対応)。
+ * 戻り値の形はgenerateShuujukuItem()と同じ(source_kind/source_topicは
+ * それぞれ'dailyconv'/シートのID列の値)。
+ */
+export async function generateShuujukuItemFromRow({ row, apiKey, model, promptTemplate }) {
+  const prompt = fillPlaceholders(promptTemplate, {
+    original: row.original || '',
+    corrected: row.corrected || '',
+    explanation: row.explanation || '',
+  });
+  const text = await callGemini(prompt, apiKey, model);
+  const parsed = extractJson(text);
+  return {
+    pattern: parsed.pattern || '',
+    meaning: parsed.meaning || null,
+    examples: parsed.examples || [],
+    expl: parsed.expl || null,
+    source_kind: 'dailyconv',
+    source_topic: row.id || '',
+    source_label: '由来: DailyConversation',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 英文添削 — 「DailyConversation」タブ
 // gemini_client.correct_english_text() / consolidate_no_error_corrections()
 // と処理内容を一致させてある。
