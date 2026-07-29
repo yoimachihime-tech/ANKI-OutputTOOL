@@ -1365,8 +1365,24 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
     ②への自動連鎖経由で間接的に動く)。Web版にはこの連携が無い
     (`onDailyCorrect()`はシートへの添削追記のみ)。習熟用カード改修が
     終わり次第、Web版側にこの連携を追加する想定。
+  - **現行フォーマットの実データ確認(2026-07-29)**: 片桐が実機の習熟用デッキを
+    エクスポートしたapkg(`【TemporaryFile】\02.単語・MindTips__習熟用.apkg`、
+    Google Drive同期フォルダ内・リポジトリ外)を`tts_core.load_collection`で
+    読み込んで確認した。ノートタイプ名・フィールド(`Num`/`Content`/
+    `EnglishText`/`JapaneseText`、後2つは常に空欄で未使用)・カードテンプレート
+    (`カード 1`、表裏とも`{{Content}}`のみで裏面に追加情報無し)・CSS
+    (`deck-title`/`item-card`/`item-head`/`item-num`/`pattern-line`/
+    `gloss-line`/`ex-row`/`ex-en`/`ex-jp`/`expl-box`/`expl-label`/
+    `source-tag`)いずれも、このフォルダの`build_shuujuku_v1.py`(正典コピー)の
+    定義と完全に一致しており、ローカルコピーの乖離は無い。改修相談時は
+    この現物確認済みの構造を土台に、具体的にどの要素(フィールド構成/
+    CSS・見た目/AI生成内容)を変えたいかを聞くこと。
 - exeの再ビルド、サービスアカウントJSONキーの保管場所移動(下記「今後の
   拡張候補」を参照)
+- **デスクトップ版にあってWeb版に無かった機能のうち、TTS試聴・日本語除外
+  オプションの2つは2026-07-29に実装済み**(下記「Web版のTTS試聴・日本語除外
+  オプション」を参照)。残りは自動ゲイン調整(`find_safe_volume_gain_db`)・
+  波形表示(テスト再生時のクリッピング検出込み)で、いずれも未着手。
 
 ### Web版TTS音声の埋め込み(2026-07-28実装・実機確認・push済み)
 
@@ -1421,6 +1437,44 @@ DailyConversationいずれの
   改めて確認し、**正常に動作している**(=Web版フェーズ1のTTS埋め込みは
   実装・実機確認とも完了)。
 - **未検証**: 音量ゲイン・音声名の既定値がスマホ実機で妥当か。
+
+### Web版のTTS試聴・日本語除外オプション(2026-07-29実装)
+
+デスクトップ版にあってWeb版に無かった機能のうち2つを追加した(片桐の指示で
+「1〜2個」実装候補として選定、⚙設定のTTSセクションに追加)。
+
+- **テスト再生(`docs/lib/tts.js`の`synthesizeTestSample`/`TEST_SAMPLE_SENTENCES`、
+  `app.js`の`onTestPlay`)**: `tts_core.synthesize_test_sample_wav`+
+  デスクトップ版の`winsound`再生に対応するWeb版だが、**大幅に簡略化**して
+  ある。デスクトップ版が持つ「文と文の間隔を空けて結合」(`synthesize_with_gaps`、
+  WAV結合+lameenc再エンコード)・波形アニメーション表示・0dBクリッピング検出
+  はいずれもWeb版には移植していない(ブラウザにlameenc相当のエンコーダが
+  無く、そもそもWeb版のTTS埋め込み自体が「文と文の間隔調整は未対応」の
+  設計であるため、テスト再生だけこれに対応する意味が薄いと判断)。
+  固定の2文(`TEST_SAMPLE_SENTENCES`)を1回のTTS呼び出しでMP3化し、
+  `<audio>`要素で再生するだけ(音声名・言語コード・音量ゲインの確認が主目的)。
+  連打時は前の再生を`pause()`してからやり直す(デスクトップ版の
+  `winsound.PlaySound(None, SND_PURGE)`と同じ考え方)。
+- **日本語除外オプション(`docs/lib/tts.js`の`splitIntoSentences`/
+  `containsJapanese`/`stripJapaneseSentences`、⚙設定の
+  「TTSで日本語を含む文を除外する」チェックボックス`tts-exclude-japanese`、
+  既定OFF)**: `tts_core.split_into_sentences`(見出しラベル結合ロジック
+  `_LABEL_ONLY_RE`込み)/`contains_japanese`/`strip_japanese_sentences`を
+  そのまま移植した。`getTtsOptions()`が返すopts経由で
+  `synthesizeFieldWithTags()`に伝わり、ONの場合はTTS対象テキストを組み立てる
+  直前(`stripHtmlForTts`より前)にフィールドの生HTMLへ適用する
+  (`[sound:...]`タグの追記先である元のフィールド自体は変更しない)。
+  **単語/AIに質問/DailyConversationタブの音声生成にのみ効く**
+  (`synthesizeFieldWithTags`経由のもの)。**習熟用(音読)タブは対象外**:
+  `synthesizeExampleAudioTags`(例文ごとの個別音声)には配線していない。
+  習熟用の例文(`ex-en`)はAI生成時点から英日を構造的に分離した別々の文字列
+  (`examples`配列)であり、デスクトップ版の`extract_shuujuku_tts_text`
+  (HTML構造ベースの抽出)に相当する分離が既になされているため、文単位の
+  日本語除外を重ねて適用する必要性がデスクトップ版ほど高くないと判断した。
+- 実装は`docs/lib/tts.js`・`docs/app.js`・`docs/index.html`のみ(共有カード
+  定義・apkg組み立てには影響しないため`tools/export_shared_card_defs.py`の
+  再実行は不要)。`tools/test_tts.mjs`の既存テストに変更は加えていないが、
+  `npm test`(6本)全てがこの変更後も通過することを確認済み(2026-07-29)。
 
 ### Web版のDailyConversation(スプレッドシート連携、2026-07-29実装)
 

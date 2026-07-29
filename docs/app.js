@@ -22,7 +22,7 @@ import {
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
 import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
-import { synthesizeFieldWithTags, synthesizeExampleAudioTags } from './lib/tts.js';
+import { synthesizeFieldWithTags, synthesizeExampleAudioTags, synthesizeTestSample } from './lib/tts.js';
 import {
   getAccessToken, clearAccessToken, hasValidAccessToken,
   fetchPendingRows, appendCorrectionRows, markRowsAsExported, SheetsAuthError,
@@ -45,6 +45,7 @@ const STORAGE = {
   ttsVoice: 'anki_tool_tts_voice',
   ttsLang: 'anki_tool_tts_lang',
   ttsVolumeGainDb: 'anki_tool_tts_volume_gain_db',
+  ttsExcludeJapanese: 'anki_tool_tts_exclude_japanese',
   googleClientId: 'anki_tool_google_client_id',
   spreadsheetId: 'anki_tool_sheets_spreadsheet_id',
   sheetName: 'anki_tool_sheets_sheet_name',
@@ -104,6 +105,7 @@ async function init() {
   $('tts-voice').value = localStorage.getItem(STORAGE.ttsVoice) || $('tts-voice').value;
   $('tts-lang').value = localStorage.getItem(STORAGE.ttsLang) || $('tts-lang').value;
   $('tts-volume-gain').value = localStorage.getItem(STORAGE.ttsVolumeGainDb) || $('tts-volume-gain').value;
+  $('tts-exclude-japanese').checked = localStorage.getItem(STORAGE.ttsExcludeJapanese) === '1';
   $('google-client-id').value = localStorage.getItem(STORAGE.googleClientId) || '';
   $('sheets-spreadsheet-id').value = localStorage.getItem(STORAGE.spreadsheetId) || '';
   $('sheets-sheet-name').value = localStorage.getItem(STORAGE.sheetName) || $('sheets-sheet-name').value;
@@ -214,6 +216,10 @@ function bindEvents() {
   $('tts-volume-gain').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.ttsVolumeGainDb, e.target.value.trim());
   });
+  $('tts-exclude-japanese').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.ttsExcludeJapanese, e.target.checked ? '1' : '0');
+  });
+  $('tts-test-play').addEventListener('click', onTestPlay);
   $('clear-tts-key').addEventListener('click', onClearTtsKey);
 
   // スプレッドシート設定(DailyConversationタブ用)
@@ -373,7 +379,50 @@ function getTtsOptions() {
     voiceName: $('tts-voice').value.trim() || 'en-US-Chirp3-HD-Iapetus',
     languageCode: $('tts-lang').value.trim() || 'en-US',
     volumeGainDb: Number($('tts-volume-gain').value) || 0,
+    excludeJapanese: $('tts-exclude-japanese').checked,
   };
+}
+
+/**
+ * ⚙設定「テスト再生」ボタン(2026-07-29追加)。tts_core.py の
+ * synthesize_test_sample_wav + winsound再生のWeb版だが、Web版は波形表示・
+ * gap_seconds(文と文の間隔)には対応せず、固定サンプル文を1回のTTS呼び出しで
+ * MP3化して<audio>で再生するだけの簡易版(音声名・言語・音量ゲインの確認が
+ * 主目的)。連打時は前の再生を止めてからやり直す(desktop版のPlaySound
+ * SND_PURGEと同じ考え方)。
+ */
+let testPlayAudio = null;
+
+async function onTestPlay() {
+  const opts = getTtsOptions();
+  if (!opts) {
+    alert('先にCloud Text-to-Speech APIキーを入力してください。');
+    return;
+  }
+  const statusEl = $('tts-test-status');
+  const btn = $('tts-test-play');
+  if (testPlayAudio) {
+    testPlayAudio.pause();
+    testPlayAudio = null;
+  }
+  btn.disabled = true;
+  showLoading(statusEl, 'テスト音声を生成中...');
+  try {
+    const bytes = await synthesizeTestSample(opts);
+    const blob = new Blob([bytes], { type: 'audio/mpeg' });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    testPlayAudio = audio;
+    audio.addEventListener('ended', () => URL.revokeObjectURL(url));
+    hideLoading(statusEl);
+    setStatus(statusEl, '再生中...');
+    await audio.play();
+  } catch (e) {
+    hideLoading(statusEl);
+    setStatus(statusEl, e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /**

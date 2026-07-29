@@ -157,16 +157,36 @@ export async function callGoogleTts(text, { voiceName, languageCode, apiKey, vol
 }
 
 // ---------------------------------------------------------------------------
+// テスト再生(⚙設定「テスト再生」用、2026-07-29追加)
+// tts_core.TEST_SAMPLE_SENTENCES / synthesize_test_sample_wav のWeb版。
+// デスクトップ版は文と文の間に無音を挟んで結合する(synthesize_with_gaps)が、
+// Web版にはその機能が無い(上記コメント参照)ため、2文をつなげたテキストを
+// 1回のTTS呼び出しでMP3化するだけの簡略版にしてある(音声・言語・音量ゲイン
+// の確認が主目的で、文間隔の確認はできない)。
+// ---------------------------------------------------------------------------
+
+export const TEST_SAMPLE_SENTENCES = [
+  'This is a short test sentence.',
+  'Here is a second one to check the voice and volume.',
+];
+
+/** @returns {Promise<Uint8Array>} */
+export async function synthesizeTestSample(opts) {
+  return callGoogleTts(TEST_SAMPLE_SENTENCES.join(' '), opts);
+}
+
+// ---------------------------------------------------------------------------
 // HTML整形(tts_core.strip_html_for_tts の移植)
 // ---------------------------------------------------------------------------
 //
-// tts_core.split_into_sentences() に相当する文分割はWeb版には無い。
-// 単語/AIに質問はフィールド全体を1回で読み上げ、習熟用は既にitem側が
-// 例文単位に分かれているため、どちらも文分割を必要としないため
-// (2026-07-28、音声を文ごとに分けるのは習熟用のみという片桐の指示による)。
-// 将来「文と文の間に無音を挟んで1つの音声にする」機能を足す場合は、
-// split_into_sentences(「Ex1.」等の見出しラベルを次の文へ結合する処理を含む)
-// の移植から必要になる。
+// tts_core.split_into_sentences() に相当する文分割自体は音声の分割単位には
+// 使わない(単語/AIに質問はフィールド全体を1回で読み上げ、習熟用は既にitem側が
+// 例文単位に分かれているため、2026-07-28の片桐の指示どおりどちらも文ごとには
+// 分けない)。ただし2026-07-29に「日本語を含む文をTTS対象から除外する」
+// オプション(下記stripJapaneseSentences)を追加したため、そちらの用途で
+// split_into_sentences相当が必要になり移植した。
+// 将来「文と文の間に無音を挟んで1つの音声にする」機能を足す場合もこの関数を
+// 流用できる。
 
 /** HTMLエンティティをデコードする(&amp; 等)。 */
 function htmlUnescape(text) {
@@ -186,6 +206,59 @@ export function stripHtmlForTts(raw) {
   return text;
 }
 
+// tts_core._LABEL_ONLY_RE と同一(英字0〜6文字+数字1〜3文字+句点)。
+// 「Ex1.」「2.」のような見出しラベル単体が1文として切り出されるのを防ぐため、
+// 次の断片へ結合する。
+const LABEL_ONLY_RE = /^[A-Za-z]{0,6}\d{1,3}\.$/;
+
+/** tts_core.split_into_sentences() と同一のロジック。 */
+export function splitIntoSentences(htmlText) {
+  let normalized = htmlText.replace(/<br\s*\/?>/gi, '\n');
+  normalized = normalized.replace(/<\/div>/gi, '\n');
+  normalized = normalized.replace(/<[^>]+>/g, '');
+  normalized = htmlUnescape(normalized);
+
+  const sentences = [];
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const rawParts = line.split(/(?<=[.!?])\s+/);
+    const parts = rawParts.map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+    const merged = [];
+    for (const p of parts) {
+      if (merged.length > 0 && LABEL_ONLY_RE.test(merged[merged.length - 1])) {
+        merged[merged.length - 1] = `${merged[merged.length - 1]} ${p}`;
+      } else {
+        merged.push(p);
+      }
+    }
+    sentences.push(...merged);
+  }
+  return sentences;
+}
+
+// tts_core._JAPANESE_CHAR_RE と同一の範囲
+// (ひらがな/カタカナ/CJK統合漢字/半角カタカナ)。
+const JAPANESE_CHAR_RE = /[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ]/;
+
+/** tts_core.contains_japanese() と同一。 */
+export function containsJapanese(text) {
+  return JAPANESE_CHAR_RE.test(text);
+}
+
+/**
+ * tts_core.strip_japanese_sentences() と同一: フィールドの生テキスト(HTML)を
+ * 文単位に分割し、日本語を含む文を除外して`<br>`で再結合する。
+ * AIがプロンプト指示に反して日本語を混ぜて返してきた場合の保険用オプション
+ * (⚙設定の「TTSで日本語を含む文を除外する」、2026-07-29追加)。
+ */
+export function stripJapaneseSentences(rawFieldText) {
+  const sentences = splitIntoSentences(rawFieldText);
+  const kept = sentences.filter((s) => !containsJapanese(s));
+  return kept.join('<br>');
+}
+
 // ---------------------------------------------------------------------------
 // フィールド単位の音声埋め込み(単語・AIに質問タブ用)
 // ---------------------------------------------------------------------------
@@ -200,13 +273,19 @@ export function stripHtmlForTts(raw) {
  * synthesizeExampleAudioTags()が担当する。
  *
  * @param {string} rawFieldHtml
- * @param {object} opts {voiceName, languageCode, apiKey, volumeGainDb, filenamePrefix}
+ * @param {object} opts {voiceName, languageCode, apiKey, volumeGainDb, filenamePrefix,
+ *   excludeJapanese?} excludeJapaneseがtrueなら、tts_core.strip_japanese_sentences()と
+ *   同様に日本語を含む文をTTS対象テキストからだけ除外する(タグの追記先である
+ *   rawFieldHtml自体は変更しない)。
  * @param {Map<string, Uint8Array>} media 生成したmp3を追加していく(呼び出し側で共有)
  * @returns {Promise<string>} 音声タグを追記したHTML(元のフィールドが空、または
  *   読み上げ対象テキストが空の場合は元のHTMLをそのまま返す = 何もしない)
  */
 export async function synthesizeFieldWithTags(rawFieldHtml, opts, media) {
-  const text = stripHtmlForTts(rawFieldHtml || '');
+  const sourceForTts = opts.excludeJapanese
+    ? stripJapaneseSentences(rawFieldHtml || '')
+    : (rawFieldHtml || '');
+  const text = stripHtmlForTts(sourceForTts);
   if (!text) return rawFieldHtml;
 
   const bytes = await callGoogleTts(text, opts);

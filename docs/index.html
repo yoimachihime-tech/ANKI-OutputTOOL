@@ -65,6 +65,21 @@
   <label for="tts-volume-gain">音量ゲイン(dB、-20.0〜16.0、既定0)</label>
   <input type="number" id="tts-volume-gain" value="0" min="-20" max="16" step="0.5">
 
+  <label class="checkbox">
+    <input type="checkbox" id="tts-exclude-japanese">
+    TTSで日本語を含む文を除外する
+  </label>
+  <p class="hint">
+    AIが指示に反して日本語の説明文などを混ぜて返してきた場合の保険用オプションです。
+    単語・AIに質問・DailyConversationタブの音声生成に効きます(習熟用は例文フィールドが
+    元々英文のみのため対象外です)。
+  </p>
+
+  <div class="row">
+    <button type="button" id="tts-test-play" class="ghost">🔊 テスト再生</button>
+  </div>
+  <p id="tts-test-status" class="status" role="status" aria-live="polite"></p>
+
   <div class="row">
     <button type="button" id="clear-tts-key" class="danger">TTSキーを消去</button>
   </div>
