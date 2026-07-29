@@ -410,6 +410,12 @@ function getTtsOptions() {
 // かつAudioContextの状態管理を自前で扱う必要が無く実績も豊富なため、
 // 再生自体は<audio>要素に戻した。波形解析(decodeAudioSamples等)は
 // 再生の成否と無関係にWeb Audio APIのデコード機能だけを使うので変更なし。
+//
+// 追記(2026-07-29、スマホ実機で「NotAllowedError」により再生されないと
+// 再報告): <audio>要素に戻しただけでは、TTS合成のネットワーク待ち(数秒)の
+// 間に「ユーザー操作起因」の有効期限が切れるモバイル環境で依然play()が
+// 拒否されることが判明。`onTestPlay`のコメントを参照(無音WAVを即座に再生して
+// 要素を解禁し、後からsrcだけ差し替える方式に変更)。
 let testPlayAudio = null;
 let testAnimationFrameId = null;
 
@@ -453,18 +459,48 @@ function drawTestWaveform(buckets, progress, clipped) {
 }
 
 /**
+ * 完全な無音のWAVをBlob URLとして返す(モバイルでの再生ブロック対策、
+ * `onTestPlay`から参照)。
+ */
+function createSilentWavBlobUrl() {
+  const buffer = new ArrayBuffer(46);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 38, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, 8000, true); // sample rate
+  view.setUint32(28, 16000, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  writeStr(36, 'data');
+  view.setUint32(40, 2, true);
+  view.setInt16(44, 0, true);
+  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+}
+
+/**
  * 事前計算した波形(buckets)を見ながらMP3を<audio>要素で再生し、経過時間に
  * 応じて波形アニメーションを進める(tts_core.pyの「再生前に全サンプルから
  * 概形を事前計算しておき、再生開始からの経過時間でその配列を参照しながら
  * 描画する」方式と同じ考え方。デスクトップ版はwinsound+time.monotonic()、
  * Web版は<audio>要素のcurrentTime基準)。
+ * `audio`は`onTestPlay`が無音再生でユーザー操作起因の許可を得た同一要素
+ * (下記のNotAllowedError対策コメント参照)。
  * @returns {Promise<void>} play()が実際に始まる(または失敗する)まで待つ
  */
-async function playTestWaveform(mp3Bytes, duration, buckets, clipped) {
+async function playTestWaveform(audio, mp3Bytes, duration, buckets, clipped) {
   const blob = new Blob([mp3Bytes], { type: 'audio/mpeg' });
   const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
-  testPlayAudio = audio;
+  audio.pause();
+  audio.src = url;
+  audio.currentTime = 0;
   audio.addEventListener('ended', () => URL.revokeObjectURL(url));
 
   const tick = () => {
@@ -480,6 +516,17 @@ async function playTestWaveform(mp3Bytes, duration, buckets, clipped) {
   await audio.play();
 }
 
+/**
+ * モバイル(特にiOS Safari)では、クリックからTTS合成完了(ネットワーク
+ * 待ちで数秒かかることがある)までの間に「ユーザー操作起因」の有効期限が
+ * 切れてしまい、その後の`audio.play()`が
+ * NotAllowedError(「The request is not allowed by the user agent or the
+ * platform...」)で拒否されることがある(2026-07-29、実機で報告)。対策として、
+ * クリックハンドラの同期部分(await前)でまず無音WAVを即座に再生開始し、
+ * その<audio>要素をユーザー操作起因の再生として"解禁"しておく。TTS合成後は
+ * 同じ要素のsrcを実際の音声に差し替えて再度play()するだけにする(同一要素
+ * であれば、srcの差し替え後のplay()も解禁状態が引き継がれる)。
+ */
 async function onTestPlay() {
   const opts = getTtsOptions();
   if (!opts) {
@@ -490,6 +537,13 @@ async function onTestPlay() {
   const btn = $('tts-test-play');
   stopTestPlayback();
   btn.disabled = true;
+
+  const audio = new Audio();
+  const silentUrl = createSilentWavBlobUrl();
+  audio.src = silentUrl;
+  testPlayAudio = audio;
+  const unlockPromise = audio.play().catch(() => {});
+
   showLoading(statusEl, 'テスト音声を生成中...');
   try {
     const bytes = await synthesizeTestSample(opts);
@@ -501,8 +555,13 @@ async function onTestPlay() {
     setStatus(statusEl, clipped
       ? '再生中...(⚠ 音割れの可能性があります。音量ゲインを下げることを推奨します)'
       : '再生中...');
-    await playTestWaveform(bytes, audioBuffer.duration, buckets, clipped);
+
+    await unlockPromise;
+    URL.revokeObjectURL(silentUrl);
+    if (testPlayAudio !== audio) return; // 連打等で既に別の再生に切り替わっている
+    await playTestWaveform(audio, bytes, audioBuffer.duration, buckets, clipped);
   } catch (e) {
+    URL.revokeObjectURL(silentUrl);
     hideLoading(statusEl);
     setStatus(statusEl, e.message, true);
   } finally {
