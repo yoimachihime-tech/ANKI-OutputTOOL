@@ -63,7 +63,14 @@
   </div>
 
   <label for="tts-volume-gain">音量ゲイン(dB、-20.0〜16.0、既定0)</label>
-  <input type="number" id="tts-volume-gain" value="0" min="-20" max="16" step="0.5">
+  <div class="row">
+    <input type="number" id="tts-volume-gain" value="0" min="-20" max="16" step="0.5">
+    <button type="button" id="tts-auto-gain" class="ghost">自動調整</button>
+  </div>
+  <p class="hint">
+    「自動調整」は、テスト再生と同じサンプル文で0dBを超えない(音割れしない)範囲まで
+    自動的に音量ゲインを引き上げます。
+  </p>
 
   <label class="checkbox">
     <input type="checkbox" id="tts-exclude-japanese">
@@ -78,6 +85,7 @@
   <div class="row">
     <button type="button" id="tts-test-play" class="ghost">🔊 テスト再生</button>
   </div>
+  <canvas id="tts-test-waveform" class="waveform" width="320" height="60"></canvas>
   <p id="tts-test-status" class="status" role="status" aria-live="polite"></p>
 
   <div class="row">

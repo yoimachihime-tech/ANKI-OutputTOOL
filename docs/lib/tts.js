@@ -176,6 +176,116 @@ export async function synthesizeTestSample(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// 波形表示・自動音量調整(2026-07-29追加)
+// tts_core.compute_waveform_minmax / compute_peak_amplitude / is_clipped /
+// find_safe_volume_gain_db のWeb版。
+//
+// デスクトップ版はCloud TTSからWAV(LINEAR16)を直接取得してPCMを解析するが、
+// Web版のテスト再生はMP3で合成する設計(synthesizeTestSample)のため、代わりに
+// Web Audio APIのdecodeAudioData()でMP3をデコードし、既に-1.0〜+1.0に
+// 正規化されたFloat32のPCMサンプル(AudioBuffer)を取り出す方式にした
+// (tts_core.pyのように16bit PCMの32768で割る正規化は不要)。
+// ---------------------------------------------------------------------------
+
+/**
+ * MP3のバイト列をデコードし、Web Audio APIのAudioBuffer(チャンネルごとに
+ * -1.0〜+1.0のFloat32Array)として返す。波形計算・再生の両方に使う。
+ * @param {Uint8Array} mp3Bytes
+ * @returns {Promise<AudioBuffer>}
+ */
+export async function decodeAudioSamples(mp3Bytes) {
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AudioContextCtor();
+  try {
+    // decodeAudioDataに渡すArrayBufferはtransfer(detach)されることがあるため、
+    // 呼び出し側のUint8Arrayとは独立したコピーを渡す。
+    const arrayBuffer = mp3Bytes.slice().buffer;
+    return await ctx.decodeAudioData(arrayBuffer);
+  } finally {
+    ctx.close();
+  }
+}
+
+/**
+ * tts_core.compute_waveform_minmax() と同じロジック。AudioBufferの先頭
+ * チャンネルから、バケットごとの[min, max]を返す(既に-1.0〜1.0範囲なので
+ * 16bit PCMのような正規化は不要)。
+ * @returns {Array<[number, number]>} 長さ=buckets(先頭が音声の先頭に対応)
+ */
+export function computeWaveformMinMax(audioBuffer, buckets = 40) {
+  const channel = audioBuffer.getChannelData(0);
+  const total = channel.length;
+  if (total === 0) return Array.from({ length: buckets }, () => [0, 0]);
+
+  const bucketSize = Math.max(1, Math.floor(total / buckets));
+  const result = [];
+  for (let b = 0; b < buckets; b += 1) {
+    const start = b * bucketSize;
+    if (start >= total) {
+      result.push([0, 0]);
+      continue;
+    }
+    const end = Math.min(start + bucketSize, total);
+    let min = 0;
+    let max = 0;
+    for (let i = start; i < end; i += 1) {
+      const v = channel[i];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    result.push([min, max]);
+  }
+  return result;
+}
+
+/** tts_core.compute_peak_amplitude() と同じ: 最大絶対振幅を0.0〜1.0で返す。 */
+export function computePeakAmplitude(audioBuffer) {
+  const channel = audioBuffer.getChannelData(0);
+  let peak = 0;
+  for (let i = 0; i < channel.length; i += 1) {
+    const abs = Math.abs(channel[i]);
+    if (abs > peak) peak = abs;
+  }
+  return Math.min(1, peak);
+}
+
+// tts_core.CLIPPING_THRESHOLD と同一。
+export const CLIPPING_THRESHOLD = 0.999;
+
+/** tts_core.is_clipped() と同一。 */
+export function isClipped(peak) {
+  return peak >= CLIPPING_THRESHOLD;
+}
+
+/**
+ * tts_core.find_safe_volume_gain_db() のWeb版。0dBFSを超えない(音割れしない)
+ * 範囲で、できるだけ音量を上げた音量ゲイン(dB)を自動計算する。
+ * デスクトップ版と違いgap_seconds(文と文の間隔)引数は無い
+ * (Web版のテスト再生に文間隔調整機能が無いため、synthesizeTestSampleと同様)。
+ * @param {object} opts {voiceName, languageCode, apiKey}(volumeGainDbは内部で上書きする)
+ * @returns {Promise<number>} 音割れしないと判断された音量ゲイン(dB)
+ */
+export async function findSafeVolumeGainDb(opts, {
+  headroomDb = 1.0, minGainDb = -20.0, maxGainDb = 16.0, maxIterations = 4,
+} = {}) {
+  const baselineBuffer = await decodeAudioSamples(await synthesizeTestSample({ ...opts, volumeGainDb: 0.0 }));
+  const baselinePeak = computePeakAmplitude(baselineBuffer);
+  if (baselinePeak <= 0.0001) return 0.0;
+
+  const targetPeak = 10 ** (-headroomDb / 20.0);
+  let gainDb = 20.0 * Math.log10(targetPeak / baselinePeak);
+  gainDb = Math.max(minGainDb, Math.min(maxGainDb, gainDb));
+
+  for (let i = 0; i < maxIterations; i += 1) {
+    const buffer = await decodeAudioSamples(await synthesizeTestSample({ ...opts, volumeGainDb: gainDb }));
+    if (!isClipped(computePeakAmplitude(buffer))) break;
+    gainDb = Math.max(minGainDb, gainDb - 1.0);
+  }
+
+  return gainDb;
+}
+
+// ---------------------------------------------------------------------------
 // HTML整形(tts_core.strip_html_for_tts の移植)
 // ---------------------------------------------------------------------------
 //

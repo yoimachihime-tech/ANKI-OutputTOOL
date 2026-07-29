@@ -173,6 +173,18 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }
 .status.error { color: var(--danger); }
 
+/* ⚙設定のTTSテスト再生の波形表示(2026-07-29追加)。 */
+.waveform {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: 60px;
+  margin-top: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 /* 生成中(AI呼び出し中)のローディング表示。ボタンの文言変更だけだと
    目立たないという指摘を受け、はっきり分かるスピナー+専用の文言色にした。 */
 .status.loading {

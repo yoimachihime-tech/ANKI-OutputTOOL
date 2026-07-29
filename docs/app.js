@@ -22,7 +22,10 @@ import {
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
 import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
-import { synthesizeFieldWithTags, synthesizeExampleAudioTags, synthesizeTestSample } from './lib/tts.js';
+import {
+  synthesizeFieldWithTags, synthesizeExampleAudioTags, synthesizeTestSample,
+  decodeAudioSamples, computeWaveformMinMax, computePeakAmplitude, isClipped, findSafeVolumeGainDb,
+} from './lib/tts.js';
 import {
   getAccessToken, clearAccessToken, hasValidAccessToken,
   fetchPendingRows, appendCorrectionRows, markRowsAsExported, SheetsAuthError,
@@ -223,6 +226,7 @@ function bindEvents() {
     localStorage.setItem(STORAGE.ttsExcludeJapanese, e.target.checked ? '1' : '0');
   });
   $('tts-test-play').addEventListener('click', onTestPlay);
+  $('tts-auto-gain').addEventListener('click', onAutoGain);
   $('clear-tts-key').addEventListener('click', onClearTtsKey);
 
   // スプレッドシート設定(DailyConversationタブ用)
@@ -394,7 +398,87 @@ function getTtsOptions() {
  * 主目的)。連打時は前の再生を止めてからやり直す(desktop版のPlaySound
  * SND_PURGEと同じ考え方)。
  */
-let testPlayAudio = null;
+// テスト再生用の再生専用AudioContext。ブラウザのAudioContext数上限・
+// オートプレイポリシー(ユーザー操作なしでのresume禁止)を踏まえ、初回の
+// テスト再生クリック(=ユーザー操作)時に一度だけ作って使い回す
+// (decodeAudioSamples()内部で解析用に作る一時的なAudioContextとは別物)。
+let testPlaybackCtx = null;
+let testPlaybackSource = null;
+let testAnimationFrameId = null;
+
+/** 再生中のテスト音声・波形アニメーションを止める(連打時の多重再生防止)。 */
+function stopTestPlayback() {
+  if (testPlaybackSource) {
+    try { testPlaybackSource.stop(); } catch { /* 既に停止済み */ }
+    testPlaybackSource = null;
+  }
+  if (testAnimationFrameId !== null) {
+    cancelAnimationFrame(testAnimationFrameId);
+    testAnimationFrameId = null;
+  }
+}
+
+/**
+ * テスト再生の波形をcanvasに描画する(tts_core.pyの`_draw_test_waveform`に
+ * 対応)。中心(0点)を挟んで上下に振れるbipolar表示。再生位置(progress、
+ * 0.0〜1.0)より前のバーをアクセントカラー(音割れ時は警告色)、後ろを
+ * 未再生色で塗り分ける。
+ */
+function drawTestWaveform(buckets, progress, clipped) {
+  const canvas = $('tts-test-waveform');
+  const ctx = canvas.getContext('2d');
+  const { width, height } = canvas;
+  ctx.clearRect(0, 0, width, height);
+
+  const styles = getComputedStyle(document.documentElement);
+  const playedColor = (clipped ? styles.getPropertyValue('--danger') : styles.getPropertyValue('--accent')).trim() || '#4f6bed';
+  const upcomingColor = styles.getPropertyValue('--border').trim() || '#d8dade';
+
+  const mid = height / 2;
+  const barWidth = width / buckets.length;
+  buckets.forEach(([min, max], i) => {
+    const played = i / buckets.length < progress;
+    ctx.fillStyle = played ? playedColor : upcomingColor;
+    const y1 = mid - max * mid;
+    const y2 = mid - min * mid;
+    ctx.fillRect(i * barWidth, y1, Math.max(1, barWidth - 1), Math.max(1, y2 - y1));
+  });
+}
+
+/**
+ * 事前計算した波形(buckets)を見ながらAudioBufferを再生し、経過時間に応じて
+ * 波形アニメーションを進める(tts_core.pyの「再生前に全サンプルから概形を
+ * 事前計算しておき、再生開始からの経過時間でその配列を参照しながら描画する」
+ * 方式と同じ考え方。デスクトップ版はwinsound+time.monotonic()、Web版は
+ * AudioContext.currentTime基準)。
+ */
+function playTestWaveform(audioBuffer, buckets, clipped) {
+  if (!testPlaybackCtx) {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    testPlaybackCtx = new AudioContextCtor();
+  }
+  const ctx = testPlaybackCtx;
+  const source = ctx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(ctx.destination);
+  testPlaybackSource = source;
+
+  const duration = audioBuffer.duration;
+  const startTime = ctx.currentTime;
+  source.start();
+
+  const tick = () => {
+    const progress = Math.min(1, (ctx.currentTime - startTime) / duration);
+    drawTestWaveform(buckets, progress, clipped);
+    if (progress < 1 && testPlaybackSource === source) {
+      testAnimationFrameId = requestAnimationFrame(tick);
+    } else {
+      testAnimationFrameId = null;
+      if (testPlaybackSource === source) testPlaybackSource = null;
+    }
+  };
+  tick();
+}
 
 async function onTestPlay() {
   const opts = getTtsOptions();
@@ -404,22 +488,49 @@ async function onTestPlay() {
   }
   const statusEl = $('tts-test-status');
   const btn = $('tts-test-play');
-  if (testPlayAudio) {
-    testPlayAudio.pause();
-    testPlayAudio = null;
-  }
+  stopTestPlayback();
   btn.disabled = true;
   showLoading(statusEl, 'テスト音声を生成中...');
   try {
     const bytes = await synthesizeTestSample(opts);
-    const blob = new Blob([bytes], { type: 'audio/mpeg' });
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    testPlayAudio = audio;
-    audio.addEventListener('ended', () => URL.revokeObjectURL(url));
+    const audioBuffer = await decodeAudioSamples(bytes);
+    const buckets = computeWaveformMinMax(audioBuffer);
+    const clipped = isClipped(computePeakAmplitude(audioBuffer));
+
     hideLoading(statusEl);
-    setStatus(statusEl, '再生中...');
-    await audio.play();
+    setStatus(statusEl, clipped
+      ? '再生中...(⚠ 音割れの可能性があります。音量ゲインを下げることを推奨します)'
+      : '再生中...');
+    playTestWaveform(audioBuffer, buckets, clipped);
+  } catch (e) {
+    hideLoading(statusEl);
+    setStatus(statusEl, e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/**
+ * ⚙設定「自動調整」ボタン(2026-07-29追加)。tts_core.find_safe_volume_gain_db()
+ * のWeb版を呼び、0dBを超えない範囲までできるだけ音量ゲインを引き上げる。
+ * 結果はスライダー(input)とlocalStorageの両方へ即座に反映する。
+ */
+async function onAutoGain() {
+  const opts = getTtsOptions();
+  if (!opts) {
+    alert('先にCloud Text-to-Speech APIキーを入力してください。');
+    return;
+  }
+  const statusEl = $('tts-test-status');
+  const btn = $('tts-auto-gain');
+  btn.disabled = true;
+  showLoading(statusEl, '音割れしない音量ゲインを計算中...');
+  try {
+    const gainDb = Math.round(await findSafeVolumeGainDb(opts) * 10) / 10;
+    $('tts-volume-gain').value = gainDb;
+    localStorage.setItem(STORAGE.ttsVolumeGainDb, String(gainDb));
+    hideLoading(statusEl);
+    setStatus(statusEl, `音量ゲインを ${gainDb}dB に自動調整しました。`);
   } catch (e) {
     hideLoading(statusEl);
     setStatus(statusEl, e.message, true);

@@ -1399,10 +1399,9 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
   詳細は下記「Web版のDailyConversation→習熟用連携」を参照。
 - exeの再ビルド、サービスアカウントJSONキーの保管場所移動(下記「今後の
   拡張候補」を参照)
-- **デスクトップ版にあってWeb版に無かった機能のうち、TTS試聴・日本語除外
-  オプションの2つは2026-07-29に実装済み**(下記「Web版のTTS試聴・日本語除外
-  オプション」を参照)。残りは自動ゲイン調整(`find_safe_volume_gain_db`)・
-  波形表示(テスト再生時のクリッピング検出込み)で、いずれも未着手。
+- **デスクトップ版にあってWeb版に無かった機能(TTS試聴・日本語除外オプション・
+  自動ゲイン調整・波形表示)は2026-07-29にすべて実装完了**(下記「Web版の
+  TTS試聴・日本語除外オプション」「Web版のTTS波形表示・自動音量調整」を参照)。
 
 ### Web版TTS音声の埋め込み(2026-07-28実装・実機確認・push済み)
 
@@ -1465,16 +1464,16 @@ DailyConversationいずれの
 
 - **テスト再生(`docs/lib/tts.js`の`synthesizeTestSample`/`TEST_SAMPLE_SENTENCES`、
   `app.js`の`onTestPlay`)**: `tts_core.synthesize_test_sample_wav`+
-  デスクトップ版の`winsound`再生に対応するWeb版だが、**大幅に簡略化**して
-  ある。デスクトップ版が持つ「文と文の間隔を空けて結合」(`synthesize_with_gaps`、
-  WAV結合+lameenc再エンコード)・波形アニメーション表示・0dBクリッピング検出
-  はいずれもWeb版には移植していない(ブラウザにlameenc相当のエンコーダが
-  無く、そもそもWeb版のTTS埋め込み自体が「文と文の間隔調整は未対応」の
-  設計であるため、テスト再生だけこれに対応する意味が薄いと判断)。
-  固定の2文(`TEST_SAMPLE_SENTENCES`)を1回のTTS呼び出しでMP3化し、
-  `<audio>`要素で再生するだけ(音声名・言語コード・音量ゲインの確認が主目的)。
-  連打時は前の再生を`pause()`してからやり直す(デスクトップ版の
-  `winsound.PlaySound(None, SND_PURGE)`と同じ考え方)。
+  デスクトップ版の`winsound`再生に対応するWeb版。実装当初(2026-07-29)は
+  `<audio>`要素で再生するだけの簡略版だったが、同日中に波形表示・
+  0dBクリッピング検出・自動音量調整を追加したため、現在は「デスクトップ版が
+  持つ「文と文の間隔を空けて結合」(`synthesize_with_gaps`、WAV結合+lameenc
+  再エンコード)だけがWeb版に無い」という状態になっている
+  (ブラウザにlameenc相当のエンコーダが無く、そもそもWeb版のTTS埋め込み自体が
+  「文と文の間隔調整は未対応」の設計であるため、テスト再生だけこれに対応する
+  意味が薄いと判断。それ以外の機能は下記「Web版のTTS波形表示・自動音量調整」
+  を参照)。固定の2文(`TEST_SAMPLE_SENTENCES`)を1回のTTS呼び出しでMP3化する
+  部分は変更なし。連打時は前の再生を止めてからやり直す。
 - **日本語除外オプション(`docs/lib/tts.js`の`splitIntoSentences`/
   `containsJapanese`/`stripJapaneseSentences`、⚙設定の
   「TTSで日本語を含む文を除外する」チェックボックス`tts-exclude-japanese`、
@@ -1495,6 +1494,62 @@ DailyConversationいずれの
   定義・apkg組み立てには影響しないため`tools/export_shared_card_defs.py`の
   再実行は不要)。`tools/test_tts.mjs`の既存テストに変更は加えていないが、
   `npm test`(6本)全てがこの変更後も通過することを確認済み(2026-07-29)。
+
+### Web版のTTS波形表示・自動音量調整(2026-07-29実装)
+
+デスクトップ版にあってWeb版に無かった残り2機能(波形表示・自動ゲイン調整)を
+同日中に追加実装した(片桐から続けて依頼を受けたため)。
+
+- **波形デコードの方式がデスクトップ版と異なる**: デスクトップ版は
+  `call_google_tts_wav`でCloud TTSから直接WAV(LINEAR16)を取得しPCMを
+  `wave`/`struct`で解析するが、Web版のテスト再生はMP3合成のみの設計
+  (`synthesizeTestSample`)なので、代わりにWeb Audio APIの
+  `AudioContext.decodeAudioData()`でMP3をデコードし、`AudioBuffer`
+  (チャンネルごとに既に-1.0〜+1.0へ正規化されたFloat32Array)を得る方式にした
+  (`docs/lib/tts.js`の`decodeAudioSamples()`)。16bit PCMの32768除算のような
+  正規化が不要な分、デスクトップ版よりむしろ単純になっている。
+- **`computeWaveformMinMax(audioBuffer, buckets=40)`** /
+  **`computePeakAmplitude(audioBuffer)`** / **`isClipped(peak)`**
+  (`CLIPPING_THRESHOLD = 0.999`、いずれも`docs/lib/tts.js`)が、それぞれ
+  `tts_core.compute_waveform_minmax` / `compute_peak_amplitude` / `is_clipped`
+  に対応する。`AudioBuffer.getChannelData(0)`を受け取る形にしてあるため、
+  `tools/test_tts.mjs`では`{getChannelData: () => samples}`という最小限の
+  フェイクで単体テストできる(実ブラウザのFloat32Arrayでなく普通の配列を
+  渡しても、添字アクセスと`.length`しか使わないため動作は同一。丸め誤差を
+  避けるためテストでは意図的にFloat32Arrayを使っていない)。
+- **再生・アニメーションはWeb Audio APIに統一**(`app.js`):
+  波形デコード結果(`AudioBuffer`)をそのまま`AudioBufferSourceNode`で再生し、
+  `AudioContext.currentTime`基準の経過時間で`requestAnimationFrame`ループ
+  (`playTestWaveform()`)を回して`<canvas id="tts-test-waveform">`に
+  再生位置までをアクセントカラー(音割れ時は`--danger`)で塗り分ける
+  (`drawTestWaveform()`、デスクトップ版の`self.after(40,...)`+
+  `time.monotonic()`に相当)。この変更に伴い、旧実装が使っていた
+  `<audio>`要素+`URL.createObjectURL`は廃止した(波形解析用に既にデコード
+  済みのPCMをそのまま再生にも使い、二重デコードを避けるため)。
+  再生用の`AudioContext`はブラウザのオートプレイポリシー(ユーザー操作なしの
+  resume禁止)を踏まえ、初回のテスト再生クリック時に一度だけ生成して
+  使い回す(`decodeAudioSamples()`内部で解析用に使う一時的な`AudioContext`
+  とは別物。こちらは解析後に`close()`する)。
+- **`findSafeVolumeGainDb(opts, {...})`**(`docs/lib/tts.js`)が
+  `tts_core.find_safe_volume_gain_db`に対応する。アルゴリズムは同一
+  (ゲイン0dBでの基準ピークを測る→目標ピーク(0dBFSから既定1.0dBの余裕)まで
+  引き上げるゲインを20*log10比で計算→実際にそのゲインで再合成しまだ
+  クリッピングしていれば1dBずつ下げて最大4回再検証)。デスクトップ版と違い
+  `gap_seconds`(文間隔)引数は無い(Web版のテスト再生に文間隔調整機能が
+  無いため、`synthesizeTestSample`と同じ理由)。⚙設定の音量ゲイン入力の隣の
+  「自動調整」ボタン(`app.js`の`onAutoGain()`)から呼ばれ、結果はスライダーの
+  値とlocalStorageの両方に即座に反映される。
+  **`findSafeVolumeGainDb`自体の単体テストは無い**(内部で実際のTTS合成+
+  Web Audio APIデコードを行うため、fetchモックだけでは完結せずjsdomに
+  無い`AudioContext`が必要になる。デスクトップ版の
+  `find_safe_volume_gain_db`にも同様の理由でPython側の単体テストが無く、
+  実機での動作確認に委ねる方針と揃えてある)。
+- 実装は`docs/lib/tts.js`・`docs/app.js`・`docs/index.html`・`docs/style.css`
+  (`.waveform`キャンバスのスタイル)のみ。`tools/test_tts.mjs`に
+  `computeWaveformMinMax`/`computePeakAmplitude`/`isClipped`の単体テストを
+  追加し、`npm test`(6本)全てが通過することを確認済み(2026-07-29)。
+- **未検証**: 実機(特にモバイルSafari)でのWeb Audio API・
+  オートプレイポリシー周りの挙動。
 
 ### Web版のDailyConversation→習熟用連携(2026-07-29実装)
 
@@ -1980,9 +2035,15 @@ tools/
     解決しようとして失敗するため、テスト側で`locateFile`を無視させている。
   - `npm run test:tts`(`test_tts.mjs`): `lib/tts.js`の単体テスト。
     `stripHtmlForTts`の変換結果、Cloud Text-to-Speechのエラー分類
-    (429のQuota超過・5xxのリトライ・403のリファラー制限)、そして
+    (429のQuota超過・5xxのリトライ・403のリファラー制限)、
     **音声の分割単位**(単語/AIに質問はフィールド全体で1つのMP3・タグ、
-    習熟用は例文ごとに個別)をfetchモックで固定している。
+    習熟用は例文ごとに個別)をfetchモックで固定しているほか、
+    2026-07-29に`computeWaveformMinMax`/`computePeakAmplitude`/`isClipped`
+    (波形表示・0dBクリッピング検出)の単体テストを追加した(`AudioBuffer`は
+    `{getChannelData: () => samples}`という最小限のフェイクで代用。
+    `findSafeVolumeGainDb`は実際のWeb Audio APIデコードを要するためこの
+    ファイルでは検証していない、上記「Web版のTTS波形表示・自動音量調整」
+    参照)。
   - `npm run test:gemini`(`test_gemini.mjs`): `lib/gemini.js`の
     `callGemini()`のリトライ・エラー処理の単体テスト(503の自動リトライ、
     429の既存挙動の回帰確認)をfetchモックで行う。

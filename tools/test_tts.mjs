@@ -34,7 +34,15 @@ console.log('lib/tts.js の単体テスト\n');
 const {
   stripHtmlForTts, callGoogleTts, synthesizeFieldWithTags,
   synthesizeExampleAudioTags, TtsError,
+  computeWaveformMinMax, computePeakAmplitude, isClipped, CLIPPING_THRESHOLD,
 } = await import(new URL('../docs/lib/tts.js', import.meta.url));
+
+/** computeWaveformMinMax/computePeakAmplitude が要求する
+ * AudioBuffer.getChannelData(0) 相当の最小限のフェイク。実際のWeb Audio APIは
+ * Float32Arrayを返すが、テストでは丸め誤差(0.1が0.10000000149...になる等)を
+ * 避けるため、ただの配列(倍精度)をそのまま返す(呼び出し側は添字アクセスと
+ * .lengthしか使わないため、配列でもFloat32Arrayでも動作は同一)。 */
+const fakeAudioBuffer = (samples) => ({ getChannelData: () => samples });
 
 // --- stripHtmlForTts ---
 console.log('[1] stripHtmlForTts');
@@ -171,6 +179,61 @@ console.log('\n[4] synthesizeExampleAudioTags(例文ごとに個別のMP3・タ�
   }
   if (media.size === 2) ok('空でない例文の分だけmediaに登録される');
   else fail(`mediaサイズが想定外: ${media.size}`);
+}
+
+// --- computeWaveformMinMax / computePeakAmplitude / isClipped ---
+// tts_core.compute_waveform_minmax / compute_peak_amplitude / is_clipped の
+// Web版。デスクトップ版と違い16bit PCMではなくWeb Audio APIがデコードする
+// -1.0〜+1.0のFloat32を直接扱うため、正規化(32768で割る)は不要。
+console.log('\n[5] computeWaveformMinMax / computePeakAmplitude / isClipped');
+
+{
+  // 8サンプルを4バケットに分割(1バケット=2サンプル)。各バケットの[min, max]を検証する。
+  const buffer = fakeAudioBuffer([0.1, -0.2, 0.5, -0.5, 0.0, 0.0, -0.9, 0.3]);
+  const buckets = computeWaveformMinMax(buffer, 4);
+  const want = [[-0.2, 0.1], [-0.5, 0.5], [0, 0], [-0.9, 0.3]];
+  if (buckets.length === 4 && deepEq(buckets, want)) {
+    ok('バケットごとの[min, max]を正しく計算する(既に-1.0〜1.0範囲なので正規化不要)');
+  } else {
+    fail(`computeWaveformMinMaxの結果が想定外: ${JSON.stringify(buckets)}`);
+  }
+}
+
+{
+  // サンプル数(2)がbucket数(4)より少ない場合、bucketSizeは1になり
+  // (Math.max(1, Math.floor(2/4)))、各バケットに1サンプルずつ割り当てられ、
+  // 余ったバケットは[0, 0]になる。
+  const buckets = computeWaveformMinMax(fakeAudioBuffer([0.4, -0.6]), 4);
+  if (deepEq(buckets, [[0, 0.4], [-0.6, 0], [0, 0], [0, 0]])) {
+    ok('サンプル数がバケット数に満たない場合、余ったバケットは[0, 0]になる');
+  } else {
+    fail(`短い入力での結果が想定外: ${JSON.stringify(buckets)}`);
+  }
+}
+
+{
+  if (computePeakAmplitude(fakeAudioBuffer([0.1, -0.7, 0.3])) === 0.7) {
+    ok('最大絶対振幅を返す(符号を無視)');
+  } else {
+    fail('computePeakAmplitudeの結果が想定外');
+  }
+}
+
+{
+  // 1.0を超える値が来ても(理論上は起きないはずだが)1.0にクランプする。
+  if (computePeakAmplitude(fakeAudioBuffer([1.5, -0.2])) === 1) {
+    ok('振幅は1.0を上限にクランプされる');
+  } else {
+    fail('computePeakAmplitudeのクランプが想定外');
+  }
+}
+
+{
+  if (isClipped(CLIPPING_THRESHOLD) && isClipped(1) && !isClipped(CLIPPING_THRESHOLD - 0.001)) {
+    ok('isClippedは閾値(0.999)以上でtrueを返す');
+  } else {
+    fail('isClippedの閾値判定が想定外');
+  }
 }
 
 console.log(`\n${failures === 0 ? '✅ 全テスト成功' : `❌ ${failures} 件失敗`}`);
