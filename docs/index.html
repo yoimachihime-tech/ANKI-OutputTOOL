@@ -13,8 +13,16 @@
 
 <header class="app-header">
   <h1>ANKI出力ツール <span class="badge">Web版</span></h1>
-  <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
+  <div class="header-actions">
+    <!-- DailyConversationタブを開かなくても、⚙設定の「複数端末間の同期」等の
+         ためにログインだけ先に済ませられるようにする(2026-07-30追加)。
+         ログイン状態はDailyConversationタブのボタンと共通(app.jsの
+         updateDailyAuthStatus()が両方まとめて同期する)。 -->
+    <button type="button" id="header-signin" class="ghost">Googleにログイン</button>
+    <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
+  </div>
 </header>
+<p id="header-auth-status" class="status header-auth-status" role="status" aria-live="polite"></p>
 
 <!-- ⚙ 設定(全タブ共通) -->
 <section id="settings" class="card" hidden>
@@ -118,6 +126,20 @@
 
   <label for="sheets-sheet-name">シート(タブ)名</label>
   <input type="text" id="sheets-sheet-name" autocomplete="off" spellcheck="false" value="添削結果">
+
+  <hr>
+
+  <h3>複数端末間の同期(任意)</h3>
+  <p class="hint">
+    単語・AIに質問・習熟用(音読)の3ストックを、上記と同じスプレッドシート内の
+    隠しタブへ保存し、別のPC・スマホと共有します。追加の同意やAPIキーは不要
+    (上のGoogleログイン設定をそのまま使います)。同期は自動では行われないため、
+    端末を切り替える前後に押してください。
+  </p>
+  <div class="row">
+    <button type="button" id="sync-now" class="ghost">🔄 今すぐ同期</button>
+  </div>
+  <p id="sync-status" class="status" role="status" aria-live="polite"></p>
 </section>
 
 <!-- ⚙設定を開いている間は、これより下(タブバー+各タブの中身)をまとめて

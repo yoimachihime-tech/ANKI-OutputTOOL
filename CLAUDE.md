@@ -1937,6 +1937,10 @@ docs/
                                      process_sheet_rows/build_deckと
                                      daily_pending_exclusions.pyのWeb版、
                                      2026-07-29追加)
+  lib/sync.js                       複数端末間の同期のマージロジック(id単位の
+                                     和集合+打ち消し記録、通信は持たない純粋
+                                     関数のみ、2026-07-30追加。詳細は下記
+                                     「Web版の複数端末間の同期」を参照)
   shared/                           デスクトップ版と共有する資産
 tools/
   export_shared_card_defs.py        docs/shared/*.json を生成
@@ -1952,6 +1956,9 @@ tools/
                                      単体テスト(npm run test:gemini)
   test_sheets.mjs                   lib/sheets.js / lib/dailyconv.jsの単体テスト
                                      (npm run test:sheets、2026-07-29追加)
+  test_sync.mjs                     lib/sync.js(マージロジック)+ lib/sheets.jsの
+                                     同期用関数(隠しタブの読み書き・自動作成)の
+                                     単体テスト(npm run test:sync、2026-07-30追加)
 ```
 
 - **共有資産を`docs/shared/`に置いている理由**: GitHub Pagesは`docs/`配下
@@ -2007,7 +2014,7 @@ tools/
   される。この4問目生成の失敗は3問の生成成功を無効にしない(非ブロッキング、
   `docs/app.js`の`onAiAskGenerate()`を参照)。
 - **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
-  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は6本:
+  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は7本:
   - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
     (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multi・shuujuku・
     dailyの4種別)、guid・フィールド・タグ・カード構成・ノートタイプ定義を
@@ -2060,6 +2067,12 @@ tools/
     合わせて列を配置する(固定の列順を決め打ちしていない)」ことと、
     「markRowsAsExportedがAnki出力済み列のセルだけを対象にする」ことを
     固定している。
+  - `npm run test:sync`(`test_sync.mjs`、2026-07-30追加): `lib/sync.js`の
+    `mergeStock`(id単位の和集合、updated_at基準のLWW、tombstoneによる
+    削除の伝播)・`ensureItemIds`(既存ストックへの移行)・`capacityPercent`と、
+    `lib/sheets.js`の`readSyncState`/`writeSyncState`(隠しタブ`_AppSync`が
+    無ければ`hidden:true`で自動作成し、固定レンジ`A1:B6`で読み書きすること)を
+    fetchモックで検証する。詳細は下記「Web版の複数端末間の同期」を参照。
   - **`verify`系2本は`execFileSync('python3', ...)`とハードコードしている**
     ため、`python3`という名前で起動できるPythonが無い環境ではこの2本だけ
     失敗する(2026-07-28のClaude Code検証環境がこれに該当し、
@@ -2077,6 +2090,115 @@ tools/
     (0)で入っているので、apkg生成時に現在時刻で上書きしている。
   - 日本語Windowsでは標準入出力の既定がcp932になるため、検証スクリプトは
     いずれもPython呼び出し時に`PYTHONUTF8=1`を渡している。
+
+### Web版の複数端末間の同期(2026-07-30実装)
+
+「作業内容(単語/AIに質問/習熟用の各ストック)を別のPC・スマホ間で同期したい」
+という要望への対応。片桐から「今のGoogleログインの流用でなんとかならないか」
+と聞かれ、調査の結果、**DailyConversation機能で既に使っている`spreadsheets`
+スコープのGoogleログインをそのまま流用する形で実現した**(Drive APIへの
+スコープ追加・再同意は不要)。保存先は「添削結果」スプレッドシート内に
+自動作成する、片桐の目に触れない隠しタブ`_AppSync`(`docs/lib/sheets.js`の
+`SYNC_SHEET_NAME`)。
+
+**同期対象は単語/AIに質問/習熟用の3ストックのみ**。DailyConversationの
+「未出力行」はシートそのものが実体のため、この3つと違って端末間で既に
+自動的に同じ内容が見える(そもそもローカルに複製していない)。ローカルの
+除外リスト(`daily_pending_exclusions`相当)・出力済み記録は端末ごとの
+表示フィルターに過ぎず「作業内容」ではないと判断し、今回のスコープからは
+意図的に外した。
+
+#### トレードオフの緩和(単純な「後勝ち上書き」にしなかった理由)
+
+同期を「リモートの内容で丸ごと上書き」する設計だと、同期し忘れた端末が
+古いスナップショットで上書きし、他端末が追加した内容を消してしまう
+リスクがある。これを緩和するため、**id単位の和集合マージ**
+(`docs/lib/sync.js`の`mergeStock`)にした:
+
+- 各ストック項目に生成時点で`id`(`newSyncId()`、UUID)と`updated_at`を
+  持たせる(既存データには移行処理`ensureItemIds`が初回読み込み時に
+  1回だけ付与する)。
+- 同期のたびに「ローカルの内容」と「シートから読んだ内容」をidをキーに
+  和集合で結合する。同じidが両側にあれば`updated_at`(無ければ
+  `generated_at`)が新しい方を採用する単純なLast-Write-Wins。
+  **フィールド単位の3-wayマージまでは行わない**(片桐一人が順番に
+  端末を使う想定であれば実用上十分と判断)。
+- 削除(選択削除・ストッククリア・習熟用の出力成功によるクリア)は
+  「打ち消し記録(tombstone)」としてidを記録し(`onDeleteSelected`/
+  `onClearStock`/`onExportShuujuku`が`addTombstoneIds`を呼ぶ)、
+  同期時にローカル・リモート双方のtombstoneの和集合を取ってから
+  マージ後の項目を除外する。**これが無いと、削除前の古いスナップショットを
+  持つ端末が同期するたびに削除済み項目が復活してしまう**。
+- 出力済み(`exported_at`)フラグのリセット(`onResetExported`)・出力成功時の
+  `exported_at`付与(`onExport`)は、単なるフィールド変更として
+  `updated_at`を打ち直すことで「新しい変更」として優先されるようにしてある
+  (tombstoneは使わない。項目自体は消えないため)。
+- 単語/AIに質問/習熟用ストックが既に持つ「重複していても常に追加→一覧で
+  ⚠表示→手動で選んで削除」という設計と相性が良く、同期の衝突が起きても
+  基本的にデータ消失ではなく「一覧に一時的に重複して見える」形に倒れ、
+  既存の重複検出・手動削除UIでそのまま解消できる。
+
+#### セル容量%の表示
+
+片桐から「シートの1セルあたりの文字数上限(50,000文字)にどれだけ近づいて
+いるか可視化したい」との要望があり、`docs/lib/sync.js`の
+`capacityPercent(jsonString)`が同期のたびに各ストックのJSON文字列長を
+50,000文字に対する割合(%)として計算し、同期完了時のステータス表示
+(⚙設定「複数端末間の同期」)に「単語 x% / AIに質問 y% / 習熟用 z%」の形で出す。
+
+#### 実装(複数端末間の同期)
+
+- `docs/lib/sync.js`(新設): `mergeStock`/`ensureItemIds`/`capacityPercent`/
+  `parseIdArray`/`newSyncId`。通信を一切持たない純粋関数のみで、
+  `tools/test_sync.mjs`が単体テストする。
+- `docs/lib/sheets.js`: `readSyncState`/`writeSyncState`(+ 内部の
+  `ensureSyncSheetExists`)を追加。`_AppSync`タブが無ければ
+  `spreadsheets.batchUpdate`の`addSheet`(`hidden: true`)で自動作成し、
+  固定レンジ`A1:B6`(`SYNC_ROW_KEYS`、3ストック×items/tombstonesの6行)を
+  1回のAPI呼び出しでまとめて読み書きする(往復回数・書き込みレースの窓を
+  小さくするため)。
+- `docs/app.js`: ⚙設定の「🔄 今すぐ同期」ボタン(`onSyncNow`)が
+  ログイン→`readSyncState`→3ストックそれぞれ`mergeStock`→ローカル反映・
+  再描画→`writeSyncState`を1回の操作で行う(pull-merge-pushをまとめることで
+  レースの窓を小さくする設計。真の同時書き込みは想定していない)。
+  単語/AIに質問/習熟用の生成箇所(`onWordGenerate`/`onAiAskGenerate`の
+  3問生成・4問目の習熟用生成/`generateShuujukuCandidatesFromRows`)は
+  すべて生成時に`id`/`updated_at`を付与するよう修正した。
+  一覧のチェックボックスの`data-row-id`(`checkedRowIdsOf`が読む)も、
+  この3タブについては配列インデックス(`String(i)`)からこの`id`に
+  切り替えた(tombstone記録にそのまま使うため)。
+- 同期は**自動実行ではなく手動ボタン**(端末を切り替える前後に押す運用を
+  ⚙設定の説明文で案内している)。
+- **ヘッダーにログインボタンを追加(2026-07-30)**: 同期機能を追加した当初、
+  Googleログインの導線がDailyConversationタブの中にしか無く、他のタブ・
+  ⚙設定を開いた状態から同期するにはわざわざDailyConversationタブを
+  開いてログインし直す必要があった。片桐の指摘を受け、ヘッダー
+  (`⚙設定`ボタンの左)にも常設のログインボタン(`header-signin`)を追加した。
+  ログイン状態の管理は`updateDailyAuthStatus()`に一本化してあり、この関数が
+  DailyConversationタブのボタン・ヘッダーのボタンの両方を同時に同期する
+  (ログイン処理自体も`signInToGoogle(statusEl, btnEl)`に共通化し、
+  `onDailySignIn`/`onHeaderSignIn`はそれぞれ自分の表示先を渡すだけ)。
+  ヘッダー側にはログアウトボタンは置いていない(頻度の低い操作のため、
+  従来どおりDailyConversationタブの「ログアウト」ボタンに残した)。
+- **既存のDailyConversationの認証・スプレッドシート設定(クライアントID・
+  スプレッドシートID)をそのまま流用する**ため、同期専用の新しい設定項目は
+  無い(シート名の設定は同期には使わない。`_AppSync`という固定タブ名を使う)。
+- テスト: `tools/test_sync.mjs`(新設、`npm run test:sync`)が
+  `mergeStock`の和集合・LWW・tombstone除外・`ensureItemIds`の移行・
+  `capacityPercent`の計算・`readSyncState`/`writeSyncState`の隠しタブ
+  自動作成をfetchモックで検証する。既存の`test_web_ui.mjs`等6本も
+  この変更後に全て通過することを確認済み(2026-07-30)。
+
+#### 未検証・既知の限界
+
+- 片桐の実機での動作確認(実際にPC/スマホ間でシートを介した同期が
+  意図通り動くか)はまだ行っていない。
+- 真に同時(秒未満)に複数端末が同じ項目を編集した場合のフィールド単位の
+  3-wayマージまでは行わない(item全体を`updated_at`で比較するだけ)。
+- 打ち消し記録(tombstone)のidリストは無期限に増え続ける(デスクトップ版の
+  `exported_keys`と同じ設計判断)。セル容量%の表示があるため、将来
+  上限に近づいた場合は片桐が気づける想定だが、現時点で圧縮・古い記録の
+  刈り込みは実装していない。
 
 ### ブラウザだけでのapkg生成(2026-07-28に実現可能と確認)
 

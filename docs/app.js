@@ -29,8 +29,12 @@ import {
 import {
   getAccessToken, clearAccessToken, hasValidAccessToken,
   fetchPendingRows, appendCorrectionRows, markRowsAsExported, SheetsAuthError,
+  readSyncState, writeSyncState,
 } from './lib/sheets.js';
 import * as dailyconv from './lib/dailyconv.js';
+import {
+  newSyncId, ensureItemIds, mergeStock, capacityPercent, parseIdArray,
+} from './lib/sync.js';
 
 // フィルターチェックボックスの状態をlocalStorageに永続化する際のキー接頭辞
 // (bindPersistentCheckbox()参照)。init()がモジュール読み込み直後に即時
@@ -52,6 +56,21 @@ const STORAGE = {
   googleClientId: 'anki_tool_google_client_id',
   spreadsheetId: 'anki_tool_sheets_spreadsheet_id',
   sheetName: 'anki_tool_sheets_sheet_name',
+  wordTombstones: 'anki_tool_word_tombstones',
+  aiAskTombstones: 'anki_tool_ai_ask_tombstones',
+  shuujukuTombstones: 'anki_tool_shuujuku_tombstones',
+};
+
+/**
+ * 複数端末間の同期(2026-07-30追加)。タブキー→打ち消し記録(tombstone)の
+ * localStorageキーの対応表。onDeleteSelected/onClearStock/onExportShuujuku
+ * が「削除・出力済みクリアしたitemのid」をここへ記録し、次回の同期
+ * (onSyncNow)がリモートとマージする際に「削除済みは復活させない」判定に使う。
+ */
+const TOMBSTONE_STORAGE = {
+  word: STORAGE.wordTombstones,
+  ai_ask: STORAGE.aiAskTombstones,
+  shuujuku: STORAGE.shuujukuTombstones,
 };
 
 /**
@@ -84,6 +103,39 @@ const shared = {
 let wordStock = loadJson(STORAGE.wordStock);
 let aiAskStock = loadJson(STORAGE.aiAskStock);
 let shuujukuStock = loadJson(STORAGE.shuujukuStock);
+
+// 複数端末間の同期機能の追加(2026-07-30)に伴い、既存ストック項目に
+// id/updated_at が無ければ補う(1回だけ実行し、変更があればそのまま保存する)。
+migrateStockIds();
+
+function migrateStockIds() {
+  const w = ensureItemIds(wordStock);
+  if (w.changed) { wordStock = w.items; localStorage.setItem(STORAGE.wordStock, JSON.stringify(wordStock)); }
+  const a = ensureItemIds(aiAskStock);
+  if (a.changed) { aiAskStock = a.items; localStorage.setItem(STORAGE.aiAskStock, JSON.stringify(aiAskStock)); }
+  const s = ensureItemIds(shuujukuStock);
+  if (s.changed) { shuujukuStock = s.items; localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock)); }
+}
+
+/** 打ち消し記録(tombstone、削除・出力済みクリア済みのid一覧)を読む。 */
+function loadTombstoneIds(storageKey) {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTombstoneIds(storageKey, ids) {
+  localStorage.setItem(storageKey, JSON.stringify([...new Set(ids)].filter(Boolean).sort()));
+}
+
+/** 削除・出力済みクリアしたidを打ち消し記録へ追記する(和集合)。 */
+function addTombstoneIds(storageKey, ids) {
+  saveTombstoneIds(storageKey, [...loadTombstoneIds(storageKey), ...ids]);
+}
 
 /**
  * DailyConversation の「シート上の未出力行」。他のタブと違い実体は
@@ -190,6 +242,9 @@ function bindEvents() {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
+  // ヘッダーのログインボタン(全タブ共通、2026-07-30追加)
+  $('header-signin').addEventListener('click', onHeaderSignIn);
+
   // 設定(全タブ共通)
   $('settings-toggle').addEventListener('click', toggleSettings);
   $('toggle-key').addEventListener('click', () => {
@@ -242,6 +297,7 @@ function bindEvents() {
   $('sheets-sheet-name').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.sheetName, e.target.value.trim());
   });
+  $('sync-now').addEventListener('click', onSyncNow);
 
   // 単語タブ
   $('word-generate').addEventListener('click', onWordGenerate);
@@ -696,7 +752,7 @@ function renderWordStock() {
     const li = buildStockRow({
       isDuplicate: dup.has(i),
       tags,
-      rowId: String(i),
+      rowId: item.id,
       title: item.word,
       subtitle: item.meaning || '(意味なし)',
       meta: formatDateTime(item.generated_at),
@@ -776,7 +832,10 @@ async function onWordGenerate() {
           model,
           promptTemplate: shared.wordPrompt,
         });
-        generated.push({ ...card, generated_at: new Date().toISOString() });
+        const generatedAt = new Date().toISOString();
+        generated.push({
+          ...card, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt,
+        });
       } catch (e) {
         failed.push(`${word}: ${e.message}`);
         if (e instanceof GeminiError && (e.message.includes('1日あたり') || e.message.includes('前払いクレジット'))) break;
@@ -844,7 +903,7 @@ function renderAiAskStock() {
     const li = buildStockRow({
       isDuplicate: dup.has(i),
       tags,
-      rowId: String(i),
+      rowId: item.id,
       title: item.pattern || '(形式未設定)',
       subtitle: questionPreview,
       meta: formatDateTime(item.generated_at),
@@ -919,7 +978,9 @@ async function onAiAskGenerate() {
       promptTemplate: shared.grammarMultiPrompt,
     });
     const generatedAt = new Date().toISOString();
-    aiAskStock = aiAskStock.concat(items.map((it) => ({ ...it, generated_at: generatedAt })));
+    aiAskStock = aiAskStock.concat(items.map((it) => ({
+      ...it, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt,
+    })));
     localStorage.setItem(STORAGE.aiAskStock, JSON.stringify(aiAskStock));
     renderAiAskStock();
 
@@ -936,7 +997,10 @@ async function onAiAskGenerate() {
           model,
           promptTemplate: shared.shuujukuPrompt,
         });
-        shuujukuStock = shuujukuStock.concat([{ ...shuujukuItem, generated_at: new Date().toISOString() }]);
+        const shuujukuGeneratedAt = new Date().toISOString();
+        shuujukuStock = shuujukuStock.concat([{
+          ...shuujukuItem, id: newSyncId(), generated_at: shuujukuGeneratedAt, updated_at: shuujukuGeneratedAt,
+        }]);
         localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
         renderShuujukuStock();
         shuujukuNote = ' + 習熟用(音読) 1件';
@@ -986,7 +1050,9 @@ function renderShuujukuStock() {
       isDuplicate: dup.has(i),
       // rowId: フィルターは持たないが、onDeleteSelected()が全タブ共通で
       // ID方式の選択(checkedRowIdsOf)を使うため必要(2026-07-29)。
-      rowId: String(i),
+      // 2026-07-30: 複数端末間の同期(打ち消し記録)にも同じidを使うため、
+      // 配列インデックスではなくitem.id(newSyncId()で採番)を使う。
+      rowId: item.id,
       title: item.pattern || '(パターン未設定)',
       subtitle: item.meaning || '(意味なし)',
       meta: formatDateTime(item.generated_at),
@@ -1031,6 +1097,9 @@ async function onExportShuujuku() {
     // apkgの生成に成功した時点で初めて続き番号を進め、出力済みの項目を
     // ストックから取り除く(desktop版のmark_exportedと同じ2段階設計。
     // 生成に失敗した場合はストックも番号も変化させない)。
+    // 出力済みで消える項目のidは打ち消し記録に残す(2026-07-30、複数端末間の
+    // 同期が「削除済み(出力済み)は復活させない」と判定できるようにするため)。
+    addTombstoneIds(STORAGE.shuujukuTombstones, shuujukuStock.map((item) => item.id));
     advanceNextNum(shuujukuStock.length);
     const count = shuujukuStock.length;
     shuujukuStock = [];
@@ -1088,7 +1157,15 @@ function sheetsConfig() {
   };
 }
 
-/** ログイン状態の表示と、ログイン系ボタンの文言を現在の状態に合わせる。 */
+/**
+ * ログイン状態の表示と、ログイン系ボタンの文言を現在の状態に合わせる。
+ * DailyConversationタブのボタンだけでなく、ヘッダーのログインボタン
+ * (2026-07-30追加、`header-signin`)もここでまとめて同期する。DailyConversation
+ * タブを開かなくても、⚙設定の「複数端末間の同期」等のためにログインだけ
+ * 先に済ませられるようにするのが目的。状態管理はこの関数に一本化してあり、
+ * ログイン状態が変わりうる箇所(onHeaderSignIn/onDailySignIn/onDailySignOut/
+ * requireSheetsAccess/onSyncNow等)は全てここを呼ぶだけでよい。
+ */
 function updateDailyAuthStatus() {
   const signedIn = hasValidAccessToken();
   setStatus(
@@ -1098,36 +1175,165 @@ function updateDailyAuthStatus() {
       : '未ログインです。シートを読み書きする操作の前にログインしてください。',
   );
   // 既にログイン済みの状態で押した場合は「アカウントを選び直したい」
-  // ケースとみなし、同意画面を明示的に出す(forceConsent)。
-  $('daily-signin').textContent = signedIn ? '別のアカウントでログイン' : 'Googleにログイン';
+  // ケースとみなし、同意画面を明示的に出す(forceConsent)。ヘッダーの
+  // ボタンも同じ文言・同じ挙動にする。
+  const signinLabel = signedIn ? '別のアカウントでログイン' : 'Googleにログイン';
+  $('daily-signin').textContent = signinLabel;
   $('daily-signout').disabled = !signedIn;
+  $('header-signin').textContent = signinLabel;
+}
+
+/**
+ * Googleログインの実処理(2026-07-30、ヘッダーのログインボタン追加に伴い
+ * onDailySignIn()から切り出し)。DailyConversationタブのボタンとヘッダーの
+ * ボタンは見た目(進捗を出すstatus要素・disabledにするbutton要素)だけが
+ * 違うため、状態表示先を引数で受け取れるようにしてある。
+ * @returns {Promise<boolean>} ログインに成功したか
+ */
+async function signInToGoogle(statusEl, btnEl) {
+  const { clientId } = sheetsConfig();
+  if (!clientId) {
+    setStatus(statusEl, 'OAuthクライアントIDを設定してください(⚙ 設定 → スプレッドシート)。', true);
+    return false;
+  }
+  btnEl.disabled = true;
+  try {
+    const forceConsent = hasValidAccessToken();
+    showLoading(statusEl, 'Googleログインを待っています...');
+    await getAccessToken(clientId, { forceConsent });
+    updateDailyAuthStatus();
+    return true;
+  } catch (e) {
+    hideLoading(statusEl);
+    setStatus(statusEl, e.message, true);
+    return false;
+  } finally {
+    btnEl.disabled = false;
+  }
 }
 
 async function onDailySignIn() {
-  const status = $('daily-auth-status');
-  const { clientId } = sheetsConfig();
-  if (!clientId) {
-    setStatus(status, 'OAuthクライアントIDを設定してください(⚙ 設定 → スプレッドシート)。', true);
-    return;
-  }
-  const btn = $('daily-signin');
-  btn.disabled = true;
-  try {
-    const forceConsent = hasValidAccessToken();
-    showLoading(status, 'Googleログインを待っています...');
-    await getAccessToken(clientId, { forceConsent });
-    updateDailyAuthStatus();
-  } catch (e) {
-    hideLoading(status);
-    setStatus(status, e.message, true);
-  } finally {
-    btn.disabled = false;
-  }
+  await signInToGoogle($('daily-auth-status'), $('daily-signin'));
+}
+
+/** ヘッダーのログインボタン(2026-07-30追加)。 */
+async function onHeaderSignIn() {
+  const status = $('header-auth-status');
+  const ok = await signInToGoogle(status, $('header-signin'));
+  // updateDailyAuthStatus()はdaily-auth-status側しか更新しないため、成功時の
+  // メッセージはここで出す(失敗時はsignInToGoogle内でエラーを表示済み)。
+  if (ok) setStatus(status, 'ログインしました。');
 }
 
 function onDailySignOut() {
   clearAccessToken();
   updateDailyAuthStatus();
+}
+
+// ---------------------------------------------------------------------------
+// 複数端末間の同期(2026-07-30追加)
+//
+// 単語/AIに質問/習熟用の3ストックを、「添削結果」スプレッドシート内の隠しタブ
+// (_AppSync、docs/lib/sheets.js参照)経由でPC・スマホ間で同期する。
+// DailyConversationタブと同じGoogleログイン(spreadsheetsスコープ)をそのまま
+// 流用しており、追加のOAuth同意は不要。
+//
+// 「後勝ちの丸ごと上書き」ではなく、id単位の和集合マージ(docs/lib/sync.js の
+// mergeStock)にしてある: 追加は基本的にデータを失わず、削除は打ち消し記録
+// (tombstone)で伝播させる。詳細・トレードオフはsync.jsの説明を参照。
+// ---------------------------------------------------------------------------
+
+/** 同期対象の3ストックの設定(タブキー→ローカル変数・保存先・描画関数)。 */
+function syncSpecs() {
+  return [
+    {
+      label: '単語', itemsKey: 'word_stock_items', tombKey: 'word_stock_tombstones',
+      tombStorage: STORAGE.wordTombstones,
+      get: () => wordStock,
+      set: (v) => { wordStock = v; localStorage.setItem(STORAGE.wordStock, JSON.stringify(wordStock)); },
+      render: renderWordStock,
+    },
+    {
+      label: 'AIに質問', itemsKey: 'ai_ask_stock_items', tombKey: 'ai_ask_stock_tombstones',
+      tombStorage: STORAGE.aiAskTombstones,
+      get: () => aiAskStock,
+      set: (v) => { aiAskStock = v; localStorage.setItem(STORAGE.aiAskStock, JSON.stringify(aiAskStock)); },
+      render: renderAiAskStock,
+    },
+    {
+      label: '習熟用', itemsKey: 'shuujuku_stock_items', tombKey: 'shuujuku_stock_tombstones',
+      tombStorage: STORAGE.shuujukuTombstones,
+      get: () => shuujukuStock,
+      set: (v) => { shuujukuStock = v; localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock)); },
+      render: renderShuujukuStock,
+    },
+  ];
+}
+
+/**
+ * 「🔄 今すぐ同期」ボタン。読み込み→マージ→ローカル反映→書き戻しを1回の
+ * 操作で行う(pull-merge-pushを毎回まとめて行うことで、書き込みレースの窓を
+ * 小さくする。真の同時書き込みは片桐一人が順番に端末を使う想定では
+ * ほぼ起きない前提)。
+ */
+async function onSyncNow() {
+  const status = $('sync-status');
+  const btn = $('sync-now');
+  const { clientId, spreadsheetId } = sheetsConfig();
+  if (!clientId || !spreadsheetId) {
+    setStatus(
+      status,
+      '⚙ 設定 → スプレッドシート で、クライアントID・スプレッドシートIDを設定してください。'
+      + '(シート名の設定は同期には使いません)',
+      true,
+    );
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    showLoading(status, 'Googleにログイン中...');
+    const accessToken = await getAccessToken(clientId);
+    updateDailyAuthStatus();
+
+    showLoading(status, '同期データを読み込み中...');
+    const remote = await readSyncState({ spreadsheetId, accessToken });
+
+    const newState = {};
+    const capacityLines = [];
+    for (const spec of syncSpecs()) {
+      const remoteItems = parseIdArray(remote[spec.itemsKey]);
+      const remoteTombstoneIds = parseIdArray(remote[spec.tombKey]);
+      const localTombstoneIds = loadTombstoneIds(spec.tombStorage);
+
+      const merged = mergeStock(spec.get(), remoteItems, localTombstoneIds, remoteTombstoneIds);
+      spec.set(merged.items);
+      saveTombstoneIds(spec.tombStorage, merged.tombstoneIds);
+      spec.render();
+
+      const itemsJson = JSON.stringify(merged.items);
+      const tombJson = JSON.stringify(merged.tombstoneIds);
+      newState[spec.itemsKey] = itemsJson;
+      newState[spec.tombKey] = tombJson;
+      const percent = Math.max(capacityPercent(itemsJson), capacityPercent(tombJson));
+      capacityLines.push(`${spec.label} ${percent}%`);
+    }
+
+    showLoading(status, 'シートへ書き込み中...');
+    await writeSyncState({ spreadsheetId, accessToken, state: newState });
+
+    hideLoading(status);
+    setStatus(status, `同期しました。(セル容量使用率: ${capacityLines.join(' / ')})`);
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, e.message, true);
+    if (e instanceof SheetsAuthError) {
+      clearAccessToken();
+      updateDailyAuthStatus();
+    }
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /**
@@ -1435,7 +1641,8 @@ async function generateShuujukuCandidatesFromRows(rows, status) {
       const item = await generateShuujukuItemFromRow({
         row: rows[i], apiKey, model, promptTemplate: shared.shuujukuDailyconvPrompt,
       });
-      items.push({ ...item, generated_at: new Date().toISOString() });
+      const generatedAt = new Date().toISOString();
+      items.push({ ...item, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt });
     } catch {
       failed += 1;
     }
@@ -1678,14 +1885,17 @@ function checkedRowIdsOf(listElId) {
 
 function onDeleteSelected(tabKey) {
   const cfg = TAB_CONFIG[tabKey];
-  const indices = checkedRowIdsOf(cfg.listEl).map(Number);
-  if (indices.length === 0) {
+  const ids = checkedRowIdsOf(cfg.listEl);
+  if (ids.length === 0) {
     alert('削除する項目を選択してください。');
     return;
   }
-  if (!confirm(`選択した ${indices.length} 件を削除します。よろしいですか？`)) return;
-  const remove = new Set(indices);
-  cfg.setStock(cfg.stock.filter((_, i) => !remove.has(i)));
+  if (!confirm(`選択した ${ids.length} 件を削除します。よろしいですか？`)) return;
+  const remove = new Set(ids);
+  cfg.setStock(cfg.stock.filter((item) => !remove.has(item.id)));
+  // 複数端末間の同期(onSyncNow)が「削除済みは復活させない」と判定できるよう、
+  // 削除したidを打ち消し記録に残す(2026-07-30)。
+  addTombstoneIds(TOMBSTONE_STORAGE[tabKey], ids);
   cfg.render();
 }
 
@@ -1696,6 +1906,7 @@ function onClearStock(tabKey) {
     return;
   }
   if (!confirm(`${cfg.stock.length} 件すべてを削除します。よろしいですか？(取り消せません)`)) return;
+  addTombstoneIds(TOMBSTONE_STORAGE[tabKey], cfg.stock.map((item) => item.id));
   cfg.setStock([]);
   cfg.render();
 }
@@ -1718,7 +1929,10 @@ function onResetExported(tabKey) {
   )) return;
   cfg.setStock(cfg.stock.map((item) => {
     const { exported_at, ...rest } = item;
-    return rest;
+    // 複数端末間の同期(2026-07-30)がこのリセットを「新しい変更」として
+    // 優先できるよう updated_at を打ち直す(でないと、まだexported_atを
+    // 持ったままの古いリモートの内容にマージで上書きされてしまう)。
+    return { ...rest, updated_at: new Date().toISOString() };
   }));
   cfg.render();
 }
@@ -1782,7 +1996,9 @@ async function onExport(tabKey) {
     const exportedAt = new Date().toISOString();
     const exportedSet = new Set(pendingItems);
     cfg.setStock(cfg.stock.map((item) => (
-      exportedSet.has(item) ? { ...item, exported_at: exportedAt } : item
+      // updated_at も一緒に打ち直す(2026-07-30、複数端末間の同期がこの
+      // exported_atを「新しい変更」として優先できるようにするため)。
+      exportedSet.has(item) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
     )));
     cfg.render();
 

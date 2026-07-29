@@ -47,9 +47,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 16px 0 8px;
 }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ヘッダーのログイン状態表示(2026-07-30追加)。通常は空文字で、ログイン中の
+   読み込み・エラー時だけ短い文言が入る(常に領域を確保するため、他の
+   .status 同様に空でも要素自体は残す)。 */
+.header-auth-status { margin: -4px 0 12px; }
 
 h1 { font-size: 1.25rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 4px; }

@@ -458,3 +458,70 @@ export async function markRowsAsExported({
   }
   return { succeeded, failed };
 }
+
+// ---------------------------------------------------------------------------
+// 複数端末間の同期(2026-07-30追加)
+// ---------------------------------------------------------------------------
+//
+// 「添削結果」スプレッドシート内に、片桐の目に触れない隠しタブ(_AppSync)を
+// 追加し、単語/AIに質問/習熟用の3ストックをJSONとして保存する。既に使っている
+// `spreadsheets` スコープのGoogleログインをそのまま流用できる(Drive APIへの
+// スコープ追加・再同意は不要)。マージ(和集合+打ち消し記録)のロジック自体は
+// docs/lib/sync.js が持ち、ここは純粋にSheets APIとの読み書きだけを担当する。
+
+/** 同期用の隠しタブのシート名。 */
+export const SYNC_SHEET_NAME = '_AppSync';
+
+/** 各行のキー(A列)。B列に対応するJSON文字列を保存する(行の順序は固定)。 */
+export const SYNC_ROW_KEYS = [
+  'word_stock_items', 'word_stock_tombstones',
+  'ai_ask_stock_items', 'ai_ask_stock_tombstones',
+  'shuujuku_stock_items', 'shuujuku_stock_tombstones',
+];
+
+/** `_AppSync` タブが無ければ、片桐の目に触れない隠しタブとして作成する。 */
+async function ensureSyncSheetExists(spreadsheetId, token) {
+  const metaUrl = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties.title`;
+  const meta = await sheetsFetch(metaUrl, token);
+  const titles = (meta.sheets || []).map((s) => s.properties?.title);
+  if (titles.includes(SYNC_SHEET_NAME)) return;
+
+  const batchUrl = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  await sheetsFetch(batchUrl, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      requests: [{ addSheet: { properties: { title: SYNC_SHEET_NAME, hidden: true } } }],
+    }),
+  });
+}
+
+/**
+ * 同期用の隠しタブから、3ストック分のitems/tombstonesをまとめて読む
+ * (タブが無ければ自動作成した上で、中身は空として返す)。
+ * @returns {Promise<Record<string, string>>} SYNC_ROW_KEYS をキーにしたJSON文字列
+ *   (未保存の行は空文字)
+ */
+export async function readSyncState({ spreadsheetId, accessToken: token }) {
+  await ensureSyncSheetExists(spreadsheetId, token);
+  const range = `${SYNC_SHEET_NAME}!A1:B${SYNC_ROW_KEYS.length}`;
+  const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeRange(range)}`;
+  const data = await sheetsFetch(url, token);
+  const values = data.values || [];
+  const out = {};
+  SYNC_ROW_KEYS.forEach((key, i) => { out[key] = values[i]?.[1] || ''; });
+  return out;
+}
+
+/**
+ * マージ済みの3ストック分をまとめて隠しタブへ書き戻す(A1:B{N}の範囲を
+ * まるごと上書きする1回のAPI呼び出しで済ませ、往復回数・競合の窓を減らす)。
+ * @param {Record<string, string>} state SYNC_ROW_KEYS をキーにしたJSON文字列
+ */
+export async function writeSyncState({ spreadsheetId, accessToken: token, state }) {
+  await ensureSyncSheetExists(spreadsheetId, token);
+  const range = `${SYNC_SHEET_NAME}!A1:B${SYNC_ROW_KEYS.length}`;
+  const values = SYNC_ROW_KEYS.map((key) => [key, state[key] || '']);
+  const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeRange(range)}`
+    + '?valueInputOption=RAW';
+  await sheetsFetch(url, token, { method: 'PUT', body: JSON.stringify({ values }) });
+}
