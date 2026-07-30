@@ -482,6 +482,10 @@ let testAnimationFrameId = null;
 function stopTestPlayback() {
   if (testPlayAudio) {
     testPlayAudio.pause();
+    testPlayAudio.loop = false;
+    // onTestPlayでDOMに常駐させた要素を後片付けする(下記「モバイルでの
+    // 再生ブロック対策」参照)。
+    if (testPlayAudio.parentNode) testPlayAudio.parentNode.removeChild(testPlayAudio);
     testPlayAudio = null;
   }
   if (testAnimationFrameId !== null) {
@@ -520,27 +524,41 @@ function drawTestWaveform(buckets, progress, clipped) {
 /**
  * 完全な無音のWAVをBlob URLとして返す(モバイルでの再生ブロック対策、
  * `onTestPlay`から参照)。
+ *
+ * **2026-07-30修正**: 以前はサンプル1個(8000Hzで約0.125ミリ秒)だけの
+ * 極端に短いWAVだった。TTS合成完了後にsrcを実音声へ差し替えても引き続き
+ * 再生されない不具合が実機で報告され、原因はこの短さにあると考えられる
+ * ——ほぼ一瞬で最後まで再生し終わってしまうため、`onTestPlay`が
+ * `audio.loop = true`でループさせない限り「ユーザー操作起因で再生開始した」
+ * という状態がTTS合成待ちの間(数秒)持続しない(ブラウザによっては
+ * 再生が一瞬で終わった時点でこの状態を失効させることがある)。
+ * ループ再生前提でも極端に短い音を高頻度でループさせるのはブラウザに
+ * よって不安定になりうるため、それなりの長さ(0.25秒)の無音にした。
+ * `ArrayBuffer`はゼロ初期化されるため、ヘッダー以降のサンプル領域は
+ * 明示的に書き込まなくても全て無音(0)のままでよい。
  */
 function createSilentWavBlobUrl() {
-  const buffer = new ArrayBuffer(46);
+  const sampleRate = 8000;
+  const numSamples = Math.round(sampleRate * 0.25); // 0.25秒分の無音
+  const dataSize = numSamples * 2; // 16bit(2バイト)モノラル
+  const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
   const writeStr = (offset, str) => {
     for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
   };
   writeStr(0, 'RIFF');
-  view.setUint32(4, 38, true);
+  view.setUint32(4, 36 + dataSize, true);
   writeStr(8, 'WAVE');
   writeStr(12, 'fmt ');
   view.setUint32(16, 16, true);
   view.setUint16(20, 1, true); // PCM
   view.setUint16(22, 1, true); // mono
-  view.setUint32(24, 8000, true); // sample rate
-  view.setUint32(28, 16000, true); // byte rate
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
   view.setUint16(32, 2, true); // block align
   view.setUint16(34, 16, true); // bits per sample
   writeStr(36, 'data');
-  view.setUint32(40, 2, true);
-  view.setInt16(44, 0, true);
+  view.setUint32(40, dataSize, true);
   return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
 }
 
@@ -557,7 +575,10 @@ function createSilentWavBlobUrl() {
 async function playTestWaveform(audio, mp3Bytes, duration, buckets, clipped) {
   const blob = new Blob([mp3Bytes], { type: 'audio/mpeg' });
   const url = URL.createObjectURL(blob);
-  audio.pause();
+  // ループ再生していた無音WAVを止めて本番の音声に差し替える。srcの再設定は
+  // 仕様上それ自体が現在の再生を停止させる(resource selection algorithm)ため、
+  // 明示的なpause()は不要(2026-07-30、以前はここでpause()していたが削除)。
+  audio.loop = false;
   audio.src = url;
   audio.currentTime = 0;
   audio.addEventListener('ended', () => URL.revokeObjectURL(url));
@@ -585,6 +606,16 @@ async function playTestWaveform(audio, mp3Bytes, duration, buckets, clipped) {
  * その<audio>要素をユーザー操作起因の再生として"解禁"しておく。TTS合成後は
  * 同じ要素のsrcを実際の音声に差し替えて再度play()するだけにする(同一要素
  * であれば、srcの差し替え後のplay()も解禁状態が引き継がれる)。
+ *
+ * **2026-07-30修正(波形は表示されるが音が鳴らない不具合)**: 上記の対策を
+ * 入れてもなお音が鳴らない場合があると再報告された。原因は2つ考えられる:
+ * (1) 無音WAVがサンプル1個(約0.125ミリ秒)しかなく、再生開始した端から
+ * 「再生終了」してしまうため、TTS合成待ちの数秒間"再生中"の状態を維持
+ * できていなかった → `audio.loop = true`でTTS合成が終わるまでループさせ、
+ * 常に"再生中"の状態を保つようにした(`createSilentWavBlobUrl`も参照)。
+ * (2) `new Audio()`で作った要素がDOMツリーに属していないままだと、
+ * 一部のモバイルブラウザで再生が不安定になることがある → `document.body`に
+ * 明示的に追加する(`controls`属性が無いため画面上には何も表示されない)。
  */
 async function onTestPlay() {
   const opts = getTtsOptions();
@@ -598,8 +629,10 @@ async function onTestPlay() {
   btn.disabled = true;
 
   const audio = new Audio();
+  document.body.appendChild(audio);
   const silentUrl = createSilentWavBlobUrl();
   audio.src = silentUrl;
+  audio.loop = true;
   testPlayAudio = audio;
   const unlockPromise = audio.play().catch(() => {});
 
@@ -623,6 +656,9 @@ async function onTestPlay() {
     URL.revokeObjectURL(silentUrl);
     hideLoading(statusEl);
     setStatus(statusEl, e.message, true);
+    // 失敗時、無音WAVがループ再生されたままDOMに残り続けないよう片付ける
+    // (次にボタンを押すまで放置されても実害は無いが、念のため即座に止める)。
+    if (testPlayAudio === audio) stopTestPlayback();
   } finally {
     btn.disabled = false;
   }
