@@ -14,11 +14,12 @@
 <header class="app-header">
   <h1>ANKI出力ツール <span class="badge">Web版</span></h1>
   <div class="header-actions">
-    <!-- DailyConversationタブを開かなくても、⚙設定の「複数端末間の同期」等の
-         ためにログインだけ先に済ませられるようにする(2026-07-30追加)。
-         ログイン状態はDailyConversationタブのボタンと共通(app.jsの
-         updateDailyAuthStatus()が両方まとめて同期する)。 -->
+    <!-- Googleログインの唯一の窓口(2026-07-30追加。以前はDailyConversation
+         タブの中だけにあったが、⚙設定の「複数端末間の同期」等でもログインが
+         必要になったため、DailyConversationタブ側のログインUIは削除しここへ
+         一本化した。ログイン状態はapp.jsのupdateGoogleAuthStatus()が管理する)。 -->
     <button type="button" id="header-signin" class="ghost">Googleにログイン</button>
+    <button type="button" id="header-signout" class="ghost" disabled>ログアウト</button>
     <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
   </div>
 </header>
@@ -301,27 +302,19 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
 <!-- ====================== DailyConversationタブ ====================== -->
 <div id="tab-daily" class="tab-panel" hidden role="tabpanel">
 
-  <section class="card">
-    <h2>① Googleにログイン</h2>
-    <p class="hint">
-      「添削結果」スプレッドシートを読み書きするため、Googleアカウントでのログインが
-      必要です。ログイン状態はこのページを開いている間だけ保持され(約1時間で失効)、
-      アクセストークンは保存されません。事前に⚙設定でクライアントID・
-      スプレッドシートID・シート名を設定してください。
-    </p>
-    <div class="row">
-      <button type="button" id="daily-signin" class="primary">Googleにログイン</button>
-      <button type="button" id="daily-signout">ログアウト</button>
-    </div>
-    <p id="daily-auth-status" class="status" role="status" aria-live="polite"></p>
-  </section>
+  <p class="hint login-required-hint">
+    🔒 このタブは「添削結果」スプレッドシートを直接読み書きするため、Googleへの
+    ログインが必要です。画面右上のヘッダーにある「Googleにログイン」から
+    ログインしてください(事前に⚙設定でクライアントID・スプレッドシートID・
+    シート名の設定も必要です)。
+  </p>
 
   <section class="card">
-    <h2>② 英文を入力してAIに添削させる</h2>
+    <h2>① 英文を入力してAIに添削させる</h2>
     <p class="hint">
       複数文・複数段落をまとめて入力できます(AIが文ごとに分割して添削します)。
-      添削結果はシートに新規行として追記され、続けて③の一覧が更新されます。
-      Googleフォーム経由で追加された行もそのまま③に出てきます。
+      添削結果はシートに新規行として追記され、続けて②の一覧が更新されます。
+      Googleフォーム経由で追加された行もそのまま②に出てきます。
     </p>
     <textarea id="daily-input" rows="6" spellcheck="false"
 placeholder="I go to the park yesterday. She don't like coffee."></textarea>
@@ -330,12 +323,12 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
   </section>
 
   <section class="card">
-    <h2>③ シート上の未出力行 <span id="daily-pending-count" class="count"></span></h2>
+    <h2>② シート上の未出力行 <span id="daily-pending-count" class="count"></span></h2>
     <p class="hint">
-      「Anki出力済み」列が空の行を表示します。ここに出ているものが④の出力対象です。
+      「Anki出力済み」列が空の行を表示します。ここに出ているものが③の出力対象です。
       重複などで出力したくない行は選んで「一覧から除外」できます(シート自体は
-      変更されず、この端末でのみ非表示になります)。④で一度.apkgに含めた行には
-      「✓ 出力済み」の印が付きます(④の「Anki出力済みにする」チェックをOFFに
+      変更されず、この端末でのみ非表示になります)。③で一度.apkgに含めた行には
+      「✓ 出力済み」の印が付きます(③の「Anki出力済みにする」チェックをOFFに
       していた場合でも、このブラウザ内には記録されます)。
     </p>
     <div class="row">
@@ -356,7 +349,7 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
   </section>
 
   <section class="card">
-    <h2>④ Ankiに取り込む</h2>
+    <h2>③ Ankiに取り込む</h2>
     <p class="hint">
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       カテゴリが「誤りなし」の行と、IDが重複している行は出力対象から除かれます。

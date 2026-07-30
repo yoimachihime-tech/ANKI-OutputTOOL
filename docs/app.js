@@ -169,7 +169,7 @@ async function init() {
   renderAiAskStock();
   renderShuujukuStock();
   renderDailyPending();
-  updateDailyAuthStatus();
+  updateGoogleAuthStatus();
 
   const [
     wordPrompt, grammarMultiPrompt, shuujukuPrompt, shuujukuDailyconvPrompt,
@@ -244,6 +244,7 @@ function bindEvents() {
 
   // ヘッダーのログインボタン(全タブ共通、2026-07-30追加)
   $('header-signin').addEventListener('click', onHeaderSignIn);
+  $('header-signout').addEventListener('click', onHeaderSignOut);
 
   // 設定(全タブ共通)
   $('settings-toggle').addEventListener('click', toggleSettings);
@@ -289,7 +290,7 @@ function bindEvents() {
     localStorage.setItem(STORAGE.googleClientId, e.target.value.trim());
     // クライアントIDが変わったら、古いトークンは使い回さない
     clearAccessToken();
-    updateDailyAuthStatus();
+    updateGoogleAuthStatus();
   });
   $('sheets-spreadsheet-id').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.spreadsheetId, e.target.value.trim());
@@ -320,9 +321,8 @@ function bindEvents() {
   $('shuujuku-clear-stock').addEventListener('click', () => onClearStock('shuujuku'));
   $('shuujuku-export').addEventListener('click', onExportShuujuku);
 
-  // DailyConversationタブ
-  $('daily-signin').addEventListener('click', onDailySignIn);
-  $('daily-signout').addEventListener('click', onDailySignOut);
+  // DailyConversationタブ(ログイン/ログアウトはヘッダーに一本化してあるため
+  // ここには無い。下記「ヘッダーのログインボタン」を参照)
   $('daily-correct').addEventListener('click', onDailyCorrect);
   $('daily-refresh').addEventListener('click', () => refreshDailyPending($('daily-export-status')));
   bindPersistentCheckbox('daily-filter-hide-no-error', false, renderDailyPending);
@@ -1158,76 +1158,55 @@ function sheetsConfig() {
 }
 
 /**
- * ログイン状態の表示と、ログイン系ボタンの文言を現在の状態に合わせる。
- * DailyConversationタブのボタンだけでなく、ヘッダーのログインボタン
- * (2026-07-30追加、`header-signin`)もここでまとめて同期する。DailyConversation
- * タブを開かなくても、⚙設定の「複数端末間の同期」等のためにログインだけ
- * 先に済ませられるようにするのが目的。状態管理はこの関数に一本化してあり、
- * ログイン状態が変わりうる箇所(onHeaderSignIn/onDailySignIn/onDailySignOut/
- * requireSheetsAccess/onSyncNow等)は全てここを呼ぶだけでよい。
+ * ログイン状態の表示と、ヘッダーのログイン/ログアウトボタンの文言を現在の
+ * 状態に合わせる。Googleログインの窓口はヘッダーの`header-signin`/
+ * `header-signout`に一本化してある(2026-07-30。以前はDailyConversationタブの
+ * 中だけにログインUIがあったが、⚙設定の「複数端末間の同期」でもログインが
+ * 必要になったため、タブを開かなくてもログインできるようヘッダーへ移動し、
+ * DailyConversationタブ側のログインUIは削除した)。状態管理はこの関数に
+ * 一本化してあり、ログイン状態が変わりうる箇所(onHeaderSignIn/
+ * onHeaderSignOut/requireSheetsAccess/onSyncNow等)は全てここを呼ぶだけでよい。
  */
-function updateDailyAuthStatus() {
+function updateGoogleAuthStatus() {
   const signedIn = hasValidAccessToken();
   setStatus(
-    $('daily-auth-status'),
+    $('header-auth-status'),
     signedIn
-      ? 'ログイン済みです(このページを閉じるか約1時間で失効します)。'
-      : '未ログインです。シートを読み書きする操作の前にログインしてください。',
+      ? 'Googleにログイン済みです(このページを閉じるか約1時間で失効します)。'
+      : '未ログインです。DailyConversationタブ・複数端末間の同期を使うには、'
+        + '上の「Googleにログイン」からログインしてください。',
   );
   // 既にログイン済みの状態で押した場合は「アカウントを選び直したい」
-  // ケースとみなし、同意画面を明示的に出す(forceConsent)。ヘッダーの
-  // ボタンも同じ文言・同じ挙動にする。
-  const signinLabel = signedIn ? '別のアカウントでログイン' : 'Googleにログイン';
-  $('daily-signin').textContent = signinLabel;
-  $('daily-signout').disabled = !signedIn;
-  $('header-signin').textContent = signinLabel;
+  // ケースとみなし、同意画面を明示的に出す(forceConsent)。
+  $('header-signin').textContent = signedIn ? '別のアカウントでログイン' : 'Googleにログイン';
+  $('header-signout').disabled = !signedIn;
 }
 
-/**
- * Googleログインの実処理(2026-07-30、ヘッダーのログインボタン追加に伴い
- * onDailySignIn()から切り出し)。DailyConversationタブのボタンとヘッダーの
- * ボタンは見た目(進捗を出すstatus要素・disabledにするbutton要素)だけが
- * 違うため、状態表示先を引数で受け取れるようにしてある。
- * @returns {Promise<boolean>} ログインに成功したか
- */
-async function signInToGoogle(statusEl, btnEl) {
-  const { clientId } = sheetsConfig();
-  if (!clientId) {
-    setStatus(statusEl, 'OAuthクライアントIDを設定してください(⚙ 設定 → スプレッドシート)。', true);
-    return false;
-  }
-  btnEl.disabled = true;
-  try {
-    const forceConsent = hasValidAccessToken();
-    showLoading(statusEl, 'Googleログインを待っています...');
-    await getAccessToken(clientId, { forceConsent });
-    updateDailyAuthStatus();
-    return true;
-  } catch (e) {
-    hideLoading(statusEl);
-    setStatus(statusEl, e.message, true);
-    return false;
-  } finally {
-    btnEl.disabled = false;
-  }
-}
-
-async function onDailySignIn() {
-  await signInToGoogle($('daily-auth-status'), $('daily-signin'));
-}
-
-/** ヘッダーのログインボタン(2026-07-30追加)。 */
 async function onHeaderSignIn() {
   const status = $('header-auth-status');
-  const ok = await signInToGoogle(status, $('header-signin'));
-  // updateDailyAuthStatus()はdaily-auth-status側しか更新しないため、成功時の
-  // メッセージはここで出す(失敗時はsignInToGoogle内でエラーを表示済み)。
-  if (ok) setStatus(status, 'ログインしました。');
+  const { clientId } = sheetsConfig();
+  if (!clientId) {
+    setStatus(status, 'OAuthクライアントIDを設定してください(⚙ 設定 → スプレッドシート)。', true);
+    return;
+  }
+  const btn = $('header-signin');
+  btn.disabled = true;
+  try {
+    const forceConsent = hasValidAccessToken();
+    showLoading(status, 'Googleログインを待っています...');
+    await getAccessToken(clientId, { forceConsent });
+    updateGoogleAuthStatus();
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
-function onDailySignOut() {
+function onHeaderSignOut() {
   clearAccessToken();
-  updateDailyAuthStatus();
+  updateGoogleAuthStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -1294,7 +1273,7 @@ async function onSyncNow() {
   try {
     showLoading(status, 'Googleにログイン中...');
     const accessToken = await getAccessToken(clientId);
-    updateDailyAuthStatus();
+    updateGoogleAuthStatus();
 
     showLoading(status, '同期データを読み込み中...');
     const remote = await readSyncState({ spreadsheetId, accessToken });
@@ -1329,7 +1308,7 @@ async function onSyncNow() {
     setStatus(status, e.message, true);
     if (e instanceof SheetsAuthError) {
       clearAccessToken();
-      updateDailyAuthStatus();
+      updateGoogleAuthStatus();
     }
   } finally {
     btn.disabled = false;
@@ -1349,7 +1328,7 @@ async function requireSheetsAccess() {
     );
   }
   const accessToken = await getAccessToken(cfg.clientId);
-  updateDailyAuthStatus();
+  updateGoogleAuthStatus();
   return { ...cfg, accessToken };
 }
 
@@ -1378,14 +1357,14 @@ function dailyDuplicateOriginalIds(rows) {
 }
 
 /**
- * 「誤りなし」の行は④で除外されるため、一覧でもその旨を明示する。
+ * 「誤りなし」の行は③で除外されるため、一覧でもその旨を明示する。
  * 2026-07-29に、原文が重複している行の警告表示と、両方をチェックボックスで
  * 絞り込めるフィルター機能を追加した(フィルターは表示のみに影響し、
  * dailyPendingRows自体やシート側のデータは変更しない)。
  * 同日、3つ目のフィルターとして「出力済み(このブラウザで記録)を隠す」を
- * 追加した。シート側の「Anki出力済み」列マーク(④のチェックボックス)とは
+ * 追加した。シート側の「Anki出力済み」列マーク(③のチェックボックス)とは
  * 独立して、`.apkg`生成に成功した行を`dailyconv.addExportedIds()`で
- * ローカルに記録しており(`onDailyExport()`参照)、④のチェックボックスを
+ * ローカルに記録しており(`onDailyExport()`参照)、③のチェックボックスを
  * OFFにして出力した場合やシート書き込みが失敗した場合でも、この一覧上で
  * 「実は既に一度カード化した」行を見分けられるようにするための保険。
  */
@@ -1485,7 +1464,7 @@ async function refreshDailyPending(status) {
     }
     if (e instanceof SheetsAuthError) {
       clearAccessToken();
-      updateDailyAuthStatus();
+      updateGoogleAuthStatus();
     }
     return false;
   } finally {
@@ -1533,16 +1512,16 @@ async function onDailyCorrect() {
 
     hideLoading(status);
     $('daily-input').value = '';
-    setStatus(status, `${newIds.length} 件をシートに追加しました。③の一覧を更新します...`);
+    setStatus(status, `${newIds.length} 件をシートに追加しました。②の一覧を更新します...`);
 
-    // デスクトップ版と同じく、追記に成功したらそのまま③の読み込みまで連鎖させる
+    // デスクトップ版と同じく、追記に成功したらそのまま②の読み込みまで連鎖させる
     // (確認導線が上下バラバラになるのを避けるため)。
     await refreshDailyPending(null);
 
     // デスクトップ版の_generate_shuujuku_candidates_from_rowsと同じく、今回
     // シートに追記した行(「誤りなし」を除く)ごとに習熟用(音読)候補を自動生成
-    // する(2026-07-29、片桐の指示で④の.apkgダウンロード時からこのタイミング
-    // へ変更。デスクトップ版は直接入力→①への自動連鎖でこのタイミングに
+    // する(2026-07-29、片桐の指示で③(当時は④)の.apkgダウンロード時からこの
+    // タイミングへ変更。デスクトップ版は直接入力→①への自動連鎖でこのタイミングに
     // 相当する挙動になっており、それに揃えた。「誤りなし」の行には
     // 抽出すべき「誤りの背景にある文法パターン」が無いため対象外)。
     const rowsForShuujuku = corrections
@@ -1552,13 +1531,13 @@ async function onDailyCorrect() {
       .filter((_, i) => corrections[i].category !== '誤りなし');
     const shuujukuNote = await generateShuujukuCandidatesFromRows(rowsForShuujuku, status);
 
-    setStatus(status, `${newIds.length} 件をシートに追加し、③の一覧を更新しました。${shuujukuNote}`);
+    setStatus(status, `${newIds.length} 件をシートに追加し、②の一覧を更新しました。${shuujukuNote}`);
   } catch (e) {
     hideLoading(status);
     setStatus(status, e.message, true);
     if (e instanceof SheetsAuthError) {
       clearAccessToken();
-      updateDailyAuthStatus();
+      updateGoogleAuthStatus();
     }
   } finally {
     btn.disabled = false;
@@ -1595,7 +1574,7 @@ function onDailyClearExclusions() {
  * 「出力済み履歴をリセット」(2026-07-29追加)。ローカルの出力済み記録
  * (`dailyconv.loadExportedIds()`)だけを消す。シートの「Anki出力済み」列
  * には一切触れないため、シート側で既に出力済みマークされている行は
- * 引き続き③の一覧には出てこない(fetchPendingRowsが除外するため)。
+ * 引き続き②の一覧には出てこない(fetchPendingRowsが除外するため)。
  */
 function onDailyResetExported() {
   if (dailyconv.loadExportedIds().size === 0) {
@@ -1614,9 +1593,9 @@ function onDailyResetExported() {
  * DailyConversationで新たにシートへ追記した行(「誤りなし」を除く)それぞれ
  * について、Gemini APIで習熟用(音読)候補を自動生成し習熟用ストックへ追加
  * する(デスクトップ版の`_generate_shuujuku_candidates_from_rows`に対応)。
- * `onDailyCorrect()`(②添削→シート追記の成功直後)から呼ぶ(2026-07-29、
- * 片桐の指示で④の.apkgダウンロード時からこのタイミングへ変更。デスクトップ版は
- * 直接入力→①シートから読み込むへの自動連鎖でこのタイミングに相当する挙動に
+ * `onDailyCorrect()`(①添削→シート追記の成功直後)から呼ぶ(2026-07-29、
+ * 片桐の指示で③(当時は④)の.apkgダウンロード時からこのタイミングへ変更。
+ * デスクトップ版は直接入力→①シートから読み込むへの自動連鎖でこのタイミングに相当する挙動に
  * なっており、それに揃えた。「AIに質問」タブの4問目生成(`onAiAskGenerate()`)が
  * 生成直後に習熟用ストックへ追加するのと同じ即時性)。
  * Gemini APIキー未設定なら黙ってスキップする。この処理の失敗はdaily側の
@@ -1664,7 +1643,7 @@ async function generateShuujukuCandidatesFromRows(rows, status) {
 async function onDailyExport() {
   const status = $('daily-export-status');
   if (dailyPendingRows.length === 0) {
-    setStatus(status, '出力する行がありません。先に③でシートから読み込んでください。', true);
+    setStatus(status, '出力する行がありません。先に②でシートから読み込んでください。', true);
     return;
   }
   const cardDef = shared.cardDefs?.daily;
@@ -1700,7 +1679,7 @@ async function onDailyExport() {
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `daily_${stamp}.apkg`);
 
-    // シート側の「Anki出力済み」列マーク(④のチェックボックス)とは独立に、
+    // シート側の「Anki出力済み」列マーク(③のチェックボックス)とは独立に、
     // 「このブラウザで.apkgに含めて出力した」ことをローカルへ記録する
     // (チェックボックスがOFFでも必ず記録する。マークし忘れ・書き込み失敗
     // 時の保険、renderDailyPending()の「✓ 出力済み」タグ/フィルターが使う)。
@@ -1737,7 +1716,7 @@ async function onDailyExport() {
     setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
     if (e instanceof SheetsAuthError) {
       clearAccessToken();
-      updateDailyAuthStatus();
+      updateGoogleAuthStatus();
     }
   } finally {
     btn.disabled = false;

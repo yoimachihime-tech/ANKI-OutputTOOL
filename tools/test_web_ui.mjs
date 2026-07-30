@@ -80,7 +80,7 @@ const FAKE_SHUUJUKU_ITEM = {
   expl: "三人称単数の否定は doesn't を使う。",
 };
 
-// DailyConversationタブの「④ .apkgをダウンロード」で、カード化された行
+// DailyConversationタブの「③ .apkgをダウンロード」で、カード化された行
 // ごとに自動生成される習熟用(音読)候補としてGeminiが返す想定の応答。
 const FAKE_SHUUJUKU_FROM_ROW = {
   pattern: 'She 動詞(三単現)',
@@ -776,7 +776,7 @@ if ($('tab-daily').hidden === false && $('tab-shuujuku').hidden === true) {
   fail('タブ切り替えが機能していない');
 }
 
-console.log('\n[16] DailyConversation: スプレッドシート設定とGoogleログイン');
+console.log('\n[16] DailyConversation: スプレッドシート設定とGoogleログイン(ヘッダーのボタン)');
 for (const [id, key, value] of [
   ['google-client-id', 'anki_tool_google_client_id', 'dummy.apps.googleusercontent.com'],
   ['sheets-spreadsheet-id', 'anki_tool_sheets_spreadsheet_id', 'DUMMY_SHEET_ID'],
@@ -788,36 +788,39 @@ for (const [id, key, value] of [
 }
 ok('クライアントID・スプレッドシートID・シート名が localStorage に保存される');
 
+// ログインの窓口はDailyConversationタブの中ではなくヘッダー(header-signin/
+// header-signout)に一本化してある(2026-07-30、⚙設定の「複数端末間の同期」
+// でもログインが必要になったため)。
 tokenRequests = 0;
-$('daily-signin').click();
+$('header-signin').click();
 await sleep(100);
 if (tokenRequests === 1 && lastTokenPrompt === '') {
-  ok('ログインボタンで token client を prompt:"" (同意済みなら無操作)で呼ぶ');
+  ok('ヘッダーのログインボタンで token client を prompt:"" (同意済みなら無操作)で呼ぶ');
 } else {
   fail(`token 要求の回数/prompt: ${tokenRequests} / ${JSON.stringify(lastTokenPrompt)}`);
 }
-if ($('daily-auth-status').textContent.includes('ログイン済み')
-  && $('daily-signin').textContent === '別のアカウントでログイン'
-  && $('daily-signout').disabled === false) {
+if ($('header-auth-status').textContent.includes('ログイン済み')
+  && $('header-signin').textContent === '別のアカウントでログイン'
+  && $('header-signout').disabled === false) {
   ok('ログイン後は状態表示・ボタン文言・ログアウトボタンの有効状態が切り替わる');
 } else {
-  fail(`ログイン後の表示: ${$('daily-auth-status').textContent} / ${$('daily-signin').textContent}`);
+  fail(`ログイン後の表示: ${$('header-auth-status').textContent} / ${$('header-signin').textContent}`);
 }
 
 // ログアウト → 再ログインできること(トークンはメモリ上にしか無いので、
 // ログアウト後は改めて token client を呼び直すはず)
-$('daily-signout').click();
-if ($('daily-auth-status').textContent.includes('未ログイン')
-  && $('daily-signin').textContent === 'Googleにログイン'
-  && $('daily-signout').disabled === true) {
+$('header-signout').click();
+if ($('header-auth-status').textContent.includes('未ログイン')
+  && $('header-signin').textContent === 'Googleにログイン'
+  && $('header-signout').disabled === true) {
   ok('ログアウトすると未ログイン表示に戻る');
 } else {
-  fail(`ログアウト後の表示: ${$('daily-auth-status').textContent} / ${$('daily-signin').textContent}`);
+  fail(`ログアウト後の表示: ${$('header-auth-status').textContent} / ${$('header-signin').textContent}`);
 }
 tokenRequests = 0;
-$('daily-signin').click();
+$('header-signin').click();
 await sleep(100);
-if (tokenRequests === 1 && $('daily-auth-status').textContent.includes('ログイン済み')) {
+if (tokenRequests === 1 && $('header-auth-status').textContent.includes('ログイン済み')) {
   ok('ログアウト後も再ログインできる');
 } else {
   fail(`再ログインできていない(token要求: ${tokenRequests})`);
@@ -853,7 +856,7 @@ if (sheetRows.length === 4) {
 if ($('daily-input').value === '') ok('追記成功後、入力欄がクリアされた');
 else fail('入力欄がクリアされていない');
 
-// 追記に成功したらそのまま③の読み込みまで連鎖する(デスクトップ版と同じ)
+// 追記に成功したらそのまま②の読み込みまで連鎖する(デスクトップ版と同じ)
 if ($('daily-pending-list').children.length === 3) {
   ok('追記後に未出力行の一覧が自動更新された(未出力3件 / 出力済み1件は除外)');
 } else {
@@ -872,8 +875,8 @@ if ($('daily-pending-list').textContent.includes('誤りなし(出力対象外)'
   fail('「誤りなし」の行にバッジが付いていない');
 }
 
-// デスクトップ版の_generate_shuujuku_candidates_from_rowsと同じく、②の
-// 添削→シート追記の成功直後(④の.apkgダウンロードを待たず)に習熟用(音読)
+// デスクトップ版の_generate_shuujuku_candidates_from_rowsと同じく、①の
+// 添削→シート追記の成功直後(③の.apkgダウンロードを待たず)に習熟用(音読)
 // 候補が自動生成されることを確認する(2026-07-29追加)。「誤りなし」は
 // 対象外なので、今回追記した1行(カテゴリ「文法」)についてのみ生成される。
 const newRowId = sheetRows[3][0];

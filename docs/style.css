@@ -119,6 +119,16 @@ h2 { font-size: 1.05rem; margin: 0 0 4px; }
 h3 { font-size: .95rem; margin: 0 0 4px; }
 
 .hint { color: var(--sub); font-size: .85rem; margin: 4px 0 12px; }
+
+/* このタブを使うにはログインが必須であることを明示する注意書き
+   (DailyConversationタブ、2026-07-30追加)。通常の.hint(地味なグレー)と
+   区別するため、重複警告と同じ--warn-bgで軽く強調する。 */
+.login-required-hint {
+  color: var(--fg);
+  background: var(--warn-bg);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
 .hint code {
   padding: 1px 4px;
   font-size: .95em;
