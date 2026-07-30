@@ -546,6 +546,41 @@ const wordAfter = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]
 if (wordAfter.length === 2 && wordAfter[0].word === 'give up') ok('選択した1件だけが削除された');
 else fail(`削除後のストック: ${JSON.stringify(wordAfter.map((i) => i.word))}`);
 
+console.log('\n[6.9] 単語タブ: 出力済みを削除(複数端末間の同期の容量節約、2026-07-30追加)');
+// 残り2件を再出力して出力済みにしておく(前提づくり)。
+downloaded = null;
+$('word-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+const wordBeforeDeleteExported = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
+if (wordBeforeDeleteExported.length === 2 && wordBeforeDeleteExported.every((it) => it.exported_at)) {
+  ok('削除テストの前提として、残り2件を再出力し出力済みにした');
+} else {
+  fail(`前提が崩れている: ${JSON.stringify(wordBeforeDeleteExported)}`);
+}
+const wordDeletedIds = wordBeforeDeleteExported.map((it) => it.id);
+
+$('word-delete-exported').click();
+const wordAfterDeleteExported = JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]');
+if (wordAfterDeleteExported.length === 0) {
+  ok('「出力済みを削除」で出力済みカードがストックから完全に削除される(exported_atを消すだけの'
+    + '「出力済み履歴をリセット」とは異なりカード自体が消える)');
+} else {
+  fail(`削除後のストック: ${JSON.stringify(wordAfterDeleteExported)}`);
+}
+
+const wordTombstonesAfterDelete = JSON.parse(localStorage.getItem('anki_tool_word_tombstones') || '[]');
+if (wordDeletedIds.every((id) => wordTombstonesAfterDelete.includes(id))) {
+  ok('削除した項目のidが打ち消し記録(tombstone)に残り、複数端末間の同期で他端末にも伝播できる');
+} else {
+  fail(`打ち消し記録: ${JSON.stringify(wordTombstonesAfterDelete)}(期待: ${JSON.stringify(wordDeletedIds)}を含む)`);
+}
+
+if ($('word-stock-list').children.length === 0 && $('word-stock-empty').hidden === false) {
+  ok('削除後、一覧が「まだカードがありません」表示に戻る');
+} else {
+  fail('削除後の一覧表示がおかしい');
+}
+
 // ===========================================================================
 // AIに質問タブ(Grammar Multi)
 // ===========================================================================

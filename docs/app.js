@@ -307,6 +307,7 @@ function bindEvents() {
   $('word-clear-stock').addEventListener('click', () => onClearStock('word'));
   bindPersistentCheckbox('word-filter-hide-exported', true, renderWordStock);
   $('word-reset-exported').addEventListener('click', () => onResetExported('word'));
+  $('word-delete-exported').addEventListener('click', () => onDeleteExported('word'));
   $('word-export').addEventListener('click', () => onExport('word'));
 
   // AIに質問タブ
@@ -315,6 +316,7 @@ function bindEvents() {
   $('ai-ask-clear-stock').addEventListener('click', () => onClearStock('ai_ask'));
   bindPersistentCheckbox('ai-ask-filter-hide-exported', true, renderAiAskStock);
   $('ai-ask-reset-exported').addEventListener('click', () => onResetExported('ai_ask'));
+  $('ai-ask-delete-exported').addEventListener('click', () => onDeleteExported('ai_ask'));
   $('ai-ask-export').addEventListener('click', () => onExport('ai_ask'));
 
   // 習熟用(音読)タブ(入力欄は無く、AIに質問からの4問目でのみ増える)
@@ -1924,6 +1926,47 @@ function onResetExported(tabKey) {
     // 持ったままの古いリモートの内容にマージで上書きされてしまう)。
     return { ...rest, updated_at: new Date().toISOString() };
   }));
+  cfg.render();
+}
+
+/**
+ * 「出力済みを削除」(2026-07-30追加、単語/AIに質問タブ)。片桐から
+ * 「複数端末間の同期でAIに質問のセル使用率(50,000文字上限に対する%)が
+ * 19.6%とかなり高い」という報告を受けての対応。原因は、出力(`.apkg`
+ * ダウンロード)しても`onExport`はカードを削除せず`exported_at`を付けて
+ * ストックに残し続けており(「出力済みを隠す」フィルターで見えなくなるだけ)、
+ * 複数端末間の同期(`runSync`)は出力済みも含めたストック全体をシートへ
+ * 書き込んでいるため。`onResetExported`(フラグを消すだけで項目は残す、
+ * 再出力目的)とは別物で、こちらはカード自体を完全に削除する
+ * (`onClearStock`と同じ「打ち消し記録(tombstone)を残してから削除」設計。
+ * 次回の同期でリモート側からも取り除かれ、セル使用率が下がる)。
+ *
+ * **バックアップに関する注意(片桐からの指摘を受けた設計判断)**: デスクトップ版は
+ * apkg生成のたびに`backup/`フォルダへ自動保存するが、Web版はブラウザの
+ * ダウンロード機構(`downloadBlob`)を使うだけで、アプリ側では生成物を
+ * 一切保持していない(File System Access APIによる自動バックアップ先の
+ * 指定はモバイルブラウザでの対応状況が不安定なため見送った)。つまりこの
+ * ストックの項目こそが「Ankiに取り込む前の内容」を再現できる唯一のコピーで
+ * あり、削除すると復元できない。この関数を`onResetExported`のように無条件・
+ * 自動では呼ばず、片桐が明示的にボタンを押した場合のみ実行し、確認
+ * ダイアログで「Ankiへの取り込みを確認してから」と警告するのはこのため。
+ */
+function onDeleteExported(tabKey) {
+  const cfg = TAB_CONFIG[tabKey];
+  const exportedItems = cfg.stock.filter((item) => item.exported_at);
+  if (exportedItems.length === 0) {
+    alert('出力済みのカードがありません。');
+    return;
+  }
+  if (!confirm(
+    `出力済みの ${exportedItems.length} 件をストックから完全に削除します(カードの内容自体が消え、`
+    + `復元できません)。\n\nダウンロードした.apkgが実際にAnkiへ取り込み済みであることを`
+    + '必ず確認してから実行してください(Web版はデスクトップ版と違いapkgの自動バックアップを'
+    + '保存していないため、この操作を取り消す手段がありません)。',
+  )) return;
+  const exportedSet = new Set(exportedItems);
+  cfg.setStock(cfg.stock.filter((item) => !exportedSet.has(item)));
+  addTombstoneIds(TOMBSTONE_STORAGE[tabKey], exportedItems.map((item) => item.id));
   cfg.render();
 }
 
