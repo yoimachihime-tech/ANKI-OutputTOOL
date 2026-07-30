@@ -97,6 +97,34 @@ body {
   color: var(--sub);
 }
 
+/* 頻度の低い「設定」「ログアウト」を格納する⋮メニュー(2026-07-30追加。
+   常時見えるボタンをログイン/同期だけに絞り、ヘッダーをすっきりさせる
+   ための整理)。position:relativeの基準にするためheader-menuにidも
+   振ってある(app.js側の外側クリック判定で使う)。 */
+.header-menu { position: relative; }
+.header-menu-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 150px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
+}
+.header-menu-panel button { width: 100%; text-align: left; }
+
+/* ⚙設定パネルの見出し行(2026-07-30追加)。開くボタン(settings-toggle)が
+   ⋮メニューの中に格納されたため、開いた後に毎回メニューを開き直さなくても
+   閉じられるよう、専用の閉じるボタン(settings-close)をここに置いた。 */
+.settings-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.settings-head h2 { margin: 0; }
+
 h1 { font-size: 1.25rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 4px; }
 

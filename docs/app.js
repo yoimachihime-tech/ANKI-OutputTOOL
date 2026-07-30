@@ -252,12 +252,31 @@ function bindEvents() {
 
   // ヘッダーのログインボタン(全タブ共通、2026-07-30追加)
   $('header-signin').addEventListener('click', onHeaderSignIn);
-  $('header-signout').addEventListener('click', onHeaderSignOut);
   $('header-sync-now').addEventListener('click', onHeaderSyncNow);
   $('header-status-reveal').addEventListener('click', onStatusRevealClick);
 
+  // ⋮メニュー(設定/ログアウトの格納先、2026-07-30追加)。
+  $('header-menu-toggle').addEventListener('click', onHeaderMenuToggle);
+  $('header-signout').addEventListener('click', () => {
+    onHeaderSignOut();
+    closeHeaderMenu();
+  });
+  // メニューの外側をクリック/タップしたら閉じる。Escapeキーでも閉じる。
+  document.addEventListener('click', (e) => {
+    if (!$('header-menu').contains(e.target)) closeHeaderMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeHeaderMenu();
+  });
+
   // 設定(全タブ共通)
-  $('settings-toggle').addEventListener('click', toggleSettings);
+  $('settings-toggle').addEventListener('click', () => {
+    toggleSettings();
+    closeHeaderMenu();
+  });
+  // 設定パネル自身の閉じるボタン(2026-07-30追加)。settings-toggleが⋮メニュー
+  // の中に格納されたため、閉じるためだけに毎回メニューを開き直さずに済む。
+  $('settings-close').addEventListener('click', toggleSettings);
   $('toggle-key').addEventListener('click', () => {
     const el = $('api-key');
     el.type = el.type === 'password' ? 'text' : 'password';
@@ -1263,6 +1282,30 @@ function sheetsConfig() {
     spreadsheetId: $('sheets-spreadsheet-id').value.trim(),
     sheetName: $('sheets-sheet-name').value.trim(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// ヘッダーの⋮メニュー(2026-07-30追加)
+//
+// 「ログイン周りがごちゃごちゃしている」との指摘を受け、常時見えるボタンを
+// ログイン/同期の2つだけに絞り、頻度の低い「設定」「ログアウト」はこの
+// メニューの中に格納した。開閉状態はheader-menu-panelのhidden属性のみで
+// 管理する(独自の状態変数は持たない)。
+// ---------------------------------------------------------------------------
+
+function openHeaderMenu() {
+  $('header-menu-panel').hidden = false;
+  $('header-menu-toggle').setAttribute('aria-expanded', 'true');
+}
+
+function closeHeaderMenu() {
+  $('header-menu-panel').hidden = true;
+  $('header-menu-toggle').setAttribute('aria-expanded', 'false');
+}
+
+function onHeaderMenuToggle() {
+  if ($('header-menu-panel').hidden) openHeaderMenu();
+  else closeHeaderMenu();
 }
 
 /**

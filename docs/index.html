@@ -24,11 +24,21 @@
            必要になったため、DailyConversationタブ側のログインUIは削除しここへ
            一本化した。ログイン状態はapp.jsのupdateGoogleAuthStatus()が管理する)。 -->
       <button type="button" id="header-signin" class="ghost">Googleにログイン</button>
-      <button type="button" id="header-signout" class="ghost" disabled>ログアウト</button>
       <!-- ⚙設定の中にも同じ操作(sync-now)があるが、設定を開かなくても同期
            できるようヘッダーにも常設してある(2026-07-30追加、片桐の指示)。 -->
       <button type="button" id="header-sync-now" class="ghost">🔄 同期</button>
-      <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
+      <!-- 頻度の低い「設定」「ログアウト」は⋮メニューに格納する(2026-07-30、
+           「ログイン周りがごちゃごちゃしている」との指摘を受けた整理)。
+           常時見えるのはログイン/同期の2つだけにし、それ以外は
+           header-menu-toggleを押したときだけ現れるようにした。 -->
+      <div id="header-menu" class="header-menu">
+        <button type="button" id="header-menu-toggle" class="ghost" title="その他"
+                aria-haspopup="true" aria-expanded="false">⋮</button>
+        <div id="header-menu-panel" class="header-menu-panel" role="menu" hidden>
+          <button type="button" id="settings-toggle" class="ghost" role="menuitem">⚙ 設定</button>
+          <button type="button" id="header-signout" class="ghost" role="menuitem" disabled>ログアウト</button>
+        </div>
+      </div>
     </div>
     <div class="header-status-row">
       <!-- data-autohide: ログイン済み表示・同期結果(セル容量使用率)は、常時
@@ -46,7 +56,13 @@
 
 <!-- ⚙ 設定(全タブ共通) -->
 <section id="settings" class="card" hidden>
-  <h2>設定</h2>
+  <!-- 開くボタン(settings-toggle)が⋮メニューの中に格納されたため
+       (2026-07-30)、開いた後に毎回メニューを開き直さなくても閉じられる
+       よう、この中にも専用の閉じるボタンを置いてある。 -->
+  <div class="settings-head">
+    <h2>設定</h2>
+    <button type="button" id="settings-close" class="ghost">✕ 閉じる</button>
+  </div>
   <p class="hint">
     APIキーはこのブラウザ内(localStorage)にのみ保存され、サーバーには送信されません。
     共用の端末では使用後に「キーを消去」してください。
