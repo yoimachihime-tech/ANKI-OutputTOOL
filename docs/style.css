@@ -59,33 +59,34 @@ body {
   gap: 8px;
 }
 
-/* ログイン/同期/設定のボタンを1つの枠にまとめ、統一感を出す(2026-07-30)。
-   .tabbar/.tab-btn と同じ「枠を持つグループ+中の要素は透明」という
-   デザイン言語に揃えてあり、個々のボタンの境界線はこの枠の内側では
-   消して一体化させる。 */
+/* ログイン/同期/設定のボタンと、その状態表示(ログイン済み表示・同期結果)を
+   1つの枠にまとめ、統一感を出す(2026-07-30。当初はボタンだけを枠に
+   入れていたが、隠れている状態表示もこの枠の中に入れてほしいとの指摘を
+   受けて拡張した)。枠自体は本文の背景色(--bg)にし、中の要素(ボタン)は
+   --surface背景+枠線を保つことで、「枠の中にさらにボタンの枠がある」
+   という入れ子のツールバーらしい見た目にしてある。 */
 .toolbar-group {
-  gap: 4px;
-  padding: 4px;
-  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
-.toolbar-group > button {
-  border-color: transparent;
-  background: transparent;
+/* 枠内でタップできる対象(ボタン)は、通常のボタンと同じ枠を保ち、
+   タップ対象であることが分かるようにする(2026-07-30)。 */
+.toolbar-group button {
+  background: var(--surface);
+  border: 1px solid var(--border);
 }
-.toolbar-group > button:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--bg);
-}
+.toolbar-group button:hover:not(:disabled) { border-color: var(--accent); }
 
 /* ヘッダーのログイン/同期の状態表示(2026-07-30追加)。通常は空文字で、
    処理中・エラー時だけ短い文言が入る(常に領域を確保するため、他の
-   .status 同様に空でも要素自体は残す)。2つ並ぶ場合に間が空きすぎない
-   よう、下側の余白だけ持たせている。 */
-.header-status-row { display: flex; flex-direction: column; align-items: flex-start; }
-.header-status { margin: -4px 0 4px; }
-.header-status:last-of-type { margin-bottom: 4px; }
+   .status 同様に空でも要素自体は残す)。 */
+.header-status-row { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.header-status { margin: 0; }
 
 /* 自動で隠れた状態表示を再度見るためのボタン(2026-07-30追加)。
    通常のボタンより控えめに見せるため小さめのpadding・文字サイズにする。 */
@@ -94,7 +95,6 @@ body {
   font-size: .8rem;
   font-weight: 500;
   color: var(--sub);
-  margin-bottom: 12px;
 }
 
 h1 { font-size: 1.25rem; margin: 0; }

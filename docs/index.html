@@ -13,33 +13,36 @@
 
 <header class="app-header">
   <h1>ANKI出力ツール <span class="badge">Web版</span></h1>
-  <!-- ログイン/同期/設定のボタンをまとめて1つの枠に入れ、ツールバーとして
-       統一感を出している(2026-07-30、tabbarと同じ「枠+透明ボタン」の
-       デザイン言語に揃えた)。 -->
-  <div class="header-actions toolbar-group">
-    <!-- Googleログインの唯一の窓口(2026-07-30追加。以前はDailyConversation
-         タブの中だけにあったが、⚙設定の「複数端末間の同期」等でもログインが
-         必要になったため、DailyConversationタブ側のログインUIは削除しここへ
-         一本化した。ログイン状態はapp.jsのupdateGoogleAuthStatus()が管理する)。 -->
-    <button type="button" id="header-signin" class="ghost">Googleにログイン</button>
-    <button type="button" id="header-signout" class="ghost" disabled>ログアウト</button>
-    <!-- ⚙設定の中にも同じ操作(sync-now)があるが、設定を開かなくても同期
-         できるようヘッダーにも常設してある(2026-07-30追加、片桐の指示)。 -->
-    <button type="button" id="header-sync-now" class="ghost">🔄 同期</button>
-    <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
+  <!-- ログイン/同期/設定のボタンと、その状態表示(ログイン済み表示・同期結果)
+       をまとめて1つの枠に入れ、統一感を出している(2026-07-30)。枠の中でも
+       実際にタップできるボタンだけは個別の枠(通常のボタンと同じ見た目)を
+       持たせ、タップ対象であることが分かるようにしてある。 -->
+  <div class="header-toolbar toolbar-group">
+    <div class="header-actions">
+      <!-- Googleログインの唯一の窓口(2026-07-30追加。以前はDailyConversation
+           タブの中だけにあったが、⚙設定の「複数端末間の同期」等でもログインが
+           必要になったため、DailyConversationタブ側のログインUIは削除しここへ
+           一本化した。ログイン状態はapp.jsのupdateGoogleAuthStatus()が管理する)。 -->
+      <button type="button" id="header-signin" class="ghost">Googleにログイン</button>
+      <button type="button" id="header-signout" class="ghost" disabled>ログアウト</button>
+      <!-- ⚙設定の中にも同じ操作(sync-now)があるが、設定を開かなくても同期
+           できるようヘッダーにも常設してある(2026-07-30追加、片桐の指示)。 -->
+      <button type="button" id="header-sync-now" class="ghost">🔄 同期</button>
+      <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
+    </div>
+    <div class="header-status-row">
+      <!-- data-autohide: ログイン済み表示・同期結果(セル容量使用率)は、常時
+           表示し続けると画面が煩雑になるという指摘を受け、一定時間後に自動で
+           隠すようにした(2026-07-30)。エラー表示中は隠さない(app.jsの
+           setStatus/showLoadingを参照)。隠れた後は下のボタンで再表示できる。 -->
+      <p id="header-auth-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
+      <p id="header-sync-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
+      <button type="button" id="header-status-reveal" class="ghost status-reveal-btn" hidden>
+        👁 隠れた状態表示を再表示
+      </button>
+    </div>
   </div>
 </header>
-<div class="header-status-row">
-  <!-- data-autohide: ログイン済み表示・同期結果(セル容量使用率)は、常時
-       表示し続けると画面が煩雑になるという指摘を受け、一定時間後に自動で
-       隠すようにした(2026-07-30)。エラー表示中は隠さない(app.jsの
-       setStatus/showLoadingを参照)。隠れた後は下のボタンで再表示できる。 -->
-  <p id="header-auth-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
-  <p id="header-sync-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
-  <button type="button" id="header-status-reveal" class="ghost status-reveal-btn" hidden>
-    👁 隠れた状態表示を再表示
-  </button>
-</div>
 
 <!-- ⚙ 設定(全タブ共通) -->
 <section id="settings" class="card" hidden>
