@@ -42,6 +42,14 @@ import {
 // 置くこと(TDZで「初期化前にアクセスされた」エラーになる)。
 const FILTER_STORAGE_PREFIX = 'anki_tool_filter_';
 
+// 状態表示の自動非表示(2026-07-30追加)用の定数。init()がモジュール読み込み
+// 直後に即時呼び出され、その中の同期処理(updateGoogleAuthStatus→setStatus)
+// がこれらを参照するため、FILTER_STORAGE_PREFIXと同じ理由でモジュール先頭側に
+// 置く必要がある(TDZ、詳細は下の「状態表示の自動非表示」セクションを参照)。
+const STATUS_AUTO_HIDE_MS = 10000;
+const AUTO_HIDE_STATUS_IDS = ['header-auth-status', 'header-sync-status', 'sync-status'];
+const autoHideTimers = new WeakMap();
+
 const STORAGE = {
   apiKey: 'anki_tool_gemini_api_key',
   model: 'anki_tool_gemini_model',
@@ -246,6 +254,7 @@ function bindEvents() {
   $('header-signin').addEventListener('click', onHeaderSignIn);
   $('header-signout').addEventListener('click', onHeaderSignOut);
   $('header-sync-now').addEventListener('click', onHeaderSyncNow);
+  $('header-status-reveal').addEventListener('click', onStatusRevealClick);
 
   // 設定(全タブ共通)
   $('settings-toggle').addEventListener('click', toggleSettings);
@@ -382,10 +391,70 @@ function showLoading(statusEl, message) {
   const text = document.createElement('span');
   text.textContent = message;
   statusEl.append(spinner, text);
+  // 処理中は必ず見えている状態にする(自動非表示中でも復帰させる)。
+  if (statusEl.hasAttribute('data-autohide')) {
+    cancelAutoHideStatus(statusEl);
+    statusEl.hidden = false;
+    refreshStatusRevealButton();
+  }
 }
 
 function hideLoading(statusEl) {
   statusEl.classList.remove('loading');
+}
+
+// ---------------------------------------------------------------------------
+// 状態表示の自動非表示(2026-07-30追加)
+//
+// 「ログイン済みです」(header-auth-status)・同期結果のセル容量使用率
+// (header-sync-status/sync-status)は、常時ヘッダーに出しっぱなしだと
+// 画面が煩雑になるという指摘を受け、`data-autohide`属性を持つ要素に限り
+// 一定時間後に自動で隠す(el.hidden = true)。エラー表示中は片桐が気づける
+// よう自動で隠さない。隠れている間は`header-status-reveal`ボタンが現れ、
+// 押すと再表示+タイマー再セットする。定数(STATUS_AUTO_HIDE_MS等)は
+// TDZの都合でモジュール先頭側(FILTER_STORAGE_PREFIXの近く)に置いてある。
+// ---------------------------------------------------------------------------
+
+function scheduleAutoHideStatus(el) {
+  cancelAutoHideStatus(el);
+  const timer = setTimeout(() => {
+    el.hidden = true;
+    refreshStatusRevealButton();
+  }, STATUS_AUTO_HIDE_MS);
+  autoHideTimers.set(el, timer);
+}
+
+function cancelAutoHideStatus(el) {
+  const timer = autoHideTimers.get(el);
+  if (timer) {
+    clearTimeout(timer);
+    autoHideTimers.delete(el);
+  }
+}
+
+/** `header-status-reveal`ボタンの表示/非表示を、実際に隠れている状態表示が
+ *  あるかどうかに合わせて切り替える。 */
+function refreshStatusRevealButton() {
+  const btn = $('header-status-reveal');
+  if (!btn) return;
+  const anyHidden = AUTO_HIDE_STATUS_IDS.some((id) => {
+    const el = $(id);
+    return el && el.hidden && el.textContent.trim();
+  });
+  btn.hidden = !anyHidden;
+}
+
+/** 自動で隠れた状態表示を再度見せる(2026-07-30追加)。再表示後は
+ *  タイマーを立て直すため、放置すればまた自動で隠れる。 */
+function onStatusRevealClick() {
+  for (const id of AUTO_HIDE_STATUS_IDS) {
+    const el = $(id);
+    if (el && el.hidden && el.textContent.trim()) {
+      el.hidden = false;
+      scheduleAutoHideStatus(el);
+    }
+  }
+  refreshStatusRevealButton();
 }
 
 // ---------------------------------------------------------------------------
@@ -2168,4 +2237,11 @@ function setStatus(el, message, isError = false) {
   el.classList.remove('loading');
   el.textContent = message;
   el.classList.toggle('error', isError);
+  if (el.hasAttribute('data-autohide')) {
+    cancelAutoHideStatus(el);
+    el.hidden = false;
+    // エラーは片桐が気づけるよう自動で隠さない。正常な文言だけ一定時間後に隠す。
+    if (!isError && message) scheduleAutoHideStatus(el);
+    refreshStatusRevealButton();
+  }
 }

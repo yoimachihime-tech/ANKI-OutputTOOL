@@ -13,7 +13,10 @@
 
 <header class="app-header">
   <h1>ANKI出力ツール <span class="badge">Web版</span></h1>
-  <div class="header-actions">
+  <!-- ログイン/同期/設定のボタンをまとめて1つの枠に入れ、ツールバーとして
+       統一感を出している(2026-07-30、tabbarと同じ「枠+透明ボタン」の
+       デザイン言語に揃えた)。 -->
+  <div class="header-actions toolbar-group">
     <!-- Googleログインの唯一の窓口(2026-07-30追加。以前はDailyConversation
          タブの中だけにあったが、⚙設定の「複数端末間の同期」等でもログインが
          必要になったため、DailyConversationタブ側のログインUIは削除しここへ
@@ -26,8 +29,17 @@
     <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
   </div>
 </header>
-<p id="header-auth-status" class="status header-status" role="status" aria-live="polite"></p>
-<p id="header-sync-status" class="status header-status" role="status" aria-live="polite"></p>
+<div class="header-status-row">
+  <!-- data-autohide: ログイン済み表示・同期結果(セル容量使用率)は、常時
+       表示し続けると画面が煩雑になるという指摘を受け、一定時間後に自動で
+       隠すようにした(2026-07-30)。エラー表示中は隠さない(app.jsの
+       setStatus/showLoadingを参照)。隠れた後は下のボタンで再表示できる。 -->
+  <p id="header-auth-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
+  <p id="header-sync-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
+  <button type="button" id="header-status-reveal" class="ghost status-reveal-btn" hidden>
+    👁 隠れた状態表示を再表示
+  </button>
+</div>
 
 <!-- ⚙ 設定(全タブ共通) -->
 <section id="settings" class="card" hidden>
@@ -144,7 +156,7 @@
   <div class="row">
     <button type="button" id="sync-now" class="ghost">🔄 今すぐ同期</button>
   </div>
-  <p id="sync-status" class="status" role="status" aria-live="polite"></p>
+  <p id="sync-status" class="status" role="status" aria-live="polite" data-autohide></p>
 </section>
 
 <!-- ⚙設定を開いている間は、これより下(タブバー+各タブの中身)をまとめて
