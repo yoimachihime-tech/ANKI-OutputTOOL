@@ -2191,6 +2191,13 @@ tools/
     一本化してあり、`onHeaderSignIn`/`onHeaderSignOut`/
     `requireSheetsAccess`/`onSyncNow`等、ログイン状態が変わりうる箇所は
     全てこれを呼ぶだけでよい。
+- **同期ボタンもヘッダーに追加(2026-07-30)**: ⚙設定を開かなくても同期できる
+  よう、ログインボタンと同じ列に「🔄 同期」ボタン(`header-sync-now`)を
+  追加した。⚙設定内の既存ボタン(`sync-now`、容量%の説明文と一緒に置いて
+  あるため、そちらは削除せず残した)と実処理を共有できるよう、
+  `onSyncNow`の中身を`runSync(statusEl, btnEl)`に切り出し、
+  `onSyncNow`/`onHeaderSyncNow`はそれぞれ自分の表示先(`sync-status`/
+  `header-sync-status`)を渡すだけにしてある。
 - **既存のDailyConversationの認証・スプレッドシート設定(クライアントID・
   スプレッドシートID)をそのまま流用する**ため、同期専用の新しい設定項目は
   無い(シート名の設定は同期には使わない。`_AppSync`という固定タブ名を使う)。

@@ -20,10 +20,14 @@
          一本化した。ログイン状態はapp.jsのupdateGoogleAuthStatus()が管理する)。 -->
     <button type="button" id="header-signin" class="ghost">Googleにログイン</button>
     <button type="button" id="header-signout" class="ghost" disabled>ログアウト</button>
+    <!-- ⚙設定の中にも同じ操作(sync-now)があるが、設定を開かなくても同期
+         できるようヘッダーにも常設してある(2026-07-30追加、片桐の指示)。 -->
+    <button type="button" id="header-sync-now" class="ghost">🔄 同期</button>
     <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
   </div>
 </header>
-<p id="header-auth-status" class="status header-auth-status" role="status" aria-live="polite"></p>
+<p id="header-auth-status" class="status header-status" role="status" aria-live="polite"></p>
+<p id="header-sync-status" class="status header-status" role="status" aria-live="polite"></p>
 
 <!-- ⚙ 設定(全タブ共通) -->
 <section id="settings" class="card" hidden>

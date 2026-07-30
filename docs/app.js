@@ -245,6 +245,7 @@ function bindEvents() {
   // ヘッダーのログインボタン(全タブ共通、2026-07-30追加)
   $('header-signin').addEventListener('click', onHeaderSignIn);
   $('header-signout').addEventListener('click', onHeaderSignOut);
+  $('header-sync-now').addEventListener('click', onHeaderSyncNow);
 
   // 設定(全タブ共通)
   $('settings-toggle').addEventListener('click', toggleSettings);
@@ -1250,18 +1251,19 @@ function syncSpecs() {
 }
 
 /**
- * 「🔄 今すぐ同期」ボタン。読み込み→マージ→ローカル反映→書き戻しを1回の
- * 操作で行う(pull-merge-pushを毎回まとめて行うことで、書き込みレースの窓を
+ * 「🔄 同期」の実処理。読み込み→マージ→ローカル反映→書き戻しを1回の操作で
+ * 行う(pull-merge-pushを毎回まとめて行うことで、書き込みレースの窓を
  * 小さくする。真の同時書き込みは片桐一人が順番に端末を使う想定では
- * ほぼ起きない前提)。
+ * ほぼ起きない前提)。⚙設定内のボタン(`sync-now`)とヘッダーのボタン
+ * (`header-sync-now`、2026-07-30追加。設定を開かなくても同期できるように
+ * するため)の両方から呼ばれるため、状態表示先・disabledにするボタン要素を
+ * 引数で受け取れるようにしてある。
  */
-async function onSyncNow() {
-  const status = $('sync-status');
-  const btn = $('sync-now');
+async function runSync(statusEl, btnEl) {
   const { clientId, spreadsheetId } = sheetsConfig();
   if (!clientId || !spreadsheetId) {
     setStatus(
-      status,
+      statusEl,
       '⚙ 設定 → スプレッドシート で、クライアントID・スプレッドシートIDを設定してください。'
       + '(シート名の設定は同期には使いません)',
       true,
@@ -1269,13 +1271,13 @@ async function onSyncNow() {
     return;
   }
 
-  btn.disabled = true;
+  btnEl.disabled = true;
   try {
-    showLoading(status, 'Googleにログイン中...');
+    showLoading(statusEl, 'Googleにログイン中...');
     const accessToken = await getAccessToken(clientId);
     updateGoogleAuthStatus();
 
-    showLoading(status, '同期データを読み込み中...');
+    showLoading(statusEl, '同期データを読み込み中...');
     const remote = await readSyncState({ spreadsheetId, accessToken });
 
     const newState = {};
@@ -1298,21 +1300,30 @@ async function onSyncNow() {
       capacityLines.push(`${spec.label} ${percent}%`);
     }
 
-    showLoading(status, 'シートへ書き込み中...');
+    showLoading(statusEl, 'シートへ書き込み中...');
     await writeSyncState({ spreadsheetId, accessToken, state: newState });
 
-    hideLoading(status);
-    setStatus(status, `同期しました。(セル容量使用率: ${capacityLines.join(' / ')})`);
+    hideLoading(statusEl);
+    setStatus(statusEl, `同期しました。(セル容量使用率: ${capacityLines.join(' / ')})`);
   } catch (e) {
-    hideLoading(status);
-    setStatus(status, e.message, true);
+    hideLoading(statusEl);
+    setStatus(statusEl, e.message, true);
     if (e instanceof SheetsAuthError) {
       clearAccessToken();
       updateGoogleAuthStatus();
     }
   } finally {
-    btn.disabled = false;
+    btnEl.disabled = false;
   }
+}
+
+async function onSyncNow() {
+  await runSync($('sync-status'), $('sync-now'));
+}
+
+/** ヘッダーの「🔄 同期」ボタン(2026-07-30追加)。 */
+async function onHeaderSyncNow() {
+  await runSync($('header-sync-status'), $('header-sync-now'));
 }
 
 /**

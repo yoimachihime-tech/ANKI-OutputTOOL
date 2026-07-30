@@ -59,10 +59,12 @@ body {
   gap: 8px;
 }
 
-/* ヘッダーのログイン状態表示(2026-07-30追加)。通常は空文字で、ログイン中の
-   読み込み・エラー時だけ短い文言が入る(常に領域を確保するため、他の
-   .status 同様に空でも要素自体は残す)。 */
-.header-auth-status { margin: -4px 0 12px; }
+/* ヘッダーのログイン/同期の状態表示(2026-07-30追加)。通常は空文字で、
+   処理中・エラー時だけ短い文言が入る(常に領域を確保するため、他の
+   .status 同様に空でも要素自体は残す)。2つ並ぶ場合に間が空きすぎない
+   よう、下側の余白だけ持たせている。 */
+.header-status { margin: -4px 0 4px; }
+.header-status:last-of-type { margin-bottom: 12px; }
 
 h1 { font-size: 1.25rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 4px; }
