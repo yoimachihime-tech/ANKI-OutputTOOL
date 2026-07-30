@@ -1303,9 +1303,18 @@ async function runSync(statusEl, btnEl) {
     setStatus(
       statusEl,
       '⚙ 設定 → スプレッドシート で、クライアントID・スプレッドシートIDを設定してください。'
-      + '(シート名の設定は同期には使いません)',
+      + '(シート名の設定は同期には使いません。これらの値はブラウザごとに別々に'
+      + '保存されるため、他の端末で設定済みでも、この端末では改めて入力が必要です)',
       true,
     );
+    // 該当の入力欄を実際に開いて見てもらう(2026-07-30追加。「設定したはず
+    // なのに同期がこのエラーになる」という報告を受けての対応。プレースホルダー
+    // の例文(灰色の薄い文字)を実際に保存済みの値と見間違えているだけの
+    // ケースもあるため、フォーカスして本当に空かどうか一目で分かるようにする)。
+    $('settings').hidden = false;
+    const emptyField = !clientId ? $('google-client-id') : $('sheets-spreadsheet-id');
+    emptyField.scrollIntoView({ block: 'center' });
+    emptyField.focus();
     return;
   }
 
