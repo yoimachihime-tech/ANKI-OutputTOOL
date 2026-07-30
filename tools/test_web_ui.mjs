@@ -835,22 +835,24 @@ if (tokenRequests === 1 && lastTokenPrompt === '') {
   fail(`token 要求の回数/prompt: ${tokenRequests} / ${JSON.stringify(lastTokenPrompt)}`);
 }
 if ($('header-auth-status').textContent.includes('ログイン済み')
-  && $('header-signin').textContent === '別のアカウントでログイン'
+  && $('header-signin').hidden === true
+  && $('header-signout').hidden === false
   && $('header-signout').disabled === false) {
-  ok('ログイン後は状態表示・ボタン文言・ログアウトボタンの有効状態が切り替わる');
+  ok('ログイン後は状態表示が切り替わり、ログインボタンが隠れてログアウトボタンだけが表示される');
 } else {
-  fail(`ログイン後の表示: ${$('header-auth-status').textContent} / ${$('header-signin').textContent}`);
+  fail(`ログイン後の表示: ${$('header-auth-status').textContent} / signin.hidden=${$('header-signin').hidden} / signout.hidden=${$('header-signout').hidden}`);
 }
 
 // ログアウト → 再ログインできること(トークンはメモリ上にしか無いので、
 // ログアウト後は改めて token client を呼び直すはず)
 $('header-signout').click();
 if ($('header-auth-status').textContent.includes('未ログイン')
-  && $('header-signin').textContent === 'Googleにログイン'
+  && $('header-signin').hidden === false
+  && $('header-signout').hidden === true
   && $('header-signout').disabled === true) {
-  ok('ログアウトすると未ログイン表示に戻る');
+  ok('ログアウトすると未ログイン表示に戻り、ログインボタンだけが再び表示される');
 } else {
-  fail(`ログアウト後の表示: ${$('header-auth-status').textContent} / ${$('header-signin').textContent}`);
+  fail(`ログアウト後の表示: ${$('header-auth-status').textContent} / signin.hidden=${$('header-signin').hidden} / signout.hidden=${$('header-signout').hidden}`);
 }
 tokenRequests = 0;
 $('header-signin').click();

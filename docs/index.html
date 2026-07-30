@@ -22,21 +22,24 @@
       <!-- Googleログインの唯一の窓口(2026-07-30追加。以前はDailyConversation
            タブの中だけにあったが、⚙設定の「複数端末間の同期」等でもログインが
            必要になったため、DailyConversationタブ側のログインUIは削除しここへ
-           一本化した。ログイン状態はapp.jsのupdateGoogleAuthStatus()が管理する)。 -->
+           一本化した。ログイン状態はapp.jsのupdateGoogleAuthStatus()が管理する)。
+           ログイン/ログアウトは同時に片方しか意味を持たないため、常に片方だけ
+           表示する(2026-07-30、ログイン後もログインボタンが残って冗長という
+           指摘への対応)。 -->
       <button type="button" id="header-signin" class="ghost">Googleにログイン</button>
+      <button type="button" id="header-signout" class="ghost" hidden disabled>ログアウト</button>
       <!-- ⚙設定の中にも同じ操作(sync-now)があるが、設定を開かなくても同期
            できるようヘッダーにも常設してある(2026-07-30追加、片桐の指示)。 -->
       <button type="button" id="header-sync-now" class="ghost">🔄 同期</button>
-      <!-- 頻度の低い「設定」「ログアウト」は⋮メニューに格納する(2026-07-30、
-           「ログイン周りがごちゃごちゃしている」との指摘を受けた整理)。
-           常時見えるのはログイン/同期の2つだけにし、それ以外は
-           header-menu-toggleを押したときだけ現れるようにした。 -->
+      <!-- 頻度の低い「設定」は⋮メニューに格納する(2026-07-30、「ログイン
+           周りがごちゃごちゃしている」との指摘を受けた整理。ログアウトは
+           ログイン状態を切り替える主要な操作なのでメニューには入れず、
+           上記のとおりログインボタンと同じ場所に直接置く)。 -->
       <div id="header-menu" class="header-menu">
         <button type="button" id="header-menu-toggle" class="ghost" title="その他"
                 aria-haspopup="true" aria-expanded="false">⋮</button>
         <div id="header-menu-panel" class="header-menu-panel" role="menu" hidden>
           <button type="button" id="settings-toggle" class="ghost" role="menuitem">⚙ 設定</button>
-          <button type="button" id="header-signout" class="ghost" role="menuitem" disabled>ログアウト</button>
         </div>
       </div>
     </div>

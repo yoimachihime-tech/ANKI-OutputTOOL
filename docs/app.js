@@ -1309,14 +1309,19 @@ function onHeaderMenuToggle() {
 }
 
 /**
- * ログイン状態の表示と、ヘッダーのログイン/ログアウトボタンの文言を現在の
- * 状態に合わせる。Googleログインの窓口はヘッダーの`header-signin`/
+ * ログイン状態の表示と、ヘッダーのログイン/ログアウトボタンの表示切り替えを
+ * 現在の状態に合わせる。Googleログインの窓口はヘッダーの`header-signin`/
  * `header-signout`に一本化してある(2026-07-30。以前はDailyConversationタブの
  * 中だけにログインUIがあったが、⚙設定の「複数端末間の同期」でもログインが
  * 必要になったため、タブを開かなくてもログインできるようヘッダーへ移動し、
  * DailyConversationタブ側のログインUIは削除した)。状態管理はこの関数に
  * 一本化してあり、ログイン状態が変わりうる箇所(onHeaderSignIn/
  * onHeaderSignOut/requireSheetsAccess/onSyncNow等)は全てここを呼ぶだけでよい。
+ *
+ * ログイン/ログアウトは同時に片方しか意味を持たないため、常にどちらか
+ * 一方だけを表示する(2026-07-30、ログイン後もログインボタンが残って
+ * 冗長という指摘への対応。以前は両方常設し、ログイン済み時は
+ * header-signinの文言を「別のアカウントでログイン」に変えるだけだった)。
  */
 function updateGoogleAuthStatus() {
   const signedIn = hasValidAccessToken();
@@ -1327,9 +1332,8 @@ function updateGoogleAuthStatus() {
       : '未ログインです。DailyConversationタブ・複数端末間の同期を使うには、'
         + '上の「Googleにログイン」からログインしてください。',
   );
-  // 既にログイン済みの状態で押した場合は「アカウントを選び直したい」
-  // ケースとみなし、同意画面を明示的に出す(forceConsent)。
-  $('header-signin').textContent = signedIn ? '別のアカウントでログイン' : 'Googleにログイン';
+  $('header-signin').hidden = signedIn;
+  $('header-signout').hidden = !signedIn;
   $('header-signout').disabled = !signedIn;
 }
 

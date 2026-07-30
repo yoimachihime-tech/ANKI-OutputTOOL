@@ -97,8 +97,8 @@ body {
   color: var(--sub);
 }
 
-/* 頻度の低い「設定」「ログアウト」を格納する⋮メニュー(2026-07-30追加。
-   常時見えるボタンをログイン/同期だけに絞り、ヘッダーをすっきりさせる
+/* 頻度の低い「設定」を格納する⋮メニュー(2026-07-30追加。常時見えるボタンを
+   ログイン(またはログアウト)/同期だけに絞り、ヘッダーをすっきりさせる
    ための整理)。position:relativeの基準にするためheader-menuにidも
    振ってある(app.js側の外側クリック判定で使う)。 */
 .header-menu { position: relative; }
@@ -117,6 +117,13 @@ body {
   border-radius: var(--radius);
   box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
 }
+/* [hidden]属性は本来ブラウザの既定スタイル(display:none)で隠れるが、
+   上のルールで.header-menu-panelに直接display:flexを指定しているため、
+   author側のクラス指定がUAスタイルシートより優先されてしまい、hidden属性を
+   付けても実際には隠れない(2026-07-30、「ポップが開きっぱなしになる」と
+   報告されたバグの原因。.tab-panel[hidden]と同じパターンで明示的に
+   上書きする必要がある)。 */
+.header-menu-panel[hidden] { display: none; }
 .header-menu-panel button { width: 100%; text-align: left; }
 
 /* ⚙設定パネルの見出し行(2026-07-30追加)。開くボタン(settings-toggle)が
