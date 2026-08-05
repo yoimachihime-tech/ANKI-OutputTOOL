@@ -40,10 +40,13 @@
            以前は「隠れた状態表示を再表示」として、状態表示が自動で隠れた
            時だけ現れる可変要素だったため、出現/消失のたびにヘッダーの枠
            (toolbar-group)の高さが変わってしまう問題があった。常時表示の
-           普通のボタンに変え、実際の状態表示(header-log-popup)はこの
-           ボタンの真下に浮くポップアップとして完全に別レイヤーに切り離した
-           (position:absoluteでレイアウトの流れから外れるため、枠の
-           サイズには一切影響しない)。 -->
+           普通のボタンに変え、実際の状態表示(header-log-popup)は画面
+           右上に浮くトースト通知として完全に別レイヤーに切り離した
+           (position:fixedで画面(ビューポート)基準になるため、枠の
+           サイズや祖先のoverflowには一切影響されない。当初はこのボタンの
+           真下のposition:absoluteポップアップにしていたが、祖先要素の
+           overflow設定で見切れる・見た目が「枠の付属物」止まりという
+           指摘を受けてposition:fixedへ変更した)。 -->
       <div id="header-log" class="header-menu">
         <button type="button" id="header-status-reveal" class="ghost status-reveal-btn" title="ログイン・同期のログを表示">
           🗒 ログ

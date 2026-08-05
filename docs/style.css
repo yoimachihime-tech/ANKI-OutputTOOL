@@ -59,8 +59,14 @@ body {
   gap: 8px;
   /* 2026-08-05: ボタンの折り返しでtoolbar-groupの高さが変わらないよう
      常に1行に収める。極端に狭い画面でだけ、枠を広げる代わりに
-     横スクロールで逃がす。 */
+     横スクロールで逃がす。
+     overflow-y:visibleを明示しているのは、overflow-xだけを指定すると
+     CSSの仕様上overflow-yも自動的に'auto'扱いになり、この中にある
+     ⋮設定メニュー(header-menu-panel、position:absoluteで下に飛び出す)が
+     この行の高さで見切れてしまうため(2026-08-05、ログのポップアップが
+     見切れると報告された際に見つけて合わせて直した)。 */
   overflow-x: auto;
+  overflow-y: visible;
 }
 
 /* ログイン/同期/設定のボタンをまとめ、統一感を出す(2026-07-30。当初は
@@ -107,9 +113,9 @@ body {
    ログイン(またはログアウト)/同期だけに絞り、ヘッダーをすっきりさせる
    ための整理)。position:relativeの基準にするためheader-menuにidも
    振ってある(app.js側の外側クリック判定で使う)。
-   2026-08-05: 「🗒 ログ」ボタンの位置合わせ(header-log-popupの土台)にも
-   同じposition:relativeが要るため、.header-logにも同じ.header-menuクラス
-   を付与して共用している。 */
+   #header-log(「🗒 ログ」ボタンの土台)にも見た目を揃えるため同じ
+   .header-menuクラスを付けているが、中のheader-log-popupは
+   position:fixed(画面基準)なのでこのposition:relativeには依存していない。 */
 .header-menu { position: relative; }
 .header-menu-panel {
   position: absolute;
@@ -135,38 +141,45 @@ body {
 .header-menu-panel[hidden] { display: none; }
 .header-menu-panel button { width: 100%; text-align: left; }
 
-/* ログイン・同期の状態表示ポップアップ(2026-08-05追加)。以前はヘッダーの
-   枠(toolbar-group)の中に直接文字として置いていたため、表示/非表示や
-   文言の改行のたびに枠自体のサイズが変わって煩わしいという指摘を受け、
-   position:absoluteで通常のレイアウトの流れから完全に切り離した。
-   「🗒 ログ」ボタン(header-status-reveal)の真下に浮くポップアップとして
-   表示され、toolbar-groupのサイズ計算には一切影響しない。中身
-   (header-auth-status/header-sync-status)は従来どおりapp.jsの
-   setStatus/showLoading・自動非表示(data-autohide)がそのまま動く
-   ——変わったのは見た目の置き場所だけで、表示/非表示のロジックは
-   変更していない。 */
+/* ログイン・同期の状態表示トースト通知(2026-08-05追加、同日中に
+   position:absolute→position:fixedへ変更)。
+   最初はヘッダーの枠(toolbar-group)の中に直接文字として置いていたため、
+   表示/非表示や文言の改行のたびに枠自体のサイズが変わって煩わしいという
+   指摘を受け、いったん「🗒 ログ」ボタンの真下に浮くposition:absolute
+   ポップアップにした。しかしこのやり方だと、祖先要素
+   (.header-actionsのoverflow-x:auto。CSSの仕様上overflow-yも暗黙に
+   'auto'扱いになる)にクリップされて見切れてしまう、かつ見た目もあくまで
+   「ヘッダーの枠の付属物」でしかなく、画面全体に対する通知
+   (いわゆるトースト/スナックバー)らしくないという指摘を受け、
+   position:fixedで画面(ビューポート)そのものを基準にする方式へ変更した。
+   position:fixedは(transform等で新たな包含ブロックを作る祖先が無い限り)
+   祖先のoverflow設定の影響を受けず、常に画面の右上に浮いた状態で表示
+   される。中身(header-auth-status/header-sync-status)は従来どおり
+   app.jsのsetStatus/showLoading・自動非表示(data-autohide)がそのまま
+   動く——変わったのは見た目の置き場所(画面基準)だけで、表示/非表示の
+   ロジックは変更していない。 */
 .header-log-popup {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 40;
+  position: fixed;
+  top: 72px;
+  right: 16px;
+  z-index: 1000;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   width: max-content;
-  max-width: min(320px, calc(100vw - 32px));
+  max-width: min(340px, calc(100vw - 32px));
   /* 中身が空(hidden)の間はクリックを素通りさせる(ポップアップの土台
-     自体は常にDOM上にあるため、透明な当たり判定で他のボタンを邪魔しない
-     ようにする)。 */
+     自体は常にDOM上にあるため、透明な当たり判定で他のボタン・タブを
+     邪魔しないようにする)。 */
   pointer-events: none;
 }
 .header-status {
   margin: 0;
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .3);
   pointer-events: auto;
 }
 
