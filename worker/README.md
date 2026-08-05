@@ -12,15 +12,31 @@ Web 版の Google ログインを「1 時間で切れる」状態から「一度
 
 | 手順 | 状態 |
 | --- | --- |
-| 1. Google 側の設定（リダイレクト URI の登録） | ✅ 片桐が完了 |
-| 2. Cloudflare アカウントの用意 | ⬜ 未確認 |
+| 1. Google 側の設定（リダイレクト URI の登録） | ✅ 完了 |
+| 2. Cloudflare アカウントの用意 | ✅ 完了 |
 | 3. `wrangler.toml` のクライアント ID | ✅ 設定済み・検証済み |
-| 4. デプロイ + シークレット登録 | ⬜ **ここから片桐の作業** |
-| 5. アプリに Worker の URL を設定 | ⬜ 手順 4 の後 |
+| 4. デプロイ + シークレット登録 | ✅ 完了・本番動作確認済み |
+| 5. アプリに Worker の URL を設定 | ⬜ **ここだけ残っている** |
+
+**デプロイ済みの Worker の URL:**
+
+```text
+https://anki-tool-oauth.anki-tool-oauth-worker.workers.dev
+```
+
+これを Web 版の ⚙ 設定 →「ログイン維持用 Worker の URL」に貼れば完了です
+（手順 5）。
+
+> **URL が分からなくなったとき**は `npx wrangler@4 deploy` をもう一度実行すると、
+> 出力の最後に表示されます（同じコードの再デプロイなので副作用はありません）。
+> `workers.dev` のサブドメイン部分は Cloudflare が割り当てるもので、
+> **Worker 名とよく似た文字列になることがあります**（この環境では Worker 名
+> `anki-tool-oauth` に対してサブドメインが `anki-tool-oauth-worker`）。
+> 同じ語が2回続くため一見すると打ち間違いのように見えますが、正しい URL です。
 
 Worker のコードは自動テスト済みです（`cd tools && npm run test:worker`、17 項目）。
-設定ファイルも `npx wrangler@4 deploy --dry-run` で検証済みなので、
-**手順 4 のコマンドをそのまま実行すれば通るはず**です。
+本番環境でも `/config` がクライアント ID を返すこと・許可していないオリジンには
+CORS ヘッダーを返さないこと・未知のパスが 404 になることを確認済みです。
 
 ---
 

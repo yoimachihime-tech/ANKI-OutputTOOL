@@ -1429,24 +1429,19 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
     読み書きできれば一元化できるが、認証方式が違う(サービスアカウント vs
     OAuth)ため設計検討が必要。中〜大規模。
 
-- **【最優先・片桐の作業待ち】Googleログインを長持ちさせる対応(2026-08-05)**:
+- **【あと1手順】Googleログインを長持ちさせる対応(2026-08-05)**:
   「ログインが1時間で切れるのを改善したい」との要望を受け、Cloudflare Worker
-  経由の認可コードフロー+リフレッシュトークン方式を実装した(コード・自動
-  テストは完了、`npm test` 7本通過)。**ただし片桐側の以下の作業が済むまでは
-  従来どおり1時間で切れる**(Worker URLが未設定の間は自動的に旧方式で動く)。
-  1. Cloudflareの無料アカウント作成(カード登録不要)
-  2. Google Cloud Console の OAuth クライアントに**承認済みのリダイレクト
-     URI**として `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/` と
-     `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/index.html` の
-     **2つとも**追加(これまで不要だった項目。未登録だと
-     `redirect_uri_mismatch` になる。2つ必要な理由は上記
-     「認証方式」の項・`worker/README.md`を参照)
-  3. `worker/README.md` の手順で Worker をデプロイ
-  4. Web版の⚙設定 →「ログイン維持用 Worker の URL」に手順3のURLを入力
+  経由の認可コードフロー+リフレッシュトークン方式を実装した。
+  **Cloudflareへのデプロイ・シークレット登録・リダイレクトURIの登録まで
+  すべて完了しており、本番のWorkerが正しく応答することも確認済み**。
+  残るは **Web版の⚙設定 →「ログイン維持用 Worker の URL」に
+  `https://anki-tool-oauth.anki-tool-oauth-worker.workers.dev` を入力する**
+  ことだけ(それまでは従来どおり1時間で切れる。Worker URLが空の間は自動的に
+  旧方式で動くため、壊れはしない)。詳細は`worker/README.md`の進捗表を参照。
   - 同意画面は片桐の選択で「テスト」ステータスのまま進めるため、
     **リフレッシュトークンは7日で失効する**(週1回のログインは残る)。
     無期限にしたい場合は「本番環境」への公開が別途必要。
-  - 実機確認はまだ(上記の手順を踏んだ後、「ブラウザを閉じて開き直しても
+  - 実機確認はまだ(URLを設定した後、「ブラウザを閉じて開き直しても
     ログイン済みのまま」になるかを確認してもらう)。
 - **Web版DailyConversationの実機確認は完了**(2026-07-29、ログイン・シート
   読み込み・英文添削→シート追記・apkg出力→Anki出力済みマークまで確認済み)。
@@ -1791,10 +1786,18 @@ PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られ�
   `GOOGLE_CLIENT_SECRET`は`wrangler secret put`で登録し、**リポジトリには
   絶対に置かない**(`.gitignore`で`worker/.dev.vars`等も除外済み)。
   CORSの許可オリジンは`ALLOWED_ORIGINS`で絞ってある。
-- **片桐側の事前準備(未実施、2026-08-05時点)**: (a) Cloudflareアカウント作成
-  (カード登録不要)、(b) OAuthクライアントへの**リダイレクトURI**追加、
-  (c) `worker/README.md`の手順でWorkerをデプロイ、(d) ⚙設定にWorkerのURLを
-  入力。(A)を使わない場合は従来どおり(B)のまま動く。
+- **デプロイ状況(2026-08-05)**: (a) Cloudflareアカウント作成、
+  (b) OAuthクライアントへの**リダイレクトURI**追加(`/`と`/index.html`の2つ)、
+  (c) Workerのデプロイとシークレット登録、まで完了済み。
+  URLは `https://anki-tool-oauth.anki-tool-oauth-worker.workers.dev`
+  (本番で`/config`の応答・CORSの絞り込み・404を確認済み)。
+  残りは (d) Web版の⚙設定へこのURLを入力するだけ。
+  **`workers.dev`のサブドメインがWorker名と紛らわしい**点に注意
+  (Worker名`anki-tool-oauth`に対しサブドメインが`anki-tool-oauth-worker`で、
+  同じ語が2回続く。実際「URLが出てこない」という報告があったが、
+  デプロイは最初から成功しており、手順書の例
+  `anki-tool-oauth.<サブドメイン>.workers.dev`と見比べて気づけなかっただけ
+  だった)。(A)を使わない場合は従来どおり(B)のまま動く。
 - **リダイレクトURIは2つ登録してもらうこと**(2026-08-05): `redirectUri()`は
   「いま開いているページのURL(クエリ・ハッシュを除く)」をそのまま使うため、
   `.../ANKI-OutputTOOL/`と`.../ANKI-OutputTOOL/index.html`で**別々の値**に
