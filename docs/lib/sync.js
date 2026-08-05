@@ -32,6 +32,40 @@
 export const SHEET_CELL_LIMIT = 50000;
 
 /**
+ * 1セルに書き込むチャンクの長さ(2026-08-05追加)。
+ *
+ * 上限50,000ちょうどではなく余裕を持たせてある。Googleが数える「文字数」と
+ * JavaScriptの`String.length`(UTF-16のコード単位数)は、絵文字などのBMP外文字で
+ * ずれる。カード本文に絵文字が混ざっても弾かれないようにするための保険。
+ */
+export const SYNC_CHUNK_SIZE = 45000;
+
+/**
+ * 1つのキー(例: ai_ask_stock_items)を何セルまで分割してよいか。
+ *
+ * 【なぜ分割するのか】(2026-08-05追加)
+ * 以前は1キー=1セルだったため、上限が50,000文字 = Grammar Multiで約49件
+ * (質問16回分)しかなかった。実際に片桐から「AIに質問の占有率が50%近く、
+ * すぐ100%になってしまう」と報告があった。
+ * **Sheetsの50,000文字制限は「1セルあたり」で、シート全体ではない**
+ * (1シートは1,000万セルまで持てる)。そこで値を複数セルに分けて書き、
+ * 読むときに連結することで上限を実質的に取り払う。
+ *
+ * 【なぜ20か】
+ * 20 × 45,000 = 900,000文字 ≒ Grammar Multi で約880件(質問290回分)。
+ * 週3回質問しても2年近く保つ。**増やす副作用はほとんど無い**
+ * (使っていないセルは空文字で書かれるだけ、シートのセル上限にも遠く及ばない)
+ * ので、逼迫したらこの定数を増やせばよい。
+ * ただし際限なく増やすと、JSON全体が数MBになってスマホでの読み書きが
+ * 重くなる方が先に問題になる。そうなったら「出力済みを削除」で整理するか、
+ * 保存時の圧縮(gzip、実データで約3.7分の1)を検討すること。
+ */
+export const SYNC_MAX_CHUNKS = 20;
+
+/** 1キーあたりに保存できる合計文字数。 */
+export const SYNC_VALUE_LIMIT = SYNC_CHUNK_SIZE * SYNC_MAX_CHUNKS;
+
+/**
  * この使用率(%)を超えたら、まだ書き込めるうちに片桐へ知らせる閾値。
  *
  * 上限に達してからでは「同期がエラーで一切通らない」状態になり、しかも
@@ -40,14 +74,19 @@ export const SHEET_CELL_LIMIT = 50000;
  */
 export const CAPACITY_WARN_PERCENT = 70;
 
-/** JSON文字列の、Sheetsセル上限に対する使用率(%、小数第1位に丸め)。 */
+/**
+ * JSON文字列の、保存できる上限に対する使用率(%、小数第1位に丸め)。
+ *
+ * 2026-08-05に分母を「1セル(50,000)」から「1キーの合計(SYNC_VALUE_LIMIT)」へ
+ * 変更した。複数セルへの分割保存に対応したため、1セルを超えても問題なくなった。
+ */
 export function capacityPercent(jsonString) {
   const len = (jsonString || '').length;
-  return Math.round((len / SHEET_CELL_LIMIT) * 1000) / 10;
+  return Math.round((len / SYNC_VALUE_LIMIT) * 1000) / 10;
 }
 
 /**
- * 1セルの上限を超えていないか(2026-08-05追加)。
+ * 保存できる上限を超えていないか(2026-08-05追加)。
  *
  * 以前は`capacityPercent`を計算していたものの、それを表示するのは
  * `writeSyncState`が**成功した後**だった。使用率が100%を超えた瞬間、
@@ -55,8 +94,31 @@ export function capacityPercent(jsonString) {
  * 原因なのか分からないメッセージになる。書き込み前にこれで判定して、
  * 対処方法まで添えて中断できるようにする。
  */
-export function exceedsCellLimit(jsonString) {
-  return (jsonString || '').length > SHEET_CELL_LIMIT;
+export function exceedsSyncLimit(jsonString) {
+  return (jsonString || '').length > SYNC_VALUE_LIMIT;
+}
+
+/**
+ * 長い文字列を、1セルに収まる長さのチャンクに分ける。
+ * 空文字なら空配列(＝どのセルにも書かない)。
+ */
+export function splitIntoChunks(value, chunkSize = SYNC_CHUNK_SIZE) {
+  const s = String(value ?? '');
+  if (!s) return [];
+  const chunks = [];
+  for (let i = 0; i < s.length; i += chunkSize) chunks.push(s.slice(i, i + chunkSize));
+  return chunks;
+}
+
+/**
+ * 分割して書かれたセルの並びを1つの文字列に戻す。
+ *
+ * **1セルしか無い場合もそのまま連結される**ので、分割対応より前に書かれた
+ * データ(1キー=1セル)もそのまま読める(下位互換)。片桐の既存データに
+ * 移行作業が要らないのはこのため。
+ */
+export function joinChunks(cells) {
+  return (cells || []).map((c) => String(c ?? '')).join('');
 }
 
 /** JSON文字列(配列)をパースする。壊れている/空なら空配列を返す。 */

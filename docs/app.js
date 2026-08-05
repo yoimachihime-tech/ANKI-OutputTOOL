@@ -35,7 +35,7 @@ import {
 import * as dailyconv from './lib/dailyconv.js';
 import {
   newSyncId, ensureItemIds, mergeStock, capacityPercent, parseIdArray,
-  exceedsCellLimit, SHEET_CELL_LIMIT, CAPACITY_WARN_PERCENT, pruneTombstoneIds,
+  exceedsSyncLimit, SYNC_VALUE_LIMIT, CAPACITY_WARN_PERCENT, pruneTombstoneIds,
 } from './lib/sync.js';
 
 // フィルターチェックボックスの状態をlocalStorageに永続化する際のキー接頭辞
@@ -1800,7 +1800,7 @@ function mergeRemoteIntoLocal(remote) {
     newState[spec.tombKey] = tombJson;
     const percent = Math.max(capacityPercent(itemsJson), capacityPercent(tombJson));
     capacityLines.push(`${spec.label} ${percent}%`);
-    if (exceedsCellLimit(itemsJson) || exceedsCellLimit(tombJson)) overLimit.push(spec.label);
+    if (exceedsSyncLimit(itemsJson) || exceedsSyncLimit(tombJson)) overLimit.push(spec.label);
     else if (percent >= CAPACITY_WARN_PERCENT) nearLimit.push(`${spec.label} ${percent}%`);
   }
 
@@ -1932,7 +1932,7 @@ async function runSync(statusEl, btnEl) {
       hideLoading(statusEl);
       setStatus(
         statusEl,
-        `${overLimit.join('・')}のデータが1セットの上限(${SHEET_CELL_LIMIT.toLocaleString()}文字)を`
+        `${overLimit.join('・')}のデータが保存できる上限(${SYNC_VALUE_LIMIT.toLocaleString()}文字)を`
         + '超えたため、シートへの書き戻しを中止しました。\n'
         + '(リモートの内容の取り込みは完了しています。この端末のデータは失われていません)\n\n'
         + '各タブの「出力済みを削除」で、Ankiへ取り込み済みのカードを整理してから'

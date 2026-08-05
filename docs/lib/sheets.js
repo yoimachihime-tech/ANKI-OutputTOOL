@@ -48,6 +48,11 @@
 // 読み取り(未出力行の取得)と書き込み(添削結果の追記・Anki出力済みのマーク)の
 // 両方を行うため、readonly ではなく spreadsheets を要求する。
 
+// 同期データの分割保存(2026-08-05)。1キーの値が1セルの上限(50,000文字)を
+// 超えても書けるよう、B列以降へチャンクに分けて並べる。定数と分割・連結の
+// 処理そのものは sync.js が持つ(このファイルは Sheets API との入出力だけを担う)。
+import { splitIntoChunks, joinChunks, SYNC_MAX_CHUNKS } from './sync.js';
+
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -903,6 +908,14 @@ export async function markRowsAsExported({
 /** 同期用の隠しタブのシート名。 */
 export const SYNC_SHEET_NAME = '_AppSync';
 
+/**
+ * 読み書きする範囲の右端の列(2026-08-05追加)。
+ * A列がキー名、B列以降がチャンク(SYNC_MAX_CHUNKS 個)。
+ */
+function syncLastColumn() {
+  return colLetter(SYNC_MAX_CHUNKS); // 0=A(キー名) なので、チャンク数と同じ添字が右端
+}
+
 /** 各行のキー(A列)。B列に対応するJSON文字列を保存する(行の順序は固定)。 */
 export const SYNC_ROW_KEYS = [
   'word_stock_items', 'word_stock_tombstones',
@@ -941,7 +954,7 @@ async function ensureSyncSheetExists(spreadsheetId, token) {
  */
 export async function readSyncState({ spreadsheetId, accessToken: token }) {
   await ensureSyncSheetExists(spreadsheetId, token);
-  const range = `${SYNC_SHEET_NAME}!A1:B${SYNC_ROW_KEYS.length}`;
+  const range = `${SYNC_SHEET_NAME}!A1:${syncLastColumn()}${SYNC_ROW_KEYS.length}`;
   const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeRange(range)}`;
   const data = await sheetsFetch(url, token);
   const values = data.values || [];
@@ -955,7 +968,10 @@ export async function readSyncState({ spreadsheetId, accessToken: token }) {
   const byKey = new Map();
   for (const row of values) {
     const key = String(row?.[0] ?? '').trim();
-    if (key) byKey.set(key, row[1] || '');
+    // B列以降をすべて連結する(2026-08-05、複数セルへの分割保存に対応)。
+    // 1セルしか無い場合もそのまま連結されるだけなので、分割対応より前に
+    // 書かれたデータもそのまま読める(下位互換。既存データの移行は不要)。
+    if (key) byKey.set(key, joinChunks((row || []).slice(1)));
   }
 
   const out = {};
@@ -970,8 +986,29 @@ export async function readSyncState({ spreadsheetId, accessToken: token }) {
  */
 export async function writeSyncState({ spreadsheetId, accessToken: token, state }) {
   await ensureSyncSheetExists(spreadsheetId, token);
-  const range = `${SYNC_SHEET_NAME}!A1:B${SYNC_ROW_KEYS.length}`;
-  const values = SYNC_ROW_KEYS.map((key) => [key, state[key] || '']);
+  const range = `${SYNC_SHEET_NAME}!A1:${syncLastColumn()}${SYNC_ROW_KEYS.length}`;
+
+  const values = SYNC_ROW_KEYS.map((key) => {
+    const chunks = splitIntoChunks(state[key] || '');
+    if (chunks.length > SYNC_MAX_CHUNKS) {
+      // 呼び出し側(app.js の runSync)が exceedsSyncLimit で事前に止めている
+      // はずだが、そこを通らない経路から呼ばれても壊れたデータを書かないよう
+      // ここでも止める(切り詰めて書くと、読み直したときJSONとして壊れる)。
+      throw new SheetsError(
+        `同期データ(${key})が保存できる上限を超えています`
+        + `(${chunks.length} / ${SYNC_MAX_CHUNKS} セル)。`
+        + '各タブの「出力済みを削除」で整理してください。',
+      );
+    }
+    // 行の長さを必ず揃える。**使わないセルも空文字で埋めること**——
+    // 短い行を書くとSheetsは足りない分を「変更なし」として扱い、
+    // 前回より短くなったときに古いチャンクが残って、読み直したとき
+    // 壊れたJSONになる。
+    const row = [key];
+    for (let i = 0; i < SYNC_MAX_CHUNKS; i += 1) row.push(chunks[i] || '');
+    return row;
+  });
+
   const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeRange(range)}`
     + '?valueInputOption=RAW';
   await sheetsFetch(url, token, { method: 'PUT', body: JSON.stringify({ values }) });
