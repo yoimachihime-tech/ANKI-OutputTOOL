@@ -1373,6 +1373,22 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
 
 ### 未実施(次にやること、どれを先にやるかは片桐に確認すること)
 
+- **【最優先・片桐の作業待ち】Googleログインを長持ちさせる対応(2026-08-05)**:
+  「ログインが1時間で切れるのを改善したい」との要望を受け、Cloudflare Worker
+  経由の認可コードフロー+リフレッシュトークン方式を実装した(コード・自動
+  テストは完了、`npm test` 7本通過)。**ただし片桐側の以下の作業が済むまでは
+  従来どおり1時間で切れる**(Worker URLが未設定の間は自動的に旧方式で動く)。
+  1. Cloudflareの無料アカウント作成(カード登録不要)
+  2. Google Cloud Console の OAuth クライアントに**承認済みのリダイレクト
+     URI**として `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/` を追加
+     (これまで不要だった項目。未登録だと `redirect_uri_mismatch` になる)
+  3. `worker/README.md` の手順で Worker をデプロイ
+  4. Web版の⚙設定 →「ログイン維持用 Worker の URL」に手順3のURLを入力
+  - 同意画面は片桐の選択で「テスト」ステータスのまま進めるため、
+    **リフレッシュトークンは7日で失効する**(週1回のログインは残る)。
+    無期限にしたい場合は「本番環境」への公開が別途必要。
+  - 実機確認はまだ(上記の手順を踏んだ後、「ブラウザを閉じて開き直しても
+    ログイン済みのまま」になるかを確認してもらう)。
 - **Web版DailyConversationの実機確認は完了**(2026-07-29、ログイン・シート
   読み込み・英文添削→シート追記・apkg出力→Anki出力済みマークまで確認済み)。
 - **習熟用(ATSU方式)カードの様式改修は不要と判断された(2026-07-29)**:
@@ -1650,42 +1666,80 @@ Web版から「添削結果」スプレッドシートを直接読み書きで�
 **①②(ログイン・シート読み込み)は片桐の実機で動作確認済み**(2026-07-29)。
 ③④(添削→シート追記、apkg出力→Anki出力済みマーク)の実機確認はまだ。
 
-#### 認証方式: GIS token client(**PKCEではない**)
+#### 認証方式(2026-08-05に(A)を追加。現在は2方式が併存)
 
-CLAUDE.mdには当初「OAuth 2.0 (PKCE)が必要」と書いていたが、調査の結果
-**静的サイトではPKCEだけでは完結しない**ことが分かった: Googleの
-「ウェブ アプリケーション」型クライアントは、認可コード→トークン交換に
-client_secretを要求する(client_secretをブラウザに置くことはできない)。
-「Desktop/Installed app」型ならPKCEのみで交換できるが、リダイレクトURIが
-localhostに限られるためGitHub Pagesでは使えない。
+⚙設定の「ログイン維持用 Worker の URL」(`oauth-worker-url`)が設定されて
+いるかどうかで、`getAccessToken()`が自動的に切り替える。
 
-そのため、client_secret不要でバックエンドも不要な唯一の正規ルートである
-**Google Identity Services (GIS) の token client**
-(`google.accounts.oauth2.initTokenClient`)を採用した(2026-07-29、片桐が選択)。
+- **(A) 認可コードフロー + PKCE + リフレッシュトークン**(Worker URL設定時、推奨)
+- **(B) GIS token client**(Worker URL が空。2026-07-29〜の従来方式、フォールバック)
 
-- **アクセストークンはメモリ上にのみ保持する**(`docs/lib/sheets.js`の
-  モジュールスコープ変数)。localStorageに置くとXSSで持ち出されうるため。
-  有効期限は約1時間、リフレッシュトークンはこの方式では発行されない。
-  期限の1分前(`EXPIRY_MARGIN_MS`)には切れたものとして扱う。
-- 一度同意していれば`prompt: ''`での再取得は基本的に無操作で通る。
-  既にログイン済みの状態でログインボタンを押した場合は「アカウントを
-  選び直したい」ケースとみなし`prompt: 'consent'`にする
-  (`app.js`の`onDailySignIn`。ボタン文言も
-  「別のアカウントでログイン」に変わる)。
-- **OAuthクライアントIDは秘密情報ではない**ため公開ページに置いて問題ないが、
-  他のAPIキーと同じく⚙設定の入力欄+localStorageにしてある
-  (コード変更・再デプロイ無しに差し替えられるようにするため)。
-- スコープは`https://www.googleapis.com/auth/spreadsheets`(readonlyでは
-  ないのは、添削結果の追記と「Anki出力済み」のマークを行うため)。
-- **片桐側の事前準備**(未実施): (a) Google Sheets APIの有効化、
-  (b) OAuthクライアントID(種類「ウェブ アプリケーション」、承認済みの
-  JavaScript生成元に`https://yoimachihime-tech.github.io`)の作成、
-  (c) OAuth同意画面が「テスト」ステータスならテストユーザーへの
-  自分のアカウント追加。手順は`docs/README.md`に記載。
+**(B)を最初に選んだ理由と、その限界**: Googleの「ウェブ アプリケーション」型
+クライアントは認可コード→トークン交換に client_secret を要求する
+(client_secretをブラウザに置くことはできない)。「Desktop/Installed app」型なら
+PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られるためGitHub Pages
+では使えない。そのため、client_secret不要でバックエンドも不要な唯一の正規
+ルートである`google.accounts.oauth2.initTokenClient`を採用した(2026-07-29、
+片桐が選択)。ただし**この方式は仕様上リフレッシュトークンが発行されない**ため、
+アクセストークンの寿命(約1時間)が切れるたびに実質ログインし直しになる。
+「1時間しか持たない」のはコード側では解消できない仕様上の制約であり、
+2026-08-05に片桐から改善要望を受けて(A)を追加した。
+
+**(A)の構成**: client_secretを預かるだけの小さな中継(Cloudflare Worker、
+リポジトリの`worker/`)を置くことで認可コードフローが成立し、リフレッシュ
+トークンを受け取れる。アクセストークンが切れても利用者の操作なしに裏で
+取り直せるため、ログインが長持ちする。
+
+1. ログインボタン→Googleの同意画面へ**ページ遷移**(`beginAuthCodeFlow`)
+2. `?code=...`を付けてこのページへ戻る
+3. `completeAuthCodeFlowIfReturning()`(`init()`から呼ばれる)がWorkerの
+   `/token`へcodeを送り、アクセストークン+リフレッシュトークンを得る
+4. 以降、期限切れ時は`/refresh`で無言で再取得(`refreshAccessToken`)
+
+- **`access_type=offline`と`prompt=consent`の両方が必須**。どちらかが欠けると
+  Googleはリフレッシュトークンを返さず、症状としては「ログインし直しても
+  結局すぐ切れる」という分かりにくい形で現れる(`test_sheets.mjs`の[6]で
+  この組み合わせを固定してある)。
+- **リダイレクトURIはGoogle Cloud Console の「承認済みのリダイレクト URI」に
+  完全一致で登録が必要**(末尾スラッシュまで)。(B)では不要だった項目なので、
+  (A)へ移行する際の最初のつまずきどころ。値は`redirectUri()`が返す
+  「クエリ・ハッシュを落とした現在のページ」。
+- **トークンの保管場所**: アクセストークンは**メモリ上のみ**(両方式共通、
+  期限の1分前`EXPIRY_MARGIN_MS`には切れたものとして扱う)。リフレッシュ
+  トークンだけは**localStorage**(`anki_tool_google_refresh_token`)。
+  ページを閉じてもログインを保つには永続化が避けられないための判断で、
+  XSSで持ち出されうるトレードオフは受け入れている。
+  `clearAccessToken()`(401時、アクセストークンのみ破棄)と
+  `signOut()`(ログアウト、リフレッシュトークンごと破棄)を**別関数にして
+  ある**ので、混同しないこと。
+- **`invalid_grant`を受けたら保存済みリフレッシュトークンを必ず捨てる**
+  (`refreshAccessToken`)。捨てないと以後ずっと同じエラーを繰り返して
+  復帰できなくなる。**OAuth同意画面が「テスト」ステータスのままだと、
+  Googleの仕様でリフレッシュトークンは7日で失効する**(片桐は2026-08-05
+  時点で「テスト」のまま進める選択をした。なくすには「本番環境」への公開が
+  必要で、その場合は初回に「確認されていません」警告画面が出る)。
+- **クライアントIDの出所**: (A)ではWorkerの`GET /config`が唯一の出所
+  (アプリ側の`google-client-id`欄は(B)専用)。両方に同じ値を設定させると
+  食い違う事故が起きるため、意図的に一本化してある。
+- ページ遷移をまたぐため、`app.js`の`saveStateBeforeAuthRedirect()`/
+  `restoreStateAfterAuthRedirect()`が「開いていたタブ」と
+  「DailyConversationの入力途中の英文」をsessionStorageへ待避する
+  (ストック類はlocalStorageなので失われない)。
+- スコープは両方式とも`https://www.googleapis.com/auth/spreadsheets`
+  (readonlyではないのは、添削結果の追記と「Anki出力済み」のマークを行うため)。
+- **Worker側**: `worker/src/index.js`(`/config`・`/token`・`/refresh`の3本、
+  ステートレス)、`worker/wrangler.toml`、デプロイ手順は`worker/README.md`。
+  `GOOGLE_CLIENT_SECRET`は`wrangler secret put`で登録し、**リポジトリには
+  絶対に置かない**(`.gitignore`で`worker/.dev.vars`等も除外済み)。
+  CORSの許可オリジンは`ALLOWED_ORIGINS`で絞ってある。
+- **片桐側の事前準備(未実施、2026-08-05時点)**: (a) Cloudflareアカウント作成
+  (カード登録不要)、(b) OAuthクライアントへの**リダイレクトURI**追加、
+  (c) `worker/README.md`の手順でWorkerをデプロイ、(d) ⚙設定にWorkerのURLを
+  入力。(A)を使わない場合は従来どおり(B)のまま動く。
 
 #### 実装(Web版DailyConversation)
 
-- `docs/lib/sheets.js`: 認証部(GIS)とAPI部を明確に分けてある。API部
+- `docs/lib/sheets.js`: 認証部とAPI部を明確に分けてある。API部
   (`fetchPendingRows`/`appendCorrectionRows`/`markRowsAsExported`)は
   accessTokenを引数で受け取る純粋な関数なので、`test_sheets.mjs`が
   GISを一切読み込まずにfetchモックだけで検証できる。
@@ -1992,6 +2046,16 @@ tools/
   test_sync.mjs                     lib/sync.js(マージロジック)+ lib/sheets.jsの
                                      同期用関数(隠しタブの読み書き・自動作成)の
                                      単体テスト(npm run test:sync、2026-07-30追加)
+worker/                             Googleログインを長持ちさせるための
+                                     Cloudflare Worker(2026-08-05追加)。
+                                     client_secretを預かりトークン交換だけを
+                                     中継する。docs/配下ではないのでGitHub
+                                     Pagesからは配信されない(別ドメインで動く)
+  src/index.js                      /config・/token・/refresh の3本、ステートレス
+  wrangler.toml                     クライアントID・許可オリジン
+                                     (client_secretはwrangler secretで登録し
+                                      ここには書かない)
+  README.md                         片桐向けのデプロイ手順
 ```
 
 - **共有資産を`docs/shared/`に置いている理由**: GitHub Pagesは`docs/`配下
@@ -2100,6 +2164,15 @@ tools/
     合わせて列を配置する(固定の列順を決め打ちしていない)」ことと、
     「markRowsAsExportedがAnki出力済み列のセルだけを対象にする」ことを
     固定している。
+    2026-08-05に**認可コードフロー(ログイン維持用Worker方式)の検証[6]を
+    追加**した(PKCE/stateの照合、`access_type=offline`+`prompt=consent`、
+    `/refresh`での無言の再取得、`invalid_grant`時のトークン破棄など)。
+    `window.location`はjsdomだと実際の遷移を伴い`assign()`が使えないため、
+    このセクションだけ`globalThis.window`を必要な範囲だけの偽物に差し替えて
+    いる(`fakeWindow()`)。**`access_type=offline`と`prompt=consent`の
+    両方を検証しているのは意図的**で、どちらかが欠けるとGoogleはリフレッシュ
+    トークンを返さず、「ログインし直しても結局すぐ切れる」という分かりにくい
+    症状になるため。
   - `npm run test:sync`(`test_sync.mjs`、2026-07-30追加): `lib/sync.js`の
     `mergeStock`(id単位の和集合、updated_at基準のLWW、tombstoneによる
     削除の伝播)・`ensureItemIds`(既存ストックへの移行)・`capacityPercent`と、
@@ -2281,9 +2354,12 @@ HTML量が多く、影響を受けやすい。
 
 #### 「設定済みのはずなのに同期がスプレッドシートID未設定エラーになる」報告(2026-07-30)
 
-片桐からスマホで報告。`runSync`は`sheetsConfig()`が`google-client-id`/
-`sheets-spreadsheet-id`の入力欄から直接`.value`を読むだけの単純な実装で、
-コード上の不具合は見つかっていない。**最も疑わしいのは以下のいずれか**
+片桐からスマホで報告。`runSync`は`sheetsConfig()`が入力欄から直接`.value`を
+読むだけの単純な実装で、コード上の不具合は見つかっていない
+(2026-08-05のログイン維持対応で、必須項目の判定は`missingAuthConfigMessage()`
+経由になった——Worker URLを設定していればクライアントIDは不要になったため
+——が、「入力欄の値をそのまま読む」という基本構造は変わっていない)。
+**最も疑わしいのは以下のいずれか**
 (コードのバグというより、この2値が同期対象外という設計とUIの分かりにくさに
 起因する可能性が高い):
 
@@ -2296,7 +2372,7 @@ HTML量が多く、影響を受けやすい。
   入っており、実際の値が未入力でもスマホの小さい画面では一見「入力済み」に
   見えてしまう可能性がある。
 - **対応**: `runSync`がこのエラーになった際、⚙設定を自動的に開き、
-  空になっている方の入力欄(クライアントID優先、次にスプレッドシートID)へ
+  空になっている方の入力欄(ログイン設定優先、次にスプレッドシートID)へ
   `scrollIntoView`+`focus()`する処理を追加した。実際にその場でフィールドが
   空かどうか(プレースホルダーの薄い文字か、入力済みの濃い文字か)を
   一目で確認できるようにするための対応で、根本原因の特定ではなく

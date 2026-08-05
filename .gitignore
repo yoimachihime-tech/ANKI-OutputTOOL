@@ -38,6 +38,14 @@ __pycache__/
 tools/node_modules/
 tools/package-lock.json
 
+# OAuthトークン交換用Cloudflare Workerの依存関係・ローカル状態
+# (client_secretはwrangler secretに登録するためファイルとしては存在しないが、
+#  .dev.varsはローカル開発時に平文で置く場所なので必ず除外する)
+worker/node_modules/
+worker/package-lock.json
+worker/.wrangler/
+worker/.dev.vars
+
 # ビルド成果物(PyInstaller)
 build/
 dist/

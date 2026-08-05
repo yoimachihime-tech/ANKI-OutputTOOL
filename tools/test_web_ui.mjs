@@ -823,6 +823,20 @@ for (const [id, key, value] of [
 }
 ok('クライアントID・スプレッドシートID・シート名が localStorage に保存される');
 
+// ログイン維持用WorkerのURL(2026-08-05追加)。**最終的に空のまま**であることが、
+// 以下のテストが従来の GIS token client 方式(フォールバック)を通る前提に
+// なっている。設定した場合の挙動(認可コードフロー)はページ遷移を伴い jsdom で
+// 再現できないため、tools/test_sheets.mjs の[6]で検証している。
+$('oauth-worker-url').value = 'https://worker.example.test';
+$('oauth-worker-url').dispatchEvent(new window.Event('change'));
+if (localStorage.getItem('anki_tool_oauth_worker_url') === 'https://worker.example.test') {
+  ok('ログイン維持用WorkerのURLが localStorage に保存される');
+} else {
+  fail('oauth-worker-url が localStorage に保存されない');
+}
+$('oauth-worker-url').value = '';
+$('oauth-worker-url').dispatchEvent(new window.Event('change'));
+
 // ログインの窓口はDailyConversationタブの中ではなくヘッダー(header-signin/
 // header-signout)に一本化してある(2026-07-30、⚙設定の「複数端末間の同期」
 // でもログインが必要になったため)。

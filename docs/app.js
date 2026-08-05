@@ -27,7 +27,8 @@ import {
   decodeAudioSamples, computeWaveformMinMax, computePeakAmplitude, isClipped, findSafeVolumeGainDb,
 } from './lib/tts.js';
 import {
-  getAccessToken, clearAccessToken, hasValidAccessToken,
+  getAccessToken, clearAccessToken, signOut, isSignedIn,
+  beginAuthCodeFlow, completeAuthCodeFlowIfReturning,
   fetchPendingRows, appendCorrectionRows, markRowsAsExported, SheetsAuthError,
   readSyncState, writeSyncState,
 } from './lib/sheets.js';
@@ -62,6 +63,10 @@ const STORAGE = {
   ttsVolumeGainDb: 'anki_tool_tts_volume_gain_db',
   ttsExcludeJapanese: 'anki_tool_tts_exclude_japanese',
   googleClientId: 'anki_tool_google_client_id',
+  // ログイン維持用 Worker の URL(2026-08-05追加)。設定されていると
+  // リフレッシュトークン方式になり、ログインが1時間で切れなくなる
+  // (docs/lib/sheets.js 冒頭・worker/README.md 参照)。
+  oauthWorkerUrl: 'anki_tool_oauth_worker_url',
   spreadsheetId: 'anki_tool_sheets_spreadsheet_id',
   sheetName: 'anki_tool_sheets_sheet_name',
   wordTombstones: 'anki_tool_word_tombstones',
@@ -171,12 +176,18 @@ async function init() {
   $('tts-volume-gain').value = localStorage.getItem(STORAGE.ttsVolumeGainDb) || $('tts-volume-gain').value;
   $('tts-exclude-japanese').checked = localStorage.getItem(STORAGE.ttsExcludeJapanese) === '1';
   $('google-client-id').value = localStorage.getItem(STORAGE.googleClientId) || '';
+  $('oauth-worker-url').value = localStorage.getItem(STORAGE.oauthWorkerUrl) || '';
   $('sheets-spreadsheet-id').value = localStorage.getItem(STORAGE.spreadsheetId) || '';
   $('sheets-sheet-name').value = localStorage.getItem(STORAGE.sheetName) || $('sheets-sheet-name').value;
   renderWordStock();
   renderAiAskStock();
   renderShuujukuStock();
   renderDailyPending();
+
+  // Googleの同意画面から `?code=...` を付けて戻ってきた直後なら、ここで
+  // トークン交換まで済ませる(2026-08-05追加、Worker方式)。設定の読み込みが
+  // 終わってから呼ぶ必要はないが、状態表示より前である必要はある。
+  await handleAuthRedirectReturn();
   updateGoogleAuthStatus();
 
   const [
@@ -200,6 +211,27 @@ async function init() {
   shared.correctionResponseSchema = correctionResponseSchema;
   shared.cardDefs = cardDefsJson.defs;
   shared.ankiSchema = ankiSchema;
+}
+
+/**
+ * Googleの同意画面から戻ってきた直後の後始末(2026-08-05追加)。
+ *
+ * 戻りでない通常の起動なら何もしない。トークン交換に失敗した場合でも
+ * アプリ自体は起動させ、ヘッダーの状態表示に理由を出すだけにとどめる
+ * (ログインが要らないタブは使えるため)。
+ */
+async function handleAuthRedirectReturn() {
+  let result;
+  try {
+    result = await completeAuthCodeFlowIfReturning();
+  } catch (e) {
+    setStatus($('header-auth-status'), `ログインの完了処理に失敗しました: ${e.message}`, true);
+    return;
+  }
+  if (!result.handled) return;
+
+  restoreStateAfterAuthRedirect();
+  if (result.error) setStatus($('header-auth-status'), result.error, true);
 }
 
 async function fetchText(url) {
@@ -318,6 +350,14 @@ function bindEvents() {
   $('google-client-id').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.googleClientId, e.target.value.trim());
     // クライアントIDが変わったら、古いトークンは使い回さない
+    clearAccessToken();
+    updateGoogleAuthStatus();
+  });
+  $('oauth-worker-url').addEventListener('change', (e) => {
+    localStorage.setItem(STORAGE.oauthWorkerUrl, e.target.value.trim());
+    // 認証方式そのものが切り替わるため、手元のアクセストークンは捨てる
+    // (保存済みのリフレッシュトークンは残す。Worker URLの打ち間違いを
+    //  直しただけで再ログインを強いられないようにするため)。
     clearAccessToken();
     updateGoogleAuthStatus();
   });
@@ -1279,9 +1319,33 @@ function showShuujukuPreview(item) {
 function sheetsConfig() {
   return {
     clientId: $('google-client-id').value.trim(),
+    workerUrl: $('oauth-worker-url').value.trim(),
     spreadsheetId: $('sheets-spreadsheet-id').value.trim(),
     sheetName: $('sheets-sheet-name').value.trim(),
   };
+}
+
+/**
+ * ログイン維持用 Worker を使う設定になっているか(2026-08-05追加)。
+ *
+ * true … 認可コードフロー + リフレッシュトークン。ログインが長持ちする。
+ *        クライアントIDは Worker から受け取るのでアプリ側の設定は不要。
+ * false … 従来の GIS token client。約1時間で切れるかわりに Worker が要らない。
+ *        こちらはアプリ側にクライアントIDの設定が必要。
+ */
+function usesOauthWorker() {
+  return Boolean(sheetsConfig().workerUrl);
+}
+
+/** ログインに必要な設定が揃っているか。足りなければ理由を返す(揃っていれば null)。 */
+function missingAuthConfigMessage() {
+  const { clientId, workerUrl } = sheetsConfig();
+  if (workerUrl) return null;
+  if (!clientId) {
+    return 'OAuthクライアントID、またはログイン維持用WorkerのURLを設定してください'
+      + '(⚙ 設定 → スプレッドシート)。';
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,11 +1388,15 @@ function onHeaderMenuToggle() {
  * header-signinの文言を「別のアカウントでログイン」に変えるだけだった)。
  */
 function updateGoogleAuthStatus() {
-  const signedIn = hasValidAccessToken();
+  // Worker方式ではリフレッシュトークンを持っていればログイン済み扱い
+  // (アクセストークンが手元に無くても無操作で取り直せるため)。
+  const signedIn = isSignedIn();
   setStatus(
     $('header-auth-status'),
     signedIn
-      ? 'Googleにログイン済みです(このページを閉じるか約1時間で失効します)。'
+      ? (usesOauthWorker()
+        ? 'Googleにログイン済みです(ページを閉じてもログインは保たれます)。'
+        : 'Googleにログイン済みです(このページを閉じるか約1時間で失効します)。')
       : '未ログインです。DailyConversationタブ・複数端末間の同期を使うには、'
         + '上の「Googleにログイン」からログインしてください。',
   );
@@ -1339,17 +1407,29 @@ function updateGoogleAuthStatus() {
 
 async function onHeaderSignIn() {
   const status = $('header-auth-status');
-  const { clientId } = sheetsConfig();
-  if (!clientId) {
-    setStatus(status, 'OAuthクライアントIDを設定してください(⚙ 設定 → スプレッドシート)。', true);
+  const missing = missingAuthConfigMessage();
+  if (missing) {
+    setStatus(status, missing, true);
     return;
   }
   const btn = $('header-signin');
   btn.disabled = true;
   try {
-    const forceConsent = hasValidAccessToken();
+    const { clientId, workerUrl } = sheetsConfig();
+    if (workerUrl) {
+      // (A) Googleの同意画面へページ遷移する。ここから先は戻ってこない
+      //     (戻りは init() の completeAuthCodeFlowIfReturning() が受ける)。
+      //     遷移でページが作り直されるため、入力途中の内容を待避しておく。
+      showLoading(status, 'Googleの同意画面へ移動しています...');
+      saveStateBeforeAuthRedirect();
+      await beginAuthCodeFlow(workerUrl);
+      return;
+    }
+    // (B) 従来方式。ログイン済みの状態で押した場合は「アカウントを選び直したい」
+    //     とみなして同意画面を明示的に出す。
+    const forceConsent = isSignedIn();
     showLoading(status, 'Googleログインを待っています...');
-    await getAccessToken(clientId, { forceConsent });
+    await getAccessToken({ clientId, forceConsent });
     updateGoogleAuthStatus();
   } catch (e) {
     hideLoading(status);
@@ -1360,8 +1440,46 @@ async function onHeaderSignIn() {
 }
 
 function onHeaderSignOut() {
-  clearAccessToken();
+  // 保存済みのリフレッシュトークンごと破棄する(Google側の同意は取り消さない
+  // ため、次回のログインは同意画面を通るだけで済む)。
+  signOut();
   updateGoogleAuthStatus();
+}
+
+// ---------------------------------------------------------------------------
+// 認可コードフローのページ遷移をまたぐ状態の待避(2026-08-05追加)
+//
+// Worker方式のログインはGoogleの同意画面へ**ページごと遷移**するため、
+// 戻ってきたときにはページが作り直されている。ストック類はlocalStorageに
+// あるので失われないが、「今開いているタブ」と「DailyConversationタブに
+// 入力途中だった英文」は揮発してしまうため、sessionStorageへ待避しておく。
+// ---------------------------------------------------------------------------
+
+const AUTH_REDIRECT_STATE_KEY = 'anki_tool_auth_redirect_state';
+
+function saveStateBeforeAuthRedirect() {
+  try {
+    sessionStorage.setItem(AUTH_REDIRECT_STATE_KEY, JSON.stringify({
+      tab: document.querySelector('.tab-btn.active')?.dataset.tab || null,
+      dailyInput: $('daily-input').value || '',
+    }));
+  } catch {
+    /* sessionStorage が使えない環境では待避を諦める(ログイン自体は続行) */
+  }
+}
+
+function restoreStateAfterAuthRedirect() {
+  let saved = null;
+  try {
+    const raw = sessionStorage.getItem(AUTH_REDIRECT_STATE_KEY);
+    sessionStorage.removeItem(AUTH_REDIRECT_STATE_KEY);
+    saved = raw ? JSON.parse(raw) : null;
+  } catch {
+    saved = null;
+  }
+  if (!saved) return;
+  if (saved.tab) switchTab(saved.tab);
+  if (saved.dailyInput) $('daily-input').value = saved.dailyInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,11 +1532,13 @@ function syncSpecs() {
  * 引数で受け取れるようにしてある。
  */
 async function runSync(statusEl, btnEl) {
-  const { clientId, spreadsheetId } = sheetsConfig();
-  if (!clientId || !spreadsheetId) {
+  const cfg = sheetsConfig();
+  const { spreadsheetId } = cfg;
+  const missingAuth = missingAuthConfigMessage();
+  if (missingAuth || !spreadsheetId) {
     setStatus(
       statusEl,
-      '⚙ 設定 → スプレッドシート で、クライアントID・スプレッドシートIDを設定してください。'
+      `${missingAuth || 'スプレッドシートIDを設定してください(⚙ 設定 → スプレッドシート)。'}`
       + '(シート名の設定は同期には使いません。これらの値はブラウザごとに別々に'
       + '保存されるため、他の端末で設定済みでも、この端末では改めて入力が必要です)',
       true,
@@ -1428,7 +1548,7 @@ async function runSync(statusEl, btnEl) {
     // の例文(灰色の薄い文字)を実際に保存済みの値と見間違えているだけの
     // ケースもあるため、フォーカスして本当に空かどうか一目で分かるようにする)。
     $('settings').hidden = false;
-    const emptyField = !clientId ? $('google-client-id') : $('sheets-spreadsheet-id');
+    const emptyField = missingAuth ? $('oauth-worker-url') : $('sheets-spreadsheet-id');
     emptyField.scrollIntoView({ block: 'center' });
     emptyField.focus();
     return;
@@ -1437,7 +1557,7 @@ async function runSync(statusEl, btnEl) {
   btnEl.disabled = true;
   try {
     showLoading(statusEl, 'Googleにログイン中...');
-    const accessToken = await getAccessToken(clientId);
+    const accessToken = await getAccessToken(cfg);
     updateGoogleAuthStatus();
 
     showLoading(statusEl, '同期データを読み込み中...');
@@ -1495,13 +1615,14 @@ async function onHeaderSyncNow() {
  */
 async function requireSheetsAccess() {
   const cfg = sheetsConfig();
-  if (!cfg.clientId || !cfg.spreadsheetId || !cfg.sheetName) {
+  const missingAuth = missingAuthConfigMessage();
+  if (missingAuth || !cfg.spreadsheetId || !cfg.sheetName) {
     throw new SheetsAuthError(
-      '⚙ 設定 → スプレッドシート で、クライアントID・スプレッドシートID・シート名を'
-      + '設定してください。',
+      missingAuth
+      || '⚙ 設定 → スプレッドシート で、スプレッドシートID・シート名を設定してください。',
     );
   }
-  const accessToken = await getAccessToken(cfg.clientId);
+  const accessToken = await getAccessToken(cfg);
   updateGoogleAuthStatus();
   return { ...cfg, accessToken };
 }

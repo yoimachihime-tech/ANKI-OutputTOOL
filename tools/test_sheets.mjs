@@ -372,5 +372,242 @@ console.log('\n[5] dailyconv のローカル除外リスト');
 }
 
 // ---------------------------------------------------------------------------
+// [6] 認可コードフロー + PKCE + リフレッシュトークン(2026-08-05追加)
+//
+// 「ログインが1時間で切れる」問題への対応。ここで固定したいのは、
+// Google が**リフレッシュトークンを返す条件**(access_type=offline かつ
+// prompt=consent)と、PKCE/state の照合、失効(invalid_grant)時に保存済みの
+// トークンを確実に捨てることの3点。ここが崩れると、症状としては
+// 「ログインし直しても結局すぐ切れる」という分かりにくい形で現れる。
+//
+// Worker には接続せず fetch をモックする。window.location は jsdom だと
+// 実際の遷移を伴い assign() が使えないため、必要な範囲だけの偽物に差し替える。
+// ---------------------------------------------------------------------------
+console.log('\n[6] 認可コードフロー(ログイン維持用Worker方式)');
+{
+  globalThis.sessionStorage = dom.window.sessionStorage;
+  const WORKER = 'https://anki-tool-oauth.example.workers.dev';
+  const CLIENT_ID = 'fake-client.apps.googleusercontent.com';
+  const ORIGIN = 'https://user.github.io';
+  const PATHNAME = '/ANKI-OutputTOOL/';
+
+  /** window.location / window.history のうち sheets.js が使う部分だけの偽物。 */
+  function fakeWindow(search = '') {
+    const navigations = [];
+    const replaced = [];
+    globalThis.window = {
+      location: {
+        origin: ORIGIN,
+        pathname: PATHNAME,
+        search,
+        href: `${ORIGIN}${PATHNAME}${search}`,
+        assign: (url) => navigations.push(url),
+      },
+      history: { replaceState: (_s, _t, url) => replaced.push(url) },
+    };
+    return { navigations, replaced };
+  }
+
+  /** Worker 用の fetch モック(workerFetch は res.text() を読む)。 */
+  function mockWorker(handler) {
+    const calls = [];
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null });
+      const { status = 200, body } = await handler(url, init);
+      return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) };
+    };
+    return calls;
+  }
+
+  const sheets = await import(new URL('../docs/lib/sheets.js', import.meta.url));
+
+  // --- ログイン開始(同意画面へのURL組み立て) --------------------------------
+  localStorage.clear();
+  sessionStorage.clear();
+  const { navigations } = fakeWindow();
+  const beginCalls = mockWorker(() => ({ body: { client_id: CLIENT_ID } }));
+  await sheets.beginAuthCodeFlow(WORKER);
+
+  if (sheets.redirectUri() === `${ORIGIN}${PATHNAME}`) {
+    ok('リダイレクトURIはクエリ・ハッシュを除いた現在のページになる');
+  } else {
+    fail(`リダイレクトURIが想定と違う: ${sheets.redirectUri()}`);
+  }
+
+  if (beginCalls.length === 1 && beginCalls[0].url === `${WORKER}/config`) {
+    ok('クライアントIDはWorkerの /config から取得する(アプリ側に持たない)');
+  } else {
+    fail(`/config を呼んでいない: ${JSON.stringify(beginCalls)}`);
+  }
+
+  if (navigations.length !== 1) fail(`同意画面へ遷移していない: ${navigations.length}件`);
+  const authUrl = new URL(navigations[0] || 'https://invalid.test/');
+  const q = authUrl.searchParams;
+
+  if (authUrl.origin + authUrl.pathname === 'https://accounts.google.com/o/oauth2/v2/auth') {
+    ok('Googleの認可エンドポイントへ遷移する');
+  } else {
+    fail(`遷移先が想定と違う: ${authUrl.origin}${authUrl.pathname}`);
+  }
+
+  // ここが今回の修正の肝。どちらか一方でも欠けると Google は
+  // リフレッシュトークンを返さず、「1時間で切れる」状態のままになる。
+  if (q.get('access_type') === 'offline' && q.get('prompt') === 'consent') {
+    ok('access_type=offline + prompt=consent でリフレッシュトークンを要求する');
+  } else {
+    fail(`リフレッシュトークンが得られない組み合わせ: access_type=${q.get('access_type')} / prompt=${q.get('prompt')}`);
+  }
+
+  if (q.get('response_type') === 'code' && q.get('client_id') === CLIENT_ID
+      && q.get('redirect_uri') === `${ORIGIN}${PATHNAME}`
+      && q.get('scope') === sheets.SHEETS_SCOPE) {
+    ok('response_type/client_id/redirect_uri/scope が正しい');
+  } else {
+    fail(`認可リクエストのパラメータが想定と違う: ${authUrl.search}`);
+  }
+
+  if (q.get('code_challenge_method') === 'S256' && (q.get('code_challenge') || '').length >= 43
+      && !/[+/=]/.test(q.get('code_challenge') || '+')) {
+    ok('PKCE の code_challenge を S256 / base64url で送る');
+  } else {
+    fail(`code_challenge が想定と違う: ${q.get('code_challenge')} (${q.get('code_challenge_method')})`);
+  }
+
+  const stateParam = q.get('state');
+  if (stateParam && sessionStorage.getItem('anki_tool_oauth_pkce')) {
+    ok('code_verifier と state をリダイレクトをまたいで保持する');
+  } else {
+    fail('PKCEの途中経過が保存されていない');
+  }
+
+  // --- state 不一致は拒否する ------------------------------------------------
+  {
+    fakeWindow(`?code=AUTH_CODE&state=tampered-${stateParam}`);
+    const calls = mockWorker(() => ({ body: {} }));
+    const result = await sheets.completeAuthCodeFlowIfReturning();
+    if (result.handled && result.error?.includes('state') && calls.length === 0) {
+      ok('state が一致しなければトークン交換せずに拒否する(CSRF対策)');
+    } else {
+      fail(`state不一致を通してしまった: ${JSON.stringify(result)} / calls=${calls.length}`);
+    }
+  }
+
+  // --- 正常な戻り(code → トークン交換) ---------------------------------------
+  // 上の state 不一致テストで途中経過が消費されているため、やり直す。
+  sessionStorage.clear();
+  fakeWindow();
+  mockWorker(() => ({ body: { client_id: CLIENT_ID } }));
+  await sheets.beginAuthCodeFlow(WORKER);
+  const savedState = JSON.parse(sessionStorage.getItem('anki_tool_oauth_pkce')).state;
+
+  const { replaced } = fakeWindow(`?code=AUTH_CODE&state=${savedState}&scope=x`);
+  const tokenCalls = mockWorker(() => ({
+    body: { access_token: 'ya29.first', expires_in: 3600, refresh_token: 'RT-1' },
+  }));
+  const okResult = await sheets.completeAuthCodeFlowIfReturning();
+
+  if (okResult.handled && !okResult.error) ok('認可コードを受け取ってトークン交換できる');
+  else fail(`トークン交換に失敗した: ${JSON.stringify(okResult)}`);
+
+  const tokenReq = tokenCalls.find((c) => c.url === `${WORKER}/token`);
+  if (tokenReq && tokenReq.method === 'POST' && tokenReq.body.code === 'AUTH_CODE'
+      && tokenReq.body.code_verifier && tokenReq.body.redirect_uri === `${ORIGIN}${PATHNAME}`) {
+    ok('Workerの /token へ code / code_verifier / redirect_uri を送る');
+  } else {
+    fail(`/token のリクエストが想定と違う: ${JSON.stringify(tokenReq)}`);
+  }
+
+  if (sheets.getStoredRefreshToken() === 'RT-1' && sheets.isSignedIn()) {
+    ok('リフレッシュトークンを保存し、ログイン済みになる');
+  } else {
+    fail(`リフレッシュトークンが保存されていない: ${sheets.getStoredRefreshToken()}`);
+  }
+
+  // 認可コードはURLに残すと再読み込みで二重に使われてエラーになる。
+  if (replaced.length === 1 && !replaced[0].includes('code=') && !replaced[0].includes('state=')) {
+    ok('URLから認可コード等のパラメータを取り除く');
+  } else {
+    fail(`URLの掃除ができていない: ${JSON.stringify(replaced)}`);
+  }
+
+  if (!sessionStorage.getItem('anki_tool_oauth_pkce')) ok('使い終わった code_verifier を破棄する');
+  else fail('code_verifier が残っている');
+
+  // --- アクセストークンの無言での取り直し ------------------------------------
+  sheets.clearAccessToken();          // ページを開き直した直後に相当
+  if (sheets.isSignedIn()) {
+    ok('アクセストークンが手元に無くても、リフレッシュトークンがあればログイン済み扱い');
+  } else {
+    fail('リフレッシュトークンがあるのに未ログイン扱いになっている');
+  }
+
+  const refreshCalls = mockWorker(() => ({ body: { access_token: 'ya29.second', expires_in: 3600 } }));
+  const refreshed = await sheets.getAccessToken({ workerUrl: WORKER });
+  const refreshReq = refreshCalls.find((c) => c.url === `${WORKER}/refresh`);
+  if (refreshed === 'ya29.second' && refreshReq?.body.refresh_token === 'RT-1') {
+    ok('期限切れ時は /refresh で無言で取り直す(利用者の操作は不要)');
+  } else {
+    fail(`リフレッシュできていない: ${refreshed} / ${JSON.stringify(refreshReq)}`);
+  }
+
+  // 有効なトークンが手元にある間は Worker を呼ばない。
+  const cachedCalls = mockWorker(() => ({ body: {} }));
+  const cached = await sheets.getAccessToken({ workerUrl: WORKER });
+  if (cached === 'ya29.second' && cachedCalls.length === 0) {
+    ok('有効なアクセストークンがある間は Worker を呼ばない');
+  } else {
+    fail(`余計なリフレッシュが走っている: ${cachedCalls.length}件`);
+  }
+
+  // --- 失効(invalid_grant)の扱い ---------------------------------------------
+  // 同意画面が「テスト」ステータスのままだと7日で失効する。ここで保存済みの
+  // トークンを捨てないと、以後ずっと同じエラーを繰り返して復帰できなくなる。
+  sheets.clearAccessToken();
+  mockWorker(() => ({ status: 400, body: { error: 'invalid_grant', detail: 'Token has been expired or revoked.' } }));
+  let expiredError = null;
+  try {
+    await sheets.getAccessToken({ workerUrl: WORKER });
+  } catch (e) {
+    expiredError = e;
+  }
+  if (expiredError instanceof SheetsAuthError && expiredError.message.includes('有効期限')) {
+    ok('invalid_grant は「ログインし直してください」の案内になる');
+  } else {
+    fail(`invalid_grant の扱いが想定と違う: ${expiredError?.message}`);
+  }
+  if (sheets.getStoredRefreshToken() === null && !sheets.isSignedIn()) {
+    ok('失効したリフレッシュトークンは破棄する(再ログインへ誘導できる)');
+  } else {
+    fail('失効したリフレッシュトークンが残っている');
+  }
+
+  // --- ログアウト -------------------------------------------------------------
+  fakeWindow();
+  mockWorker(() => ({ body: { client_id: CLIENT_ID } }));
+  await sheets.beginAuthCodeFlow(WORKER);
+  const st2 = JSON.parse(sessionStorage.getItem('anki_tool_oauth_pkce')).state;
+  fakeWindow(`?code=C2&state=${st2}`);
+  mockWorker(() => ({ body: { access_token: 'ya29.third', expires_in: 3600, refresh_token: 'RT-2' } }));
+  await sheets.completeAuthCodeFlowIfReturning();
+
+  sheets.signOut();
+  if (sheets.getStoredRefreshToken() === null && !sheets.isSignedIn()) {
+    ok('ログアウトでリフレッシュトークンごと破棄する');
+  } else {
+    fail('ログアウトしてもリフレッシュトークンが残っている');
+  }
+
+  // --- 通常の起動(戻りではない)は何もしない ----------------------------------
+  fakeWindow('?foo=bar');
+  const idleCalls = mockWorker(() => ({ body: {} }));
+  const idle = await sheets.completeAuthCodeFlowIfReturning();
+  if (idle.handled === false && idleCalls.length === 0) {
+    ok('通常の起動(codeが無い)ではトークン交換を行わない');
+  } else {
+    fail(`通常起動で余計な処理が走った: ${JSON.stringify(idle)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log(failures === 0 ? '\n✅ すべて成功しました。' : `\n❌ ${failures} 件失敗しました。`);
 process.exitCode = failures === 0 ? 0 : 1;

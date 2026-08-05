@@ -148,7 +148,22 @@
     そのまま保存しても問題ありません。
   </p>
 
-  <label for="google-client-id">OAuth 2.0 クライアントID</label>
+  <!-- ログイン維持用Worker(2026-08-05追加)。設定するとリフレッシュトークン
+       方式になり、ログインが約1時間で切れなくなる。空欄なら従来のGIS
+       token client方式で動く(詳細は docs/lib/sheets.js 冒頭)。
+       クライアントIDより先に置いてあるのは、こちらが推奨の設定であり、
+       設定した場合はクライアントID欄が不要になるため。 -->
+  <label for="oauth-worker-url">ログイン維持用 Worker の URL(推奨)</label>
+  <p class="hint">
+    設定すると、<b>ページを閉じてもGoogleログインが保たれます</b>(空欄の場合は
+    従来どおり約1時間で切れ、そのつどログインし直しになります)。
+    セットアップ手順はリポジトリの <code>worker/README.md</code> を参照してください。
+    設定した場合、下のクライアントID欄は使いません(Workerから受け取ります)。
+  </p>
+  <input type="text" id="oauth-worker-url" autocomplete="off" spellcheck="false"
+         placeholder="https://anki-tool-oauth.xxxx.workers.dev">
+
+  <label for="google-client-id">OAuth 2.0 クライアントID(Worker未使用時のみ)</label>
   <p class="hint">
     Google Cloud Console →「APIとサービス → 認証情報」で「OAuth クライアント ID」を
     種類「ウェブ アプリケーション」で作成し、<b>承認済みの JavaScript 生成元</b>に

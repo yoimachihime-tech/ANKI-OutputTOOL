@@ -23,7 +23,8 @@ docs/
     apkg.js             .apkg の組み立て(sql.js + JSZip、mediaも埋め込み可能)
     shuujuku.js          習熟用(音読)のContentフィールド組み立て + 続き番号管理
                          (build_shuujuku_v1.py の Web 版)
-    sheets.js            Googleログイン(GIS token client)+「添削結果」シートの
+    sheets.js            Googleログイン(認可コードフロー+リフレッシュトークン、
+                         またはGIS token client)+「添削結果」シートの
                          読み書き(sheets_reader.py / sheets_writer.py の Web 版)
     dailyconv.js         シートの行 → DailyConversation の9フィールドへの変換 +
                          ローカル除外リスト(build_grammar_dailyconv_v1_final.py /
@@ -211,39 +212,82 @@ DailyConversationタブを開かなくてもログインできるようヘッダ
 Googleフォーム→Apps Script経由で追加された行も、そのまま②の一覧に出てくる
 (このタブは「添削結果」シートを唯一の実体として扱う)。
 
-### 認証方式(GIS token client)
+### 認証方式(2通り。⚙設定の Worker URL の有無で自動的に切り替わる)
 
 デスクトップ版はサービスアカウント(JSON秘密鍵)方式だが、**その鍵をブラウザに
 置くことは絶対にできない**(鍵を持つ者は誰でもシートを自由に読み書きできる)。
-また Google の「ウェブ アプリケーション」型クライアントは認可コード→トークン
-交換に client_secret を要求するため、静的サイトだけでは PKCE も完結できない。
-そこで client_secret もバックエンドも不要な
+そのため Web 版はどちらの方式でも「本人の Google アカウントでログインしてもらう」形を取る。
+
+| | (A) 認可コードフロー + リフレッシュトークン | (B) GIS token client |
+| --- | --- | --- |
+| 使う条件 | ⚙設定に**ログイン維持用 Worker の URL** を設定 | Worker URL が空 |
+| ログインの持続 | **ページを閉じても保たれる** | 約1時間で切れる |
+| 必要なもの | Cloudflare Worker(無料枠) | 不要 |
+| クライアントID | Worker から受け取る(アプリ側の設定は不要) | アプリ側に設定が必要 |
+
+**推奨は (A)。** (B) は Worker を用意しない場合・Worker が落ちている場合の
+フォールバックとして残してある(Worker URL を空にすればいつでも戻せる)。
+
+#### (A) 認可コードフロー + PKCE + リフレッシュトークン(2026-08-05追加)
+
+Google の「ウェブ アプリケーション」型クライアントは認可コード→トークン交換に
+client_secret を要求し、それを公開ページの JavaScript に埋め込むことはできない。
+そこで **client_secret を預かるだけの小さな中継**(Cloudflare Worker、
+リポジトリの [`worker/`](../worker/README.md))を置くことで認可コードフローを
+成立させ、**リフレッシュトークン**を受け取れるようにしている。
+
+1. ログインボタン → Google の同意画面へページ遷移(PKCE 付き)
+2. `?code=...` を付けてこのページへ戻ってくる
+3. code を Worker の `/token` へ送り、アクセストークン + リフレッシュトークンを得る
+4. 以降、アクセストークンが切れたら Worker の `/refresh` で**無言で**取り直す
+
+- アクセストークンは**メモリ上のみ**、リフレッシュトークンは **localStorage**。
+  ページを閉じてもログインを保つには永続化が避けられないための判断で、
+  XSS で持ち出されうるトレードオフは受け入れている。ログアウトで破棄できる。
+- **OAuth 同意画面が「テスト」ステータスのままだと、Google の仕様で
+  リフレッシュトークンは7日で失効する**(週1回ログインし直しになる)。
+  なくすには「本番環境」に公開する。詳細は [`worker/README.md`](../worker/README.md)。
+- 失効(`invalid_grant`)を検出したら保存済みトークンを破棄し、再ログインを促す。
+
+セットアップ手順は [`worker/README.md`](../worker/README.md) を参照。
+
+#### (B) GIS token client(フォールバック)
+
+client_secret もバックエンドも不要な
 **Google Identity Services の token client**(`initTokenClient`)を使う。
+2026-07-29 から 2026-08-05 まではこちらが唯一の方式だった。
 
 - アクセストークンは**メモリ上にのみ**保持する(localStorage には置かない)。
-  有効期限は約1時間で、切れたら画面上のボタンから取り直す。リフレッシュ
-  トークンはこの方式では発行されない。
+  有効期限は約1時間で、切れたら画面上のボタンから取り直す。
+  **この方式では仕様上リフレッシュトークンが発行されない**ため、
+  「1時間しか持たない」という制約はコード側では解消できない((A) を使うこと)。
 - 一度同意していれば `prompt: ''` での再取得は基本的に無操作で通る。
-- 要求するスコープは `https://www.googleapis.com/auth/spreadsheets`
-  (未出力行の読み取りと、添削結果の追記・Anki出力済みのマークの両方を行うため)。
+
+どちらの方式でも、要求するスコープは
+`https://www.googleapis.com/auth/spreadsheets`
+(未出力行の読み取りと、添削結果の追記・Anki出力済みのマークの両方を行うため)。
 
 ### 事前準備(初回のみ)
 
 1. Google Cloud Console →「APIとサービス → ライブラリ」で
    **Google Sheets API** を有効化する。
 2. 「APIとサービス → 認証情報」で **OAuth クライアント ID** を種類
-   「ウェブ アプリケーション」で作成し、**承認済みの JavaScript 生成元**に
-   このページのオリジン(例: `https://yoimachihime-tech.github.io`、
-   ローカル確認用なら `http://localhost:8000`)を登録する。
-   末尾が `.apps.googleusercontent.com` の文字列がクライアントID。
+   「ウェブ アプリケーション」で作成し、次を登録する。
+   - **承認済みの JavaScript 生成元**: このページのオリジン
+     (例: `https://yoimachihime-tech.github.io`、ローカル確認用なら
+     `http://localhost:8000`)
+   - **承認済みのリダイレクト URI**((A) を使う場合のみ必要): このページの
+     URL そのもの(例: `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/`)。
+     末尾スラッシュまで完全一致でないと `redirect_uri_mismatch` になる。
 3. OAuth 同意画面が「テスト」ステータスの場合は、自分のGoogleアカウントを
    **テストユーザー**に追加する(でないと同意画面で弾かれる)。
-4. Web版の「⚙ 設定 → スプレッドシート」に、クライアントID・
-   スプレッドシートID・シート(タブ)名を入力する。
+4. (A) を使う場合は [`worker/README.md`](../worker/README.md) の手順で Worker を
+   デプロイし、Web版の「⚙ 設定 → スプレッドシート」に **Worker の URL** を入力する。
+   (B) のままにする場合は同じ場所に**クライアントID**を入力する。
+5. いずれの場合も、同じ画面でスプレッドシートID・シート(タブ)名を入力する。
 
 **クライアントIDは秘密情報ではない**ため、APIキーと違い公開ページに置いても
-問題ない(設定項目にしてあるのは、コード変更・再デプロイ無しに差し替えられる
-ようにするため)。
+問題ない((A) では Worker が唯一の出所になるので、アプリ側の設定は不要)。
 
 ### 実装上の注意
 
@@ -347,7 +391,7 @@ npm test        # 下記6つをまとめて実行
 | `npm run test:ui` | jsdom 上で `index.html` + `app.js` を実際に動かし、単語・AIに質問(3問+習熟用4問目)・習熟用(音読)・DailyConversation の各タブで通し動作を確認する(Gemini API・Sheets API・Googleログインはすべてモックするので、キー・割り当て・実データを消費しない) |
 | `npm run test:tts` | `lib/tts.js`(Cloud Text-to-Speech 呼び出し・文分割・エラー分類・音声埋め込み)を fetch モックで単体テストする(Text-to-Speech API キー・割り当ては消費しない) |
 | `npm run test:gemini` | `lib/gemini.js` の `callGemini()` のエラー処理・リトライ挙動(503 の自動リトライ、429 の既存挙動の回帰確認)を fetch モックで単体テストする |
-| `npm run test:sheets` | `lib/sheets.js`(未出力行の取得・添削結果の追記・「Anki出力済み」列のマーク・エラー分類)と `lib/dailyconv.js` のローカル除外リストを fetch モックで単体テストする(実際のスプレッドシートにはアクセスしない) |
+| `npm run test:sheets` | `lib/sheets.js`(未出力行の取得・添削結果の追記・「Anki出力済み」列のマーク・エラー分類、および認可コードフロー: PKCE/state の照合・`access_type=offline`+`prompt=consent`・リフレッシュ・`invalid_grant` 時のトークン破棄)と `lib/dailyconv.js` のローカル除外リストを fetch モックで単体テストする(実際のスプレッドシートにも Worker にもアクセスしない) |
 
 `npm run test:ui` は Gemini・Sheets を呼ばないため、**実際の Gemini が期待どおりの
 JSON を返すか**・**実際のシートのヘッダーが想定どおりか**は確認できない。

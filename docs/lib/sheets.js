@@ -3,24 +3,46 @@
 // 「添削結果」スプレッドシートの読み書きを、ブラウザから直接行う。
 // デスクトップ版の sheets_reader.py / sheets_writer.py に対応する Web 版。
 //
-// 【認証方式(2026-07-29、片桐が選択)】
-// Google Identity Services (GIS) の **token client**(`initTokenClient`)を使う。
+// 【認証方式】
+// 次の2方式を持ち、⚙設定の「ログイン維持用 Worker の URL」が設定されているか
+// どうかで自動的に切り替わる。
+//
+//   (A) 認可コードフロー + PKCE + リフレッシュトークン … Worker URL を設定済み
+//       (2026-08-05追加、既定の推奨方式)
+//   (B) Google Identity Services (GIS) の token client … Worker URL が空
+//       (2026-07-29からの従来方式、フォールバックとして残してある)
 //
 // デスクトップ版はサービスアカウント(JSON秘密鍵)方式だが、その鍵をブラウザに
-// 置くことは絶対にできない(鍵を持つ者は誰でもシートを自由に読み書きできる)。
-// またCLAUDE.mdには当初「OAuth 2.0 (PKCE)」と書かれていたが、Googleの
-// 「ウェブアプリケーション」型クライアントは認可コード→トークン交換に
-// client_secret を要求するため、静的サイトだけではPKCEを完結できない。
-// client_secret 不要でバックエンドも不要な唯一の正規ルートが token client。
+// 置くことは絶対にできない(鍵を持つ者は誰でもシートを自由に読み書きできる)ため、
+// Web版はどちらの方式でも「片桐自身のGoogleアカウントでログインしてもらう」形を取る。
 //
-// - 利用者がページ上でOAuthクライアントIDを入力し localStorage に保存する
-//   (APIキーと同じ方針。**クライアントIDは秘密情報ではない**ので公開ページに
-//   置いても問題ないが、片桐以外が使う場合に備えて設定項目にしてある)
-// - アクセストークンは**メモリ上にのみ**保持する(localStorage に置くと
-//   XSS で持ち出されうるため)。有効期限は約1時間で、切れたら再取得する。
-//   リフレッシュトークンはこの方式では発行されない。
-// - 一度同意していれば `prompt: ''` での再取得は基本的に無操作で通る
-//   (同意画面が再表示されるのは初回のみ)。
+// --- (B) を最初に選んだ理由と、その限界 ---
+// Googleの「ウェブ アプリケーション」型クライアントは認可コード→トークン交換に
+// client_secret を要求し、それを公開ページのJavaScriptに置くことはできない。
+// client_secret もバックエンドも不要な唯一の正規ルートが token client だったため
+// 当初これを採用したが、**この方式は仕様上リフレッシュトークンが発行されない**。
+// そのためアクセストークンの寿命(約1時間)が切れるたびに実質ログインし直しになり、
+// 「1時間しか持たない」という不便が残っていた。
+//
+// --- (A) の構成 ---
+// client_secret を預かるだけの小さな中継(Cloudflare Worker、リポジトリの
+// `worker/` を参照)を置くことで認可コードフローが使えるようになり、
+// リフレッシュトークンを受け取れる。これにより、アクセストークンが切れても
+// 利用者の操作なしに裏で取り直せる(= ログインが長持ちする)。
+//   1. ログインボタン → Googleの同意画面へページ遷移(PKCE付き)
+//   2. `?code=...` を付けてこのページへ戻ってくる
+//   3. code を Worker の /token へ送り、アクセストークン + リフレッシュトークンを得る
+//   4. 以降、アクセストークンが切れたら Worker の /refresh で無言で再取得する
+//
+// --- トークンの保管場所 ---
+// - アクセストークン: **メモリ上のみ**(どちらの方式でも共通)。
+// - リフレッシュトークン: localStorage((A)のみ)。ページを閉じても
+//   ログインを保つには永続化が避けられないための判断で、XSS で持ち出されうる
+//   というトレードオフは受け入れている(このページは外部からの入力を
+//   innerHTML に流し込まない作りであること・片桐本人しか使わないことが前提)。
+//   ログアウト(`signOut()`)で明示的に破棄できる。
+// - 同意画面が「テスト」ステータスのままの場合、Googleの仕様でリフレッシュ
+//   トークンは7日で失効する(その場合は再ログインが必要。詳細は worker/README.md)。
 //
 // 【必要なスコープ】
 // 読み取り(未出力行の取得)と書き込み(添削結果の追記・Anki出力済みのマーク)の
@@ -28,8 +50,14 @@
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
+const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 
 export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+
+/** リフレッシュトークンの保存先(localStorage)。 */
+const REFRESH_TOKEN_KEY = 'anki_tool_google_refresh_token';
+/** 認可コードフローの途中経過(PKCEのcode_verifier・state)の保存先。 */
+const PKCE_STATE_KEY = 'anki_tool_oauth_pkce';
 
 /** Sheets API 呼び出し全般の失敗。 */
 export class SheetsError extends Error {}
@@ -38,7 +66,7 @@ export class SheetsError extends Error {}
 export class SheetsAuthError extends SheetsError {}
 
 // ---------------------------------------------------------------------------
-// 認証(Google Identity Services token client)
+// 認証(共通の状態)
 // ---------------------------------------------------------------------------
 
 let gisScriptPromise = null;
@@ -50,6 +78,248 @@ let accessTokenExpiresAt = 0;
 // 有効期限ぎりぎりのトークンで実行すると、通信中に切れて401になるため、
 // 期限の1分前には切れたものとして扱う。
 const EXPIRY_MARGIN_MS = 60 * 1000;
+
+/** 末尾スラッシュを落とした Worker の URL(未設定なら空文字)。 */
+function normalizeWorkerUrl(workerUrl) {
+  return String(workerUrl || '').trim().replace(/\/+$/, '');
+}
+
+/** アクセストークンを受け取ったときの共通処理(メモリへ保持する)。 */
+function storeAccessToken(token, expiresInSec) {
+  accessToken = token;
+  // expires_in は秒。省略された場合は控えめに30分とみなす。
+  const seconds = Number(expiresInSec) || 1800;
+  accessTokenExpiresAt = Date.now() + seconds * 1000;
+  return accessToken;
+}
+
+// ---------------------------------------------------------------------------
+// 認証(A) 認可コードフロー + PKCE + リフレッシュトークン(2026-08-05追加)
+// ---------------------------------------------------------------------------
+
+/** 保存済みのリフレッシュトークン(無ければ null)。 */
+export function getStoredRefreshToken() {
+  try {
+    return localStorage.getItem(REFRESH_TOKEN_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function setStoredRefreshToken(token) {
+  try {
+    if (token) localStorage.setItem(REFRESH_TOKEN_KEY, token);
+    else localStorage.removeItem(REFRESH_TOKEN_KEY);
+  } catch {
+    /* プライベートブラウジング等で localStorage が使えない場合は諦める */
+  }
+}
+
+/** ランダムなURLセーフ文字列(PKCEのcode_verifier・stateに使う)。 */
+function randomUrlSafeString(byteLength = 48) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+/** Uint8Array/ArrayBuffer を base64url(パディング無し)にする。 */
+function base64UrlEncode(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** PKCE の code_challenge(S256)を作る。 */
+async function makeCodeChallenge(codeVerifier) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier));
+  return base64UrlEncode(digest);
+}
+
+/**
+ * リダイレクトURI。Google Cloud Console の「承認済みのリダイレクト URI」に
+ * **完全一致で**登録しておく必要がある(worker/README.md 参照)。
+ * クエリ・ハッシュを落とした「今開いているページ」そのものを使う。
+ */
+export function redirectUri() {
+  return window.location.origin + window.location.pathname;
+}
+
+async function workerFetch(workerUrl, path, init) {
+  const base = normalizeWorkerUrl(workerUrl);
+  let res;
+  try {
+    res = await fetch(`${base}${path}`, init);
+  } catch (e) {
+    throw new SheetsAuthError(
+      `ログイン維持用 Worker (${base}) へ接続できませんでした: ${e.message}\n`
+      + 'URLが正しいか、Workerがデプロイ済みかを確認してください'
+      + '(⚙ 設定 → スプレッドシート)。',
+    );
+  }
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new SheetsAuthError(`Workerからの応答を解釈できませんでした: ${text.slice(0, 200)}`);
+  }
+  if (!res.ok) {
+    const err = new SheetsAuthError(
+      `Googleのトークン取得に失敗しました: ${data?.error || res.status}`
+      + (data?.detail ? `\n\n詳細: ${data.detail}` : ''),
+    );
+    // invalid_grant = リフレッシュトークンが失効・取り消された。呼び出し側が
+    // 「保存済みトークンを捨てて再ログインを促す」判断に使う。
+    err.code = data?.error || null;
+    throw err;
+  }
+  return data;
+}
+
+/** Worker から client_id を受け取る(Workerを使う場合、これが唯一の出所)。 */
+export async function fetchWorkerClientId(workerUrl) {
+  const data = await workerFetch(workerUrl, '/config', { method: 'GET' });
+  if (!data?.client_id) {
+    throw new SheetsAuthError('WorkerからクライアントIDを取得できませんでした(Worker側の設定を確認してください)。');
+  }
+  return data.client_id;
+}
+
+/**
+ * Googleの同意画面へページ遷移する(認可コードフローの開始)。
+ * この関数は戻ってこない(遷移する)。
+ *
+ * `access_type=offline` + `prompt=consent` の両方が揃っていないと、
+ * Googleはリフレッシュトークンを返さない(2回目以降の同意では省略される)。
+ */
+export async function beginAuthCodeFlow(workerUrl) {
+  const clientId = await fetchWorkerClientId(workerUrl);
+  const codeVerifier = randomUrlSafeString();
+  const state = randomUrlSafeString(16);
+  const uri = redirectUri();
+
+  // リダイレクトでページが作り直されるため、照合用の値を残しておく。
+  // sessionStorage はタブを閉じると消えるので、この用途には十分。
+  sessionStorage.setItem(PKCE_STATE_KEY, JSON.stringify({
+    codeVerifier, state, redirectUri: uri, workerUrl: normalizeWorkerUrl(workerUrl),
+  }));
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: uri,
+    response_type: 'code',
+    scope: SHEETS_SCOPE,
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    state,
+    code_challenge: await makeCodeChallenge(codeVerifier),
+    code_challenge_method: 'S256',
+  });
+  window.location.assign(`${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`);
+}
+
+/**
+ * 同意画面から戻ってきた直後に呼ぶ。URLに `code` が付いていれば
+ * トークン交換まで済ませ、URLからクエリを掃除する。
+ *
+ * @returns {Promise<{handled: boolean, error?: string}>}
+ *   handled=false なら「戻ってきた直後ではない」= 通常の起動。
+ */
+export async function completeAuthCodeFlowIfReturning() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const error = params.get('error');
+  if (!code && !error) return { handled: false };
+
+  const rawSaved = sessionStorage.getItem(PKCE_STATE_KEY);
+  sessionStorage.removeItem(PKCE_STATE_KEY);
+  // 認可コードはURLに残すと再読み込みで二重に使われる(=エラーになる)ため、
+  // 成否にかかわらず必ず消す。
+  cleanAuthParamsFromUrl();
+
+  if (error) {
+    return { handled: true, error: `Googleログインが中断されました: ${params.get('error_description') || error}` };
+  }
+
+  let saved = null;
+  try {
+    saved = rawSaved ? JSON.parse(rawSaved) : null;
+  } catch {
+    saved = null;
+  }
+  if (!saved?.codeVerifier) {
+    return { handled: true, error: 'ログインの途中経過が見つかりませんでした。もう一度ログインしてください。' };
+  }
+  if (saved.state !== params.get('state')) {
+    // state 不一致は CSRF の可能性。黙って通さない。
+    return { handled: true, error: 'ログインの照合に失敗しました(state不一致)。もう一度ログインしてください。' };
+  }
+
+  try {
+    const data = await workerFetch(saved.workerUrl, '/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        code_verifier: saved.codeVerifier,
+        redirect_uri: saved.redirectUri,
+      }),
+    });
+    storeAccessToken(data.access_token, data.expires_in);
+    if (data.refresh_token) setStoredRefreshToken(data.refresh_token);
+    return { handled: true };
+  } catch (e) {
+    return { handled: true, error: e.message };
+  }
+}
+
+/** URL から code/state/error/scope 等の認可パラメータを取り除く。 */
+function cleanAuthParamsFromUrl() {
+  const url = new URL(window.location.href);
+  for (const key of ['code', 'state', 'error', 'error_description', 'scope', 'authuser', 'prompt', 'hd']) {
+    url.searchParams.delete(key);
+  }
+  const search = url.searchParams.toString();
+  window.history.replaceState(
+    {}, '', url.pathname + (search ? `?${search}` : '') + url.hash,
+  );
+}
+
+/**
+ * リフレッシュトークンで新しいアクセストークンを取り直す(利用者の操作は不要)。
+ * 失効していた場合は保存済みトークンを破棄したうえで例外を投げる。
+ */
+async function refreshAccessToken(workerUrl) {
+  const refreshToken = getStoredRefreshToken();
+  if (!refreshToken) {
+    throw new SheetsAuthError('Googleにログインしていません。「Googleにログイン」を押してください。');
+  }
+  try {
+    const data = await workerFetch(workerUrl, '/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    return storeAccessToken(data.access_token, data.expires_in);
+  } catch (e) {
+    if (e.code === 'invalid_grant') {
+      setStoredRefreshToken(null);
+      throw new SheetsAuthError(
+        'Googleログインの有効期限が切れました(または利用者がアクセスを取り消しました)。\n'
+        + 'もう一度「Googleにログイン」を押してください。\n'
+        + '※ OAuth同意画面が「テスト」ステータスのままだと、Googleの仕様で7日ごとに'
+        + 'ログインし直しが必要です(worker/README.md 参照)。',
+      );
+    }
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 認証(B) Google Identity Services token client(Worker 未設定時のフォールバック)
+// ---------------------------------------------------------------------------
 
 /** GIS のスクリプトを一度だけ読み込む。 */
 function loadGisScript() {
@@ -114,11 +384,7 @@ function requestToken(clientId, prompt) {
           ));
           return;
         }
-        accessToken = response.access_token;
-        // expires_in は秒。省略された場合は控えめに30分とみなす。
-        const expiresInSec = Number(response.expires_in) || 1800;
-        accessTokenExpiresAt = Date.now() + expiresInSec * 1000;
-        resolve(accessToken);
+        resolve(storeAccessToken(response.access_token, response.expires_in));
       };
       client.error_callback = (err) => {
         reject(new SheetsAuthError(
@@ -130,28 +396,69 @@ function requestToken(clientId, prompt) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 認証(共通の入口)
+// ---------------------------------------------------------------------------
+
 /** 今保持しているアクセストークンがまだ使えるか。 */
 export function hasValidAccessToken() {
   return Boolean(accessToken) && Date.now() < accessTokenExpiresAt - EXPIRY_MARGIN_MS;
 }
 
-/** 保持しているトークンを破棄する(ログアウト相当。同意自体は取り消さない)。 */
+/**
+ * 「利用者から見てログイン済みか」。
+ *
+ * リフレッシュトークンを持っていれば、アクセストークンが手元に無くても
+ * (ページを開き直した直後など)無操作で取り直せるためログイン済みとみなす。
+ */
+export function isSignedIn() {
+  return hasValidAccessToken() || Boolean(getStoredRefreshToken());
+}
+
+/**
+ * 手元のアクセストークンだけを破棄する(リフレッシュトークンは残す)。
+ * 401 を受けたときに「次回は取り直す」ためのもので、ログアウトではない。
+ */
 export function clearAccessToken() {
   accessToken = null;
   accessTokenExpiresAt = 0;
 }
 
 /**
+ * ログアウト。アクセストークンに加えて保存済みのリフレッシュトークンも捨てる
+ * (Google側の同意そのものは取り消さないため、次回のログインは同意画面を
+ * 通るだけで済む)。
+ */
+export function signOut() {
+  clearAccessToken();
+  setStoredRefreshToken(null);
+}
+
+/**
  * 有効なアクセストークンを返す。保持しているものが使えればそれを返し、
  * 無ければ取得しに行く。
  *
- * @param {string} clientId
- * @param {object} [opts]
- * @param {boolean} [opts.forceConsent] true なら必ず同意画面を出す
+ * Worker URL が設定されていればリフレッシュトークン方式(A)、空なら従来の
+ * GIS token client 方式(B)で動く。
+ *
+ * @param {object} opts
+ * @param {string} [opts.clientId]  (B) 用の OAuth クライアントID
+ * @param {string} [opts.workerUrl] (A) 用の Worker URL。設定時は (A) を使う
+ * @param {boolean} [opts.forceConsent] (B) で必ず同意画面を出す
  *   (「ログイン」ボタンから明示的に押された場合に使う)
  */
-export async function getAccessToken(clientId, { forceConsent = false } = {}) {
-  if (!forceConsent && hasValidAccessToken()) return accessToken;
+export async function getAccessToken({ clientId = '', workerUrl = '', forceConsent = false } = {}) {
+  if (hasValidAccessToken() && !forceConsent) return accessToken;
+
+  if (normalizeWorkerUrl(workerUrl)) {
+    // (A) 保存済みリフレッシュトークンから無言で取り直す。
+    // 持っていない場合は refreshAccessToken() が「ログインしてください」を投げる
+    // (ログインボタンの押下は beginAuthCodeFlow() が担当し、ここでは
+    //  勝手にページ遷移させない)。
+    return refreshAccessToken(workerUrl);
+  }
+
+  // (B) 従来方式。
   return requestToken(clientId, forceConsent ? 'consent' : '');
 }
 
@@ -181,7 +488,11 @@ function describeSheetsError(status, detail) {
   const n = (detail || '').replace(/[\s_-]/g, '').toLowerCase();
 
   if (status === 401) {
-    return 'Googleのログイン(アクセストークン)が期限切れです。「Googleにログイン」を押し直してください。';
+    // Worker方式なら次回の呼び出しで無言に取り直せる(app.js が clearAccessToken()
+    // だけを呼び、リフレッシュトークンは残す)ので、多くの場合はもう一度同じ操作を
+    // すれば通る。従来方式では手動でのログインし直しが必要。
+    return 'Googleのログイン(アクセストークン)が期限切れです。'
+      + 'もう一度同じ操作をするか、「Googleにログイン」を押し直してください。';
   }
   if (status === 403) {
     if (n.includes('servicedisabled') || n.includes('hasnotbeenused')) {

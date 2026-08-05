@@ -1,0 +1,21 @@
+# Cloudflare Workers の設定。
+#
+# GOOGLE_CLIENT_SECRET は**ここに書かないこと**。
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
+# で登録する(このファイルはGitにコミットされる)。
+#
+# デプロイ手順の全体は worker/README.md を参照。
+
+name = "anki-tool-oauth"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+# OAuth クライアントID。秘密情報ではないのでここに書いてよい
+# (フロントは GET /config でこの値を受け取る)。
+GOOGLE_CLIENT_ID = "717565917694-3hids8cs8nlebnr7jdglrc660qbcl5q0.apps.googleusercontent.com"
+
+# CORS を許可するオリジン(カンマ区切り、末尾スラッシュ無し)。
+# ここに載っていないサイトの JavaScript からは呼び出せない。
+# ローカルで docs/ を開いて試す場合は http://localhost:8000 等も足す。
+ALLOWED_ORIGINS = "https://yoimachihime-tech.github.io"
