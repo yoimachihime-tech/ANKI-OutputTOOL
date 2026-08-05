@@ -11,7 +11,8 @@
     "test:gemini": "node test_gemini.mjs",
     "test:sheets": "node test_sheets.mjs",
     "test:sync": "node test_sync.mjs",
-    "test": "node verify_web_parity.mjs && node verify_grammar_multi_parity.mjs && node test_web_ui.mjs && node test_tts.mjs && node test_gemini.mjs && node test_sheets.mjs && node test_sync.mjs"
+    "test:worker": "node test_worker.mjs",
+    "test": "node verify_web_parity.mjs && node verify_grammar_multi_parity.mjs && node test_web_ui.mjs && node test_tts.mjs && node test_gemini.mjs && node test_sheets.mjs && node test_sync.mjs && node test_worker.mjs"
   },
   "dependencies": {
     "jszip": "3.10.1",

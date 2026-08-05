@@ -1976,7 +1976,8 @@ PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られ�
   切り分けの一手であり、**原因の特定ではない**。本命は依然として
   iPhone本体のサイレントスイッチ(アプリ側のコードでは制御できない)。
   この修正で直らなければ、まずそちらを確認してもらうこと。
-- 検査時点で`npm test`(7本)と`test_json_store.py`(17件)はすべて通過。
+- 検査時点で`npm test`(7本)と`test_json_store.py`(17件)はすべて通過
+  (その後 `test_worker.mjs` を足して8本になった)。
   A・G・B・C には回帰テストを追加済み(D/E/F/H はUI操作・実機依存のため
   テストは追加していない)。
 
@@ -2231,7 +2232,7 @@ worker/                             Googleログインを長持ちさせるた�
   される。この4問目生成の失敗は3問の生成成功を無効にしない(非ブロッキング、
   `docs/app.js`の`onAiAskGenerate()`を参照)。
 - **`docs/`配下を変更したら必ず`cd tools && npm test`を通すこと**
-  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は7本:
+  (初回のみ`npm install`。`tools/node_modules/`はGit管理外)。中身は8本:
   - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
     (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multi・shuujuku・
     dailyの4種別)、guid・フィールド・タグ・カード構成・ノートタイプ定義を
@@ -2317,6 +2318,18 @@ worker/                             Googleログインを長持ちさせるた�
     2026-08-05に[5]`readSyncState`がA列のキー名で引くこと(行の並びが
     `SYNC_ROW_KEYS`と違っても取り違えないこと)と、[6]`exceedsCellLimit`/
     `CAPACITY_WARN_PERCENT`の判定を追加した。
+  - `npm run test:worker`(`test_worker.mjs`、2026-08-05追加): `worker/src/index.js`
+    (Googleのトークン交換を中継するCloudflare Worker)の単体テスト。
+    **Cloudflareの実行環境もwranglerも不要**——Workerのエントリポイントは
+    `export default { fetch(request, env) }` という素のWeb標準APIなので、
+    Nodeからそのままimportして呼べる。Googleのトークンエンドポイントへの
+    通信だけをfetchモックで差し替えており、実際のGoogleにもCloudflareにも
+    アクセスしない。固定しているのは CORS の絞り込み・`/config`が
+    **client_secretを一切返さないこと**・`/token`が`client_secret`を
+    Worker側で付与すること・`Cache-Control: no-store`・**`invalid_grant`を
+    握り潰さずそのまま透過させること**(アプリ側の`refreshAccessToken`が
+    これを見て保存済みトークンを捨てるため、ここが変わると
+    「ログインし直しても復帰できない」状態になる)など。
   - **`verify`系2本は`execFileSync('python3', ...)`とハードコードしている**
     ため、`python3`という名前で起動できるPythonが無い環境ではこの2本だけ
     失敗する(2026-07-28のClaude Code検証環境がこれに該当し、

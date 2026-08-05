@@ -8,6 +8,22 @@ Web 版の Google ログインを「1 時間で切れる」状態から「一度
 
 ---
 
+## 0. 進捗（2026-08-05 時点）
+
+| 手順 | 状態 |
+| --- | --- |
+| 1. Google 側の設定（リダイレクト URI の登録） | ✅ 片桐が完了 |
+| 2. Cloudflare アカウントの用意 | ⬜ 未確認 |
+| 3. `wrangler.toml` のクライアント ID | ✅ 設定済み・検証済み |
+| 4. デプロイ + シークレット登録 | ⬜ **ここから片桐の作業** |
+| 5. アプリに Worker の URL を設定 | ⬜ 手順 4 の後 |
+
+Worker のコードは自動テスト済みです（`cd tools && npm run test:worker`、17 項目）。
+設定ファイルも `npx wrangler@4 deploy --dry-run` で検証済みなので、
+**手順 4 のコマンドをそのまま実行すれば通るはず**です。
+
+---
+
 ## 1. Google 側の設定（先にこちらを済ませる）
 
 [Google Cloud Console →「API とサービス」→「認証情報」](https://console.cloud.google.com/apis/credentials)
@@ -69,14 +85,26 @@ GOOGLE_CLIENT_ID = "xxxxxxxx.apps.googleusercontent.com"
 cd worker
 
 # 初回のみ。ブラウザが開き、Cloudflare アカウントとの連携を求められる
-npx wrangler login
+npx wrangler@4 login
 
 # デプロイ（最後に Worker の URL が表示される）
-npx wrangler deploy
+npx wrangler@4 deploy
 
 # クライアント シークレットを登録する
 # （対話式。入力中は画面に何も表示されないが正常）
-npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler@4 secret put GOOGLE_CLIENT_SECRET
+```
+
+> **`@4` を付けているのは、`npx wrangler` だと環境によっては古い v3 が
+> 使われることがあるためです**（v3 は非推奨で、実行するたびに
+> 「now out-of-date」という警告が出ます）。この Worker の設定は v4 でも
+> そのまま通ることを確認済みです（`npx wrangler@4 deploy --dry-run`）。
+
+設定に不備がないかは、Cloudflare に接続せずに確認できます。
+デプロイがうまくいかないときは、まずこれで切り分けてください。
+
+```bash
+npx wrangler@4 deploy --dry-run
 ```
 
 > **`npm install` は不要です。** `npx` が wrangler を npm のキャッシュ

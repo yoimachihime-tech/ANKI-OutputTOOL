@@ -2,12 +2,15 @@
   "name": "anki-tool-oauth-worker",
   "version": "1.0.0",
   "private": true,
+  "//type": "src/index.js は ES モジュール(export default)。宣言しておかないと、",
+  "//type2": "tools/test_worker.mjs からimportする際にNodeが警告を出す。",
+  "type": "module",
   "description": "Google OAuth のトークン交換だけを中継する Cloudflare Worker(ANKI出力ツール Web版用)",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.0.0"
   }
 }

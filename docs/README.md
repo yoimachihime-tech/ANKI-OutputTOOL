@@ -423,7 +423,7 @@ Anki は guid が同じノートを「同一ノート」として更新する。
 ```sh
 cd tools
 npm install     # 初回のみ
-npm test        # 下記7つをまとめて実行
+npm test        # 下記8つをまとめて実行
 ```
 
 | コマンド | 内容 |
@@ -435,6 +435,7 @@ npm test        # 下記7つをまとめて実行
 | `npm run test:gemini` | `lib/gemini.js` の `callGemini()` のエラー処理・リトライ挙動(503 の自動リトライ、429 の既存挙動の回帰確認)を fetch モックで単体テストする |
 | `npm run test:sheets` | `lib/sheets.js`(未出力行の取得・添削結果の追記・「Anki出力済み」列のマーク・エラー分類、認可コードフロー: PKCE/state の照合・`access_type=offline`+`prompt=consent`・リフレッシュ・`invalid_grant` 時のトークン破棄、および 401 時のアクセストークン自動リトライ)と `lib/dailyconv.js` のローカル除外リストを fetch モックで単体テストする(実際のスプレッドシートにも Worker にもアクセスしない) |
 | `npm run test:sync` | `lib/sync.js`(id 単位の和集合マージ・打ち消し記録・セル容量の判定)と、`lib/sheets.js` の同期用関数(隠しタブ `_AppSync` の自動作成、A列のキー名での読み取り)を fetch モックで単体テストする |
+| `npm run test:worker` | `worker/src/index.js`(ログイン維持用 Worker)の単体テスト。CORS の絞り込み・`/config` が client_secret を返さないこと・`/token` の client_secret 付与・`invalid_grant` の透過などを fetch モックで固定する(Cloudflare にも Google にもアクセスしない。wrangler も不要) |
 
 `npm run test:ui` は Gemini・Sheets を呼ばないため、**実際の Gemini が期待どおりの
 JSON を返すか**・**実際のシートのヘッダーが想定どおりか**は確認できない。
