@@ -287,5 +287,93 @@ function mockFetch(handler) {
 }
 
 // ---------------------------------------------------------------------------
+// [5] readSyncState は行の位置ではなくA列のキー名で引く(2026-08-05修正)
+//
+// 以前は `values[i][1]` と行の位置だけで読んでおり、A列に書いてあるキー名を
+// 照合していなかった。将来 SYNC_ROW_KEYS の順序が変わる・途中にキーが増えると、
+// 既にシートを持っている端末が「単語のJSONを習熟用として読み込む」取り違えを
+// 起こす(エラーにならず静かにストックが混ざり、次の書き戻しで他端末へ伝播する)。
+// ---------------------------------------------------------------------------
+console.log('\n[5] readSyncState はA列のキー名で引く');
+
+{
+  // 行の並びが SYNC_ROW_KEYS と違う(順序が入れ替わっている)シートを渡す。
+  mockFetch(async (url) => {
+    if (url.includes('fields=sheets.properties.title')) {
+      return { sheets: [{ properties: { title: SYNC_SHEET_NAME } }] };
+    }
+    return {
+      values: [
+        ['shuujuku_stock_items', '["習熟用"]'],
+        ['word_stock_items', '["単語"]'],
+        ['ai_ask_stock_items', '["AIに質問"]'],
+      ],
+    };
+  });
+
+  const state = await readSyncState({ spreadsheetId: 'SHEET_ID', accessToken: TOKEN });
+
+  if (state.word_stock_items === '["単語"]'
+    && state.shuujuku_stock_items === '["習熟用"]'
+    && state.ai_ask_stock_items === '["AIに質問"]') {
+    ok('行の並びが SYNC_ROW_KEYS と違っても、キー名で正しく対応付ける');
+  } else {
+    fail(`行の位置で読んでいてストックが取り違えられている: ${JSON.stringify(state)}`);
+  }
+
+  if (state.word_stock_tombstones === '') {
+    ok('シートに無いキーは空文字になる');
+  } else {
+    fail(`未保存キーの扱いが想定と違う: ${JSON.stringify(state.word_stock_tombstones)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// [6] セル上限(50,000文字)の判定(2026-08-05追加)
+//
+// 上限を超えたJSONをそのまま送るとSheets APIが素の400を返し、どのストックが
+// 原因かも分からないまま同期が丸ごと止まる。app.js の runSync が書き込み前に
+// これで判定して、対処方法(「出力済みを削除」)を添えて中断する。
+// ---------------------------------------------------------------------------
+console.log('\n[6] exceedsCellLimit / CAPACITY_WARN_PERCENT');
+
+{
+  const { exceedsCellLimit, CAPACITY_WARN_PERCENT } = await import(
+    new URL('../docs/lib/sync.js', import.meta.url)
+  );
+
+  if (!exceedsCellLimit('x'.repeat(SHEET_CELL_LIMIT))) {
+    ok('ちょうど上限(50,000文字)は超過扱いにしない');
+  } else {
+    fail('ちょうど上限で超過と判定されている');
+  }
+  if (exceedsCellLimit('x'.repeat(SHEET_CELL_LIMIT + 1))) {
+    ok('上限を1文字でも超えたら超過と判定する');
+  } else {
+    fail('上限超過を検出できていない');
+  }
+  if (!exceedsCellLimit('') && !exceedsCellLimit(null)) {
+    ok('空文字・null は超過扱いにしない');
+  } else {
+    fail('空の値が超過と判定されている');
+  }
+
+  // 警告閾値は「上限に達してからでは、復旧のために開くアプリ自体が同期
+  // できない」手詰まりを避けるためのもの。100%より十分手前である必要がある。
+  if (CAPACITY_WARN_PERCENT > 0 && CAPACITY_WARN_PERCENT < 100) {
+    ok(`警告閾値は上限より手前に設定されている(${CAPACITY_WARN_PERCENT}%)`);
+  } else {
+    fail(`警告閾値が実用的でない: ${CAPACITY_WARN_PERCENT}`);
+  }
+
+  const warnJson = 'x'.repeat(Math.ceil(SHEET_CELL_LIMIT * (CAPACITY_WARN_PERCENT / 100)));
+  if (capacityPercent(warnJson) >= CAPACITY_WARN_PERCENT && !exceedsCellLimit(warnJson)) {
+    ok('警告閾値ちょうどでは、警告は出るが書き込みは中断しない');
+  } else {
+    fail(`警告閾値付近の判定が想定と違う: ${capacityPercent(warnJson)}%`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log(failures === 0 ? '\n✅ すべて成功しました。' : `\n❌ ${failures} 件失敗しました。`);
 process.exitCode = failures === 0 ? 0 : 1;

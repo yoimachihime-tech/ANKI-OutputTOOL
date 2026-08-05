@@ -609,5 +609,151 @@ console.log('\n[6] 認可コードフロー(ログイン維持用Worker方式)')
 }
 
 // ---------------------------------------------------------------------------
+// [7] 401 を受けたときのアクセストークン自動リトライ(2026-08-05追加)
+//
+// Worker方式はリフレッシュトークンを持っているのに、以前は 401 のたびに
+// 「もう一度同じ操作をしてください」と手動の再実行を求めていた。長い操作
+// (添削→シート追記→習熟用生成)の途中で期限が切れると最初からやり直しに
+// なるため、sheetsFetch が1回だけ自動でトークンを取り直して再送するようにした。
+//
+// ここで固定するのは次の3点:
+//   - Worker方式では 401 → /refresh → 新しいトークンで再送、まで自動で通ること
+//   - リトライは1回だけで、それでも 401 なら SheetsAuthError を投げること
+//   - 従来方式(B、Workerなし)では自動リトライしないこと
+//     (取り直しに同意画面・ポップアップが要るため、操作していないのに
+//      勝手にポップアップが出るのを避ける)
+// ---------------------------------------------------------------------------
+console.log('\n[7] 401時のアクセストークン自動リトライ');
+{
+  const sheets = await import(new URL('../docs/lib/sheets.js', import.meta.url));
+  const WORKER = 'https://anki-tool-oauth.example.workers.dev';
+  const SHEET_ROWS = { values: [HEADERS, ['id-1', '', 'A.', 'A.', '', '文法', '', '', '', '', '', '', '']] };
+
+  /** Worker(text()を読む)と Sheets API(json()を読む)の両方を1つで捌くモック。 */
+  function mockBoth({ onWorker, onSheets }) {
+    const calls = [];
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url, method: init.method || 'GET', headers: init.headers || {} });
+      if (String(url).startsWith(WORKER)) {
+        const { status = 200, body } = await onWorker(url, init);
+        return { ok: status < 300, status, text: async () => JSON.stringify(body) };
+      }
+      const { status = 200, body } = await onSheets(url, init, calls);
+      if (status >= 300) return { ok: false, status, text: async () => JSON.stringify(body) };
+      return { ok: true, status, json: async () => body };
+    };
+    return calls;
+  }
+
+  // --- Worker方式: 401 を1回受けても自動で回復する ----------------------------
+  localStorage.clear();
+  globalThis.window = dom.window; // localStorage 経由のトークン保存に必要
+  sheets.signOut();
+
+  // 事前に「ログイン済み(リフレッシュトークンあり)」の状態を作る。
+  mockBoth({
+    onWorker: () => ({ body: { access_token: 'ya29.first', expires_in: 3600, refresh_token: 'RT-1' } }),
+    onSheets: () => ({ body: {} }),
+  });
+  await sheets.completeAuthCodeFlowIfReturning().catch(() => {});
+  localStorage.setItem('anki_tool_google_refresh_token', 'RT-1');
+  // getAccessToken で lastAuthOptions(= workerUrl)を覚えさせる。
+  const firstToken = await sheets.getAccessToken({ workerUrl: WORKER });
+
+  let sheetsHits = 0;
+  const calls = mockBoth({
+    onWorker: () => ({ body: { access_token: 'ya29.refreshed', expires_in: 3600 } }),
+    onSheets: () => {
+      sheetsHits += 1;
+      // 1回目は期限切れ、2回目(取り直し後)は成功する。
+      if (sheetsHits === 1) return { status: 401, body: { error: { message: 'Invalid Credentials' } } };
+      return { body: SHEET_ROWS };
+    },
+  });
+
+  const rows = await fetchPendingRows({
+    spreadsheetId: 'SHEET_ID', sheetName: '添削結果', accessToken: firstToken,
+  });
+
+  if (rows.length === 1 && rows[0].id === 'id-1') {
+    ok('401を受けても自動でトークンを取り直し、利用者の操作なしに成功する');
+  } else {
+    fail(`自動リトライで回復できていない: ${JSON.stringify(rows)}`);
+  }
+
+  const refreshCalls = calls.filter((c) => c.url === `${WORKER}/refresh`);
+  if (refreshCalls.length === 1) ok('取り直しは /refresh を1回だけ呼ぶ');
+  else fail(`/refresh の呼び出し回数が想定と違う: ${refreshCalls.length}`);
+
+  const sheetCalls = calls.filter((c) => !String(c.url).startsWith(WORKER));
+  if (sheetCalls.length === 2 && sheetCalls[1].headers.Authorization === 'Bearer ya29.refreshed') {
+    ok('再送は取り直した新しいアクセストークンで行う');
+  } else {
+    fail(`再送のトークンが更新されていない: ${JSON.stringify(sheetCalls.map((c) => c.headers.Authorization))}`);
+  }
+
+  // --- リトライは1回だけ(無限ループにしない) ---------------------------------
+  localStorage.setItem('anki_tool_google_refresh_token', 'RT-1');
+  await sheets.getAccessToken({ workerUrl: WORKER });
+  let alwaysUnauthorized = 0;
+  mockBoth({
+    onWorker: () => ({ body: { access_token: 'ya29.refreshed2', expires_in: 3600 } }),
+    onSheets: () => {
+      alwaysUnauthorized += 1;
+      return { status: 401, body: { error: { message: 'Invalid Credentials' } } };
+    },
+  });
+
+  let thrown = null;
+  try {
+    await fetchPendingRows({
+      spreadsheetId: 'SHEET_ID', sheetName: '添削結果', accessToken: 'ya29.stale',
+    });
+  } catch (e) {
+    thrown = e;
+  }
+  if (thrown instanceof SheetsAuthError && alwaysUnauthorized === 2) {
+    ok('取り直しても401なら、2回目で打ち切って SheetsAuthError を投げる');
+  } else {
+    fail(`リトライ回数/例外の型が想定と違う: 回数=${alwaysUnauthorized} / ${thrown?.constructor?.name}`);
+  }
+  if (thrown && /ログインし直/.test(thrown.message)) {
+    ok('打ち切り時のメッセージは手動での再ログインを案内する');
+  } else {
+    fail(`401のメッセージが想定と違う: ${thrown?.message}`);
+  }
+
+  // --- 従来方式(Workerなし)では自動リトライしない ------------------------------
+  // 有効なアクセストークンを持たせた状態で workerUrl を空にして getAccessToken を
+  // 呼ぶと、GIS を読み込まずに lastAuthOptions だけを従来方式へ切り替えられる
+  // (jsdom には GIS のスクリプトが読み込めないため、この順序でないと止まる)。
+  localStorage.setItem('anki_tool_google_refresh_token', 'RT-1');
+  mockBoth({
+    onWorker: () => ({ body: { access_token: 'ya29.valid', expires_in: 3600 } }),
+    onSheets: () => ({ body: {} }),
+  });
+  await sheets.getAccessToken({ workerUrl: WORKER });
+  localStorage.removeItem('anki_tool_google_refresh_token');
+  await sheets.getAccessToken({ clientId: 'x', workerUrl: '' });
+
+  let legacyHits = 0;
+  mockBoth({
+    onWorker: () => ({ body: {} }),
+    onSheets: () => {
+      legacyHits += 1;
+      return { status: 401, body: { error: { message: 'Invalid Credentials' } } };
+    },
+  });
+  await fetchPendingRows({
+    spreadsheetId: 'SHEET_ID', sheetName: '添削結果', accessToken: 'ya29.legacy',
+  }).catch(() => {});
+  if (legacyHits === 1) {
+    ok('従来方式(Workerなし)では自動リトライせず、1回で利用者に返す');
+  } else {
+    fail(`従来方式でリトライが走った: ${legacyHits} 回`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log(failures === 0 ? '\n✅ すべて成功しました。' : `\n❌ ${failures} 件失敗しました。`);
 process.exitCode = failures === 0 ? 0 : 1;

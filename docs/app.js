@@ -35,6 +35,7 @@ import {
 import * as dailyconv from './lib/dailyconv.js';
 import {
   newSyncId, ensureItemIds, mergeStock, capacityPercent, parseIdArray,
+  exceedsCellLimit, SHEET_CELL_LIMIT, CAPACITY_WARN_PERCENT,
 } from './lib/sync.js';
 
 // フィルターチェックボックスの状態をlocalStorageに永続化する際のキー接頭辞
@@ -708,7 +709,10 @@ async function playTestWaveform(audio, mp3Bytes, duration, buckets, clipped) {
   // 明示的なpause()は不要(2026-07-30、以前はここでpause()していたが削除)。
   audio.loop = false;
   audio.src = url;
-  audio.currentTime = 0;
+  // `audio.currentTime = 0` はここでは呼ばない(2026-08-05削除)。src を代入した
+  // 直後は readyState が HAVE_NOTHING で、この時点のシークは iOS Safari で
+  // 不安定な挙動(InvalidStateError や以後の再生停止)の原因として知られている。
+  // 新しいリソースの再生位置はどのみち先頭から始まるため、不要な操作だった。
   audio.addEventListener('ended', () => URL.revokeObjectURL(url));
 
   const tick = () => {
@@ -777,9 +781,16 @@ async function onTestPlay() {
       : '再生中...');
 
     await unlockPromise;
-    URL.revokeObjectURL(silentUrl);
-    if (testPlayAudio !== audio) return; // 連打等で既に別の再生に切り替わっている
+    if (testPlayAudio !== audio) { URL.revokeObjectURL(silentUrl); return; } // 連打等で別の再生に切り替わっている
     await playTestWaveform(audio, bytes, audioBuffer.duration, buckets, clipped);
+    // 無音WAVのBlob URLの解放は、**本番の音声にsrcを差し替えた後**に行う
+    // (2026-08-05修正)。以前はここより前で解放しており、要素がまだその無音WAVを
+    // ループ再生している最中にURLを無効化していた。再生中のリソースをrevokeすると
+    // audio.error を立てるブラウザがあり、以後の再生が無反応になり得る
+    // (実機で報告されている「波形は出るが音が鳴らない」の候補の一つ。
+    //  ただし本命は依然としてiPhone本体のサイレントスイッチで、これは
+    //  アプリ側のコードでは制御できない)。
+    URL.revokeObjectURL(silentUrl);
   } catch (e) {
     URL.revokeObjectURL(silentUrl);
     hideLoading(statusEl);
@@ -1348,6 +1359,25 @@ function missingAuthConfigMessage() {
   return null;
 }
 
+/**
+ * 設定漏れでエラーになったとき、実際に空になっている入力欄を返す
+ * (2026-08-05、フォーカス先の取り違えを直すために切り出した)。
+ *
+ * この仕組み自体は「設定したはずなのにエラーになる」という報告
+ * (プレースホルダーの薄い灰色の例文を、保存済みの値と見間違えていた可能性)を
+ * 受けて、**本当に空かどうかを一目で確認してもらう**ために入れたもの。
+ * それが空でない欄を指してしまっては目的と逆になるため、`missingAuthConfigMessage`
+ * の分岐と対応する欄をここで正しく選ぶ。
+ */
+function firstEmptySheetsSettingField() {
+  const { clientId, workerUrl, spreadsheetId } = sheetsConfig();
+  // Worker URL とクライアントID はどちらか一方あればよい。両方空のときだけ
+  // 「まず Worker URL(推奨方式)を」と案内する。
+  if (!workerUrl && !clientId) return $('oauth-worker-url');
+  if (!spreadsheetId) return $('sheets-spreadsheet-id');
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // ヘッダーの⋮メニュー(2026-07-30追加)
 //
@@ -1390,7 +1420,10 @@ function onHeaderMenuToggle() {
 function updateGoogleAuthStatus() {
   // Worker方式ではリフレッシュトークンを持っていればログイン済み扱い
   // (アクセストークンが手元に無くても無操作で取り直せるため)。
-  const signedIn = isSignedIn();
+  // **現在のWorker URLを渡すこと**(2026-08-05): 渡さないと、Worker URLを
+  // 消した/変えた後に残っているリフレッシュトークンだけで「ログイン済み」と
+  // 表示してしまい、実際は従来方式(B)へ落ちるため表示と挙動が食い違う。
+  const signedIn = isSignedIn({ workerUrl: sheetsConfig().workerUrl });
   setStatus(
     $('header-auth-status'),
     signedIn
@@ -1426,8 +1459,9 @@ async function onHeaderSignIn() {
       return;
     }
     // (B) 従来方式。ログイン済みの状態で押した場合は「アカウントを選び直したい」
-    //     とみなして同意画面を明示的に出す。
-    const forceConsent = isSignedIn();
+    //     とみなして同意画面を明示的に出す(ここは workerUrl が空の分岐なので
+    //     リフレッシュトークンは判定に使わない = 同じ引数を渡しておく)。
+    const forceConsent = isSignedIn({ workerUrl });
     showLoading(status, 'Googleログインを待っています...');
     await getAccessToken({ clientId, forceConsent });
     updateGoogleAuthStatus();
@@ -1548,9 +1582,11 @@ async function runSync(statusEl, btnEl) {
     // の例文(灰色の薄い文字)を実際に保存済みの値と見間違えているだけの
     // ケースもあるため、フォーカスして本当に空かどうか一目で分かるようにする)。
     $('settings').hidden = false;
-    const emptyField = missingAuth ? $('oauth-worker-url') : $('sheets-spreadsheet-id');
-    emptyField.scrollIntoView({ block: 'center' });
-    emptyField.focus();
+    const emptyField = firstEmptySheetsSettingField();
+    if (emptyField) {
+      emptyField.scrollIntoView({ block: 'center' });
+      emptyField.focus();
+    }
     return;
   }
 
@@ -1565,6 +1601,8 @@ async function runSync(statusEl, btnEl) {
 
     const newState = {};
     const capacityLines = [];
+    const overLimit = [];
+    const nearLimit = [];
     for (const spec of syncSpecs()) {
       const remoteItems = parseIdArray(remote[spec.itemsKey]);
       const remoteTombstoneIds = parseIdArray(remote[spec.tombKey]);
@@ -1581,13 +1619,42 @@ async function runSync(statusEl, btnEl) {
       newState[spec.tombKey] = tombJson;
       const percent = Math.max(capacityPercent(itemsJson), capacityPercent(tombJson));
       capacityLines.push(`${spec.label} ${percent}%`);
+      if (exceedsCellLimit(itemsJson) || exceedsCellLimit(tombJson)) overLimit.push(spec.label);
+      else if (percent >= CAPACITY_WARN_PERCENT) nearLimit.push(`${spec.label} ${percent}%`);
+    }
+
+    // 1セルの上限(50,000文字)を超えていたら、書き込む前に中断する
+    // (2026-08-05追加)。そのまま送るとSheets APIが素の400を返し、どの
+    // ストックが原因かも分からないまま同期が丸ごと止まってしまう。
+    // ここまでのマージ結果はローカルには反映済みなので、リモートの内容が
+    // 取り込めていないわけではない(書き戻しだけができていない)。
+    if (overLimit.length > 0) {
+      hideLoading(statusEl);
+      setStatus(
+        statusEl,
+        `${overLimit.join('・')}のデータが1セットの上限(${SHEET_CELL_LIMIT.toLocaleString()}文字)を`
+        + '超えたため、シートへの書き戻しを中止しました。\n'
+        + '(リモートの内容の取り込みは完了しています。この端末のデータは失われていません)\n\n'
+        + '各タブの「出力済みを削除」で、Ankiへ取り込み済みのカードを整理してから'
+        + 'もう一度同期してください。',
+        true,
+      );
+      return;
     }
 
     showLoading(statusEl, 'シートへ書き込み中...');
     await writeSyncState({ spreadsheetId, accessToken, state: newState });
 
     hideLoading(statusEl);
-    setStatus(statusEl, `同期しました。(セル容量使用率: ${capacityLines.join(' / ')})`);
+    setStatus(
+      statusEl,
+      `同期しました。(セル容量使用率: ${capacityLines.join(' / ')})`
+      + (nearLimit.length > 0
+        ? `\n⚠ ${nearLimit.join('・')} が上限に近づいています。`
+          + '「出力済みを削除」でAnkiへ取り込み済みのカードを整理することを推奨します。'
+        : ''),
+      nearLimit.length > 0,
+    );
   } catch (e) {
     hideLoading(statusEl);
     setStatus(statusEl, e.message, true);
@@ -1973,7 +2040,27 @@ async function onDailyExport() {
     const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items, media });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `daily_${stamp}.apkg`);
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
+    if (e instanceof SheetsAuthError) {
+      clearAccessToken();
+      updateGoogleAuthStatus();
+    }
+    btn.disabled = false;
+    return;
+  }
 
+  // -------------------------------------------------------------------------
+  // ここから先は「.apkg の生成・ダウンロードに成功した後」の後処理。
+  //
+  // **生成本体とは別の try に分けてある**(2026-08-05修正)。以前は同じ try に
+  // 入っており、シートへのマークが401やネットワークで失敗すると
+  // 「.apkg の生成に失敗しました」と表示されていた。実際にはファイルは
+  // ダウンロード済みなので、片桐が「失敗した」と読んで再出力する導線に
+  // 乗りやすく、無駄なTTS/Gemini消費や二重マークにつながる。
+  // -------------------------------------------------------------------------
+  try {
     // シート側の「Anki出力済み」列マーク(③のチェックボックス)とは独立に、
     // 「このブラウザで.apkgに含めて出力した」ことをローカルへ記録する
     // (チェックボックスがOFFでも必ず記録する。マークし忘れ・書き込み失敗
@@ -2008,7 +2095,15 @@ async function onDailyExport() {
     );
   } catch (e) {
     hideLoading(status);
-    setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
+    // apkg は既に手元にあることを最初に伝える(再出力しなくてよいと分かるように)。
+    setStatus(
+      status,
+      `.apkg は ${rows.length} 件で出力済みです(ダウンロード済みのファイルをAnkiで開いてください)。\n`
+      + `ただしシートの「Anki出力済み」への書き込みに失敗しました: ${e.message}\n`
+      + '(この端末では出力済みとして記録済みです。シート側のマークだけやり直したい場合は、'
+      + '一覧を更新してからもう一度出力してください)',
+      true,
+    );
     if (e instanceof SheetsAuthError) {
       clearAccessToken();
       updateGoogleAuthStatus();

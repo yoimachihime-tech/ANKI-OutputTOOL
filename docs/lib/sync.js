@@ -31,10 +31,32 @@
 /** Google Sheetsの1セルの上限文字数(公式仕様: 50,000文字)。 */
 export const SHEET_CELL_LIMIT = 50000;
 
+/**
+ * この使用率(%)を超えたら、まだ書き込めるうちに片桐へ知らせる閾値。
+ *
+ * 上限に達してからでは「同期がエラーで一切通らない」状態になり、しかも
+ * 復旧手段(出力済みを削除する)を実行するために開くアプリ自体は同期できない、
+ * という手詰まりになりやすいため、余裕のあるうちに警告する。
+ */
+export const CAPACITY_WARN_PERCENT = 70;
+
 /** JSON文字列の、Sheetsセル上限に対する使用率(%、小数第1位に丸め)。 */
 export function capacityPercent(jsonString) {
   const len = (jsonString || '').length;
   return Math.round((len / SHEET_CELL_LIMIT) * 1000) / 10;
+}
+
+/**
+ * 1セルの上限を超えていないか(2026-08-05追加)。
+ *
+ * 以前は`capacityPercent`を計算していたものの、それを表示するのは
+ * `writeSyncState`が**成功した後**だった。使用率が100%を超えた瞬間、
+ * Sheets APIが素の400を返して同期が丸ごと止まり、しかもどのストックが
+ * 原因なのか分からないメッセージになる。書き込み前にこれで判定して、
+ * 対処方法まで添えて中断できるようにする。
+ */
+export function exceedsCellLimit(jsonString) {
+  return (jsonString || '').length > SHEET_CELL_LIMIT;
 }
 
 /** JSON文字列(配列)をパースする。壊れている/空なら空配列を返す。 */

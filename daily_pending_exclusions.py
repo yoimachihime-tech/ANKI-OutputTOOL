@@ -19,8 +19,9 @@ sheets_reader.fetch_pending_rows()の結果からその場でフィルタする�
 (shuujuku_stock.json等と同じ理由でgit管理対象外)。
 """
 
-import json
 import os
+
+import json_store
 
 EXCLUSIONS_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "daily_pending_exclusions.json"
@@ -30,18 +31,16 @@ EXCLUSIONS_PATH = os.path.join(
 def load_excluded_ids(path: str = None) -> set:
     if path is None:
         path = EXCLUSIONS_PATH
-    if not os.path.exists(path):
-        return set()
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = json_store.read_json(path, {})
     return set(data.get("excluded_ids", []))
 
 
 def save_excluded_ids(excluded_ids: set, path: str = None) -> None:
     if path is None:
         path = EXCLUSIONS_PATH
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"excluded_ids": sorted(excluded_ids)}, f, ensure_ascii=False, indent=2)
+    # 一時ファイル + os.replace によるアトミック書き込み(2026-08-05)。
+    # 詳細は json_store.py の説明を参照。
+    json_store.write_json(path, {"excluded_ids": sorted(excluded_ids)})
 
 
 def add_excluded_id(row_id: str, path: str = None) -> None:

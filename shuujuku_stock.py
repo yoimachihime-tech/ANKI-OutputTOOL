@@ -42,8 +42,9 @@ pending内の他の項目と`pattern`が酷似している(`difflib.SequenceMatc
 """
 
 import difflib
-import json
 import os
+
+import json_store
 
 STOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shuujuku_stock.json")
 
@@ -71,10 +72,7 @@ def load_stock(path: str = None) -> dict:
     ファイルが無ければ空の状態を返す。"""
     if path is None:
         path = STOCK_PATH
-    if not os.path.exists(path):
-        return {"pending": [], "exported_keys": []}
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = json_store.read_json(path, {"pending": [], "exported_keys": []})
     data.setdefault("pending", [])
     data.setdefault("exported_keys", [])
     # JSON化の際にexamplesがtupleからlistになるので、build_deck側の期待に
@@ -87,8 +85,9 @@ def load_stock(path: str = None) -> dict:
 def save_stock(stock: dict, path: str = None) -> None:
     if path is None:
         path = STOCK_PATH
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(stock, f, ensure_ascii=False, indent=2)
+    # 一時ファイル + os.replace によるアトミック書き込み(2026-08-05)。
+    # 詳細は json_store.py の説明を参照。
+    json_store.write_json(path, stock)
 
 
 def get_pending(path: str = None) -> list:

@@ -75,6 +75,17 @@ let tokenClientId = null;
 let accessToken = null;
 let accessTokenExpiresAt = 0;
 
+/**
+ * 直近の `getAccessToken()` に渡された認証オプション(workerUrl / clientId)。
+ *
+ * `sheetsFetch()` が 401 を受けたときに、その場でトークンを取り直して1回だけ
+ * 自動リトライするために保持している(2026-08-05追加)。Worker方式は
+ * リフレッシュトークンを持っているのに、以前は 401 のたびに利用者へ手動の
+ * 再操作を求めており、「ログインが長持ちする」という本来の狙いが
+ * 実現できていなかった。
+ */
+let lastAuthOptions = null;
+
 // 有効期限ぎりぎりのトークンで実行すると、通信中に切れて401になるため、
 // 期限の1分前には切れたものとして扱う。
 const EXPIRY_MARGIN_MS = 60 * 1000;
@@ -410,9 +421,21 @@ export function hasValidAccessToken() {
  *
  * リフレッシュトークンを持っていれば、アクセストークンが手元に無くても
  * (ページを開き直した直後など)無操作で取り直せるためログイン済みとみなす。
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.workerUrl] 現在の Worker URL。**渡すこと**
+ *   (2026-08-05追加)。渡さないと、Worker URL を消した/変えた後に残っている
+ *   リフレッシュトークンだけで「ログイン済み」と表示してしまう
+ *   ——実際には従来方式(B)へ落ちるので、ヘッダーの表示と実際の挙動が食い違う。
+ *   リフレッシュトークンは Worker 経由でしか使えないため、Worker URL が
+ *   空のときはアクセストークンの有無だけで判定する。
  */
-export function isSignedIn() {
-  return hasValidAccessToken() || Boolean(getStoredRefreshToken());
+export function isSignedIn({ workerUrl = null } = {}) {
+  if (hasValidAccessToken()) return true;
+  // workerUrl を渡さない旧来の呼び出しは、従来どおり保存済みトークンの有無で
+  // 判定する(後方互換。呼び出し側は順次 workerUrl を渡すようにしてある)。
+  if (workerUrl === null) return Boolean(getStoredRefreshToken());
+  return Boolean(normalizeWorkerUrl(workerUrl) && getStoredRefreshToken());
 }
 
 /**
@@ -448,6 +471,8 @@ export function signOut() {
  *   (「ログイン」ボタンから明示的に押された場合に使う)
  */
 export async function getAccessToken({ clientId = '', workerUrl = '', forceConsent = false } = {}) {
+  // 401 を受けたときに sheetsFetch() が同じ条件で取り直せるよう覚えておく。
+  lastAuthOptions = { clientId, workerUrl };
   if (hasValidAccessToken() && !forceConsent) return accessToken;
 
   if (normalizeWorkerUrl(workerUrl)) {
@@ -488,11 +513,11 @@ function describeSheetsError(status, detail) {
   const n = (detail || '').replace(/[\s_-]/g, '').toLowerCase();
 
   if (status === 401) {
-    // Worker方式なら次回の呼び出しで無言に取り直せる(app.js が clearAccessToken()
-    // だけを呼び、リフレッシュトークンは残す)ので、多くの場合はもう一度同じ操作を
-    // すれば通る。従来方式では手動でのログインし直しが必要。
-    return 'Googleのログイン(アクセストークン)が期限切れです。'
-      + 'もう一度同じ操作をするか、「Googleにログイン」を押し直してください。';
+    // ここに到達するのは「自動でのトークン取り直しができなかった/しても
+    // まだ401だった」場合だけ(sheetsFetch が Worker方式では1回自動リトライ
+    // する、2026-08-05)。つまり手動でのログインし直しが必要な状態。
+    return 'Googleのログインが期限切れです。'
+      + 'ヘッダーの「Googleにログイン」からログインし直してください。';
   }
   if (status === 403) {
     if (n.includes('servicedisabled') || n.includes('hasnotbeenused')) {
@@ -514,13 +539,24 @@ function describeSheetsError(status, detail) {
   return null;
 }
 
-async function sheetsFetch(url, accessTokenValue, init = {}) {
-  if (!accessTokenValue) {
-    throw new SheetsAuthError('Googleにログインしていません。');
-  }
-  let res;
+/**
+ * 401 を受けたときに、その場でアクセストークンを取り直せるか。
+ *
+ * Worker方式(A)かつリフレッシュトークンを保存済みの場合だけ true。従来方式(B)は
+ * 取り直しに利用者の操作(同意画面・ポップアップ)が要るため、勝手に発火させると
+ * 操作していないのにポップアップが出ることになり対象外にする。
+ */
+function canSilentlyReauth() {
+  return Boolean(normalizeWorkerUrl(lastAuthOptions?.workerUrl) && getStoredRefreshToken());
+}
+
+/**
+ * 実際に1回リクエストを投げる(リトライ判定は sheetsFetch が行う)。
+ * @returns {Promise<{res: Response}>}
+ */
+async function sendSheetsRequest(url, accessTokenValue, init) {
   try {
-    res = await fetch(url, {
+    return await fetch(url, {
       ...init,
       headers: {
         Authorization: `Bearer ${accessTokenValue}`,
@@ -530,6 +566,41 @@ async function sheetsFetch(url, accessTokenValue, init = {}) {
     });
   } catch (e) {
     throw new SheetsError(`スプレッドシートへの通信に失敗しました: ${e.message}`);
+  }
+}
+
+/**
+ * Sheets API を叩く共通処理。
+ *
+ * **401 を受けた場合は、可能なら1回だけ自動でトークンを取り直して再送する**
+ * (2026-08-05追加)。Worker方式ではリフレッシュトークンを持っているため
+ * 利用者の操作なしに取り直せるのに、以前は毎回「もう一度同じ操作をしてください」
+ * と手動の再実行を求めており、長い操作(添削→シート追記→習熟用生成)の途中で
+ * 期限が切れると最初からやり直しになっていた。リトライは1回だけで、それでも
+ * 401 なら従来どおり SheetsAuthError を投げる(無限ループにしない)。
+ */
+async function sheetsFetch(url, accessTokenValue, init = {}) {
+  if (!accessTokenValue) {
+    throw new SheetsAuthError('Googleにログインしていません。');
+  }
+
+  let res = await sendSheetsRequest(url, accessTokenValue, init);
+
+  if (res.status === 401 && canSilentlyReauth()) {
+    // 手元のトークンは使えないと確定したので捨ててから取り直す
+    // (捨てないと getAccessToken() が期限内と判断して同じものを返してしまう)。
+    clearAccessToken();
+    let refreshedToken = null;
+    try {
+      refreshedToken = await refreshAccessToken(lastAuthOptions.workerUrl);
+    } catch {
+      // 取り直しに失敗(リフレッシュトークンの失効など)。元の401をそのまま
+      // 報告して、利用者に再ログインを促す。
+      refreshedToken = null;
+    }
+    if (refreshedToken) {
+      res = await sendSheetsRequest(url, refreshedToken, init);
+    }
   }
 
   if (!res.ok) {
@@ -818,8 +889,21 @@ export async function readSyncState({ spreadsheetId, accessToken: token }) {
   const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeRange(range)}`;
   const data = await sheetsFetch(url, token);
   const values = data.values || [];
+
+  // **A列のキー名で引く**(2026-08-05修正)。以前は行の位置だけで
+  // `values[i][1]` を読んでおり、A列に書いてあるキー名を一切照合していなかった。
+  // 将来 SYNC_ROW_KEYS の順序が変わる・途中にキーが増えると、既にシートを
+  // 持っている端末が「単語のJSONを習熟用として読み込む」ような取り違えを
+  // 起こす(エラーにならず静かにストックが混ざり、次の書き戻しで他端末へも
+  // 伝播する)。キーで引いておけば、順序の変更に対して無害になる。
+  const byKey = new Map();
+  for (const row of values) {
+    const key = String(row?.[0] ?? '').trim();
+    if (key) byKey.set(key, row[1] || '');
+  }
+
   const out = {};
-  SYNC_ROW_KEYS.forEach((key, i) => { out[key] = values[i]?.[1] || ''; });
+  SYNC_ROW_KEYS.forEach((key) => { out[key] = byKey.get(key) || ''; });
   return out;
 }
 

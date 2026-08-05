@@ -56,8 +56,9 @@ tts_gui.py側でフォームの保存操作を無効化し、「このタブは�
 このフォルダの card_defs.json に保存する(config.json等と同じくGit管理対象外)。
 """
 
-import json
 import os
+
+import json_store
 
 DEFS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "card_defs.json")
 
@@ -66,10 +67,7 @@ def load_defs(path: str = None) -> dict:
     """{"defs": {key: def, ...}} を返す。ファイルが無ければ空の状態を返す。"""
     if path is None:
         path = DEFS_PATH
-    if not os.path.exists(path):
-        return {"defs": {}}
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = json_store.read_json(path, {"defs": {}})
     data.setdefault("defs", {})
     return data
 
@@ -77,8 +75,9 @@ def load_defs(path: str = None) -> dict:
 def save_defs(data: dict, path: str = None) -> None:
     if path is None:
         path = DEFS_PATH
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # 一時ファイル + os.replace によるアトミック書き込み(2026-08-05)。
+    # 詳細は json_store.py の説明を参照。
+    json_store.write_json(path, data)
 
 
 def list_defs(path: str = None) -> list:

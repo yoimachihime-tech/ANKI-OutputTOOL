@@ -32,8 +32,9 @@ apkgインポートタブは対象外(「まとめてノート一覧に出力」
 含めていない)。
 """
 
-import json
 import os
+
+import json_store
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(BASE_DIR, "tab_notes_state.json")
@@ -85,13 +86,7 @@ def load_all(path: str = None) -> dict:
     ファイルが無い・壊れている場合は空辞書を返す。"""
     if path is None:
         path = STATE_PATH
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return json_store.read_json(path, {})
 
 
 def save_tab_state(tab_key: str, entry: dict, path: str = None) -> None:
@@ -120,5 +115,6 @@ def clear_tab_state(tab_key: str, path: str = None, decks_dir: str = None) -> No
 def _write_state(state: dict, path: str = None) -> None:
     if path is None:
         path = STATE_PATH
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    # 一時ファイル + os.replace によるアトミック書き込み(2026-08-05)。
+    # 詳細は json_store.py の説明を参照。
+    json_store.write_json(path, state)

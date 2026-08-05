@@ -18,11 +18,20 @@ Web 版の Google ログインを「1 時間で切れる」状態から「一度
 | 項目 | 値 |
 | --- | --- |
 | 承認済みの JavaScript 生成元 | `https://yoimachihime-tech.github.io` |
-| 承認済みのリダイレクト URI | `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/` |
+| 承認済みのリダイレクト URI（1つ目） | `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/` |
+| 承認済みのリダイレクト URI（2つ目） | `https://yoimachihime-tech.github.io/ANKI-OutputTOOL/index.html` |
 
 > **リダイレクト URI は今回新しく必要になった項目です。** これまでの
 > GIS token client 方式では不要だったため、未登録のはずです。
 > 登録しないと、ログイン時に Google が `redirect_uri_mismatch` エラーを返します。
+>
+> **なぜ 2 つ登録するのか**：アプリはリダイレクト URI として「いま開いている
+> ページの URL（クエリとハッシュを除いたもの）」をそのまま使います。
+> つまり `.../ANKI-OutputTOOL/` で開いたときと `.../ANKI-OutputTOOL/index.html`
+> で開いたときで**別々の値**になります。ブックマークやホーム画面のアイコンが
+> どちらの形で保存されているかは分かりにくく、片方しか登録していないと
+> 「PC では入れるのにスマホでは `redirect_uri_mismatch` になる」といった
+> 分かりにくい形で失敗します。両方登録しておけばどちらで開いても通ります。
 
 同じ画面でクライアント ID と**クライアント シークレット**をコピーしておきます
 （シークレットは後で Worker に登録します。画面を閉じると再表示できない場合が
