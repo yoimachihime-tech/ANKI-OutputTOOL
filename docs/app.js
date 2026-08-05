@@ -30,7 +30,7 @@ import {
   getAccessToken, clearAccessToken, signOut, isSignedIn,
   beginAuthCodeFlow, completeAuthCodeFlowIfReturning,
   fetchPendingRows, appendCorrectionRows, markRowsAsExported, SheetsAuthError,
-  readSyncState, writeSyncState,
+  readSyncState, writeSyncState, fetchAppConfig,
 } from './lib/sheets.js';
 import * as dailyconv from './lib/dailyconv.js';
 import {
@@ -48,6 +48,25 @@ const FILTER_STORAGE_PREFIX = 'anki_tool_filter_';
 // 直後に即時呼び出され、その中の同期処理(updateGoogleAuthStatus→setStatus)
 // がこれらを参照するため、FILTER_STORAGE_PREFIXと同じ理由でモジュール先頭側に
 // 置く必要がある(TDZ、詳細は下の「状態表示の自動非表示」セクションを参照)。
+/**
+ * ログイン維持用 Worker の既定URL(2026-08-05追加)。
+ *
+ * 【なぜアプリに埋め込むのか】
+ * 新しいPC・スマホで使い始めるたびに8項目もの設定を手入力するのが面倒、
+ * という指摘への対応。APIキーやスプレッドシートIDは Worker の
+ * `GET /appconfig` がログイン後に配ってくれるが、**その Worker の URL 自体は
+ * 配ってもらえない**(鶏と卵)。そこでこれだけをアプリ側に持たせ、
+ * 「開いてログインするだけ」で使える状態にしている。
+ *
+ * この値は公開しても害が無い: Worker が持つ秘密(client_secret・APIキー)は
+ * URLを知っているだけでは取り出せず、`/appconfig` はGoogleのアクセストークンを
+ * 検証して本人のときだけ応答する(worker/src/index.js の verifyAccessToken)。
+ *
+ * ⚙設定の入力欄で上書きできる(Workerを作り直した場合や、Cloudflare側の
+ * 障害時に従来方式へ退避したい場合のため)。
+ */
+const DEFAULT_OAUTH_WORKER_URL = 'https://anki-tool-oauth.anki-tool-oauth-worker.workers.dev';
+
 const STATUS_AUTO_HIDE_MS = 10000;
 const AUTO_HIDE_STATUS_IDS = ['header-auth-status', 'header-sync-status', 'sync-status'];
 const autoHideTimers = new WeakMap();
@@ -177,7 +196,11 @@ async function init() {
   $('tts-volume-gain').value = localStorage.getItem(STORAGE.ttsVolumeGainDb) || $('tts-volume-gain').value;
   $('tts-exclude-japanese').checked = localStorage.getItem(STORAGE.ttsExcludeJapanese) === '1';
   $('google-client-id').value = localStorage.getItem(STORAGE.googleClientId) || '';
-  $('oauth-worker-url').value = localStorage.getItem(STORAGE.oauthWorkerUrl) || '';
+  // Worker URL は既定値を持たせてある(2026-08-05)。新しい端末で使い始めるとき、
+  // これが空だとログインすらできず、他の設定を配ってもらうこともできないため
+  // (鶏と卵)。手入力での上書きは従来どおり可能。
+  $('oauth-worker-url').value = localStorage.getItem(STORAGE.oauthWorkerUrl)
+    || DEFAULT_OAUTH_WORKER_URL;
   $('sheets-spreadsheet-id').value = localStorage.getItem(STORAGE.spreadsheetId) || '';
   $('sheets-sheet-name').value = localStorage.getItem(STORAGE.sheetName) || $('sheets-sheet-name').value;
   renderWordStock();
@@ -325,6 +348,7 @@ function bindEvents() {
   });
   $('model').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.model, e.target.value.trim());
+    markSettingsChanged();
   });
   $('clear-key').addEventListener('click', onClearKey);
   $('fetch-models').addEventListener('click', onFetchModels);
@@ -339,15 +363,19 @@ function bindEvents() {
   });
   $('tts-voice').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.ttsVoice, e.target.value.trim());
+    markSettingsChanged();
   });
   $('tts-lang').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.ttsLang, e.target.value.trim());
+    markSettingsChanged();
   });
   $('tts-volume-gain').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.ttsVolumeGainDb, e.target.value.trim());
+    markSettingsChanged();
   });
   $('tts-exclude-japanese').addEventListener('change', (e) => {
     localStorage.setItem(STORAGE.ttsExcludeJapanese, e.target.checked ? '1' : '0');
+    markSettingsChanged();
   });
   $('tts-test-play').addEventListener('click', onTestPlay);
   $('tts-auto-gain').addEventListener('click', onAutoGain);
@@ -1351,6 +1379,70 @@ function sheetsConfig() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Worker からの設定の受け取り(2026-08-05追加)
+//
+// APIキー・スプレッドシートIDを端末ごとに手入力する手間をなくすため、
+// これらは Worker のシークレットに集約し、ログイン後に受け取る。
+// 詳細は worker/src/index.js の GET /appconfig と DEFAULT_OAUTH_WORKER_URL の
+// 説明を参照。
+// ---------------------------------------------------------------------------
+
+/**
+ * このページを開いてから /appconfig を取りに行ったか。
+ * 毎回の操作のたびに問い合わせると無駄なので、1回だけにする。
+ */
+let appConfigLoaded = false;
+
+/** Workerから受け取った設定を入力欄とlocalStorageへ反映する。 */
+function applyRemoteAppConfig(config) {
+  const applied = [];
+  const assign = (value, elId, storageKey, label) => {
+    // **null / 空文字の項目は反映しない。** Worker 側で未登録の項目まで
+    // 上書きすると、端末で手入力した値を消してしまう。
+    const v = String(value ?? '').trim();
+    if (!v) return;
+    if ($(elId).value.trim() === v) return; // 既に同じ値なら触らない
+    $(elId).value = v;
+    localStorage.setItem(storageKey, v);
+    applied.push(label);
+  };
+
+  assign(config.spreadsheet_id, 'sheets-spreadsheet-id', STORAGE.spreadsheetId, 'スプレッドシートID');
+  assign(config.sheet_name, 'sheets-sheet-name', STORAGE.sheetName, 'シート名');
+  assign(config.gemini_api_key, 'api-key', STORAGE.apiKey, 'Gemini APIキー');
+  assign(config.tts_api_key, 'tts-api-key', STORAGE.ttsApiKey, 'Cloud TTS APIキー');
+  return applied;
+}
+
+/**
+ * Workerから設定を受け取って反映する(ページを開いてから1回だけ)。
+ *
+ * **失敗してもアプリは止めない**。Workerが落ちている・まだシークレットを
+ * 登録していないといった場合でも、端末に手入力済みの値があればそのまま
+ * 使えるべきなので、理由をログに出すだけにする(呼び出し側は戻り値を
+ * 見なくてよい)。
+ *
+ * @param {string} accessTokenValue ログイン済みのアクセストークン
+ * @returns {Promise<string[]>} 実際に反映した項目名(何も無ければ空配列)
+ */
+async function ensureAppConfigLoaded(accessTokenValue) {
+  if (appConfigLoaded) return [];
+  const { workerUrl } = sheetsConfig();
+  if (!workerUrl || !accessTokenValue) return [];
+  try {
+    const config = await fetchAppConfig(workerUrl, accessTokenValue);
+    appConfigLoaded = true;
+    return applyRemoteAppConfig(config || {});
+  } catch (e) {
+    // 403 は「スコープが古い(openid email が付いていない)」ことが多い。
+    // 再ログインで解決するので、そう分かるように伝える。
+    appConfigLoaded = true; // 毎回リトライして待たされないよう、1回で諦める
+    console.warn('[appconfig] 設定を取得できませんでした:', e.message);
+    return [];
+  }
+}
+
 /**
  * ログイン維持用 Worker を使う設定になっているか(2026-08-05追加)。
  *
@@ -1544,6 +1636,86 @@ function restoreStateAfterAuthRedirect() {
 // (tombstone)で伝播させる。詳細・トレードオフはsync.jsの説明を参照。
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 好みの設定の同期(2026-08-05追加)
+//
+// APIキー・スプレッドシートIDは Worker が配るが(ensureAppConfigLoaded)、
+// 「Geminiのモデル名」「TTSの音声・言語・音量ゲイン」のような**利用者が画面上で
+// 調整する設定**は、Workerのシークレットに入れると変更のたびに再デプロイが
+// 必要になってしまう。これらはストックと同じ `_AppSync` タブで同期する
+// (秘密ではないので、あのシートに置いても問題ない)。
+// ---------------------------------------------------------------------------
+
+/** 同期する設定項目(入力欄のID → localStorageキー)。 */
+const SYNCED_SETTING_FIELDS = [
+  { el: 'model', key: STORAGE.model, type: 'text' },
+  { el: 'tts-voice', key: STORAGE.ttsVoice, type: 'text' },
+  { el: 'tts-lang', key: STORAGE.ttsLang, type: 'text' },
+  { el: 'tts-volume-gain', key: STORAGE.ttsVolumeGainDb, type: 'text' },
+  { el: 'tts-exclude-japanese', key: STORAGE.ttsExcludeJapanese, type: 'checkbox' },
+];
+
+/** 設定を最後に変更した時刻(ISO文字列)。どちらが新しいかの判定に使う。 */
+const SETTINGS_UPDATED_AT_KEY = 'anki_tool_settings_updated_at';
+
+/** 現在の設定値を集めて、同期用のJSON文字列にする。 */
+function collectLocalSettings() {
+  const values = {};
+  for (const f of SYNCED_SETTING_FIELDS) {
+    values[f.el] = f.type === 'checkbox' ? $(f.el).checked : $(f.el).value.trim();
+  }
+  return JSON.stringify({
+    updated_at: localStorage.getItem(SETTINGS_UPDATED_AT_KEY) || '',
+    values,
+  });
+}
+
+/** 設定を変更したことを記録する(同期時にどちらが新しいかの判定に使う)。 */
+function markSettingsChanged() {
+  localStorage.setItem(SETTINGS_UPDATED_AT_KEY, new Date().toISOString());
+}
+
+/**
+ * リモートの設定がこの端末より新しければ取り込む。
+ *
+ * ストックと違い**項目ごとのマージはしない**(まとめて新しい方を採用する)。
+ * 設定は数個の独立した値で、片桐が1人で順番に端末を使う前提なら、
+ * 複雑なマージに見合う利点が無いため。
+ *
+ * @returns {boolean} リモートの内容を取り込んだか
+ */
+function mergeRemoteSettings(remoteJson) {
+  if (!remoteJson) return false;
+  let remote;
+  try {
+    remote = JSON.parse(remoteJson);
+  } catch {
+    return false;
+  }
+  if (!remote?.values) return false;
+
+  const localAt = localStorage.getItem(SETTINGS_UPDATED_AT_KEY) || '';
+  const remoteAt = remote.updated_at || '';
+  // 同着(どちらも未設定)ならローカルを優先する = 何もしない。
+  if (!remoteAt || remoteAt <= localAt) return false;
+
+  for (const f of SYNCED_SETTING_FIELDS) {
+    if (!(f.el in remote.values)) continue;
+    const v = remote.values[f.el];
+    if (f.type === 'checkbox') {
+      $(f.el).checked = Boolean(v);
+      localStorage.setItem(f.key, v ? '1' : '0');
+    } else {
+      const s = String(v ?? '').trim();
+      if (!s) continue; // 空で上書きしない
+      $(f.el).value = s;
+      localStorage.setItem(f.key, s);
+    }
+  }
+  localStorage.setItem(SETTINGS_UPDATED_AT_KEY, remoteAt);
+  return true;
+}
+
 /** 同期対象の3ストックの設定(タブキー→ローカル変数・保存先・描画関数)。 */
 function syncSpecs() {
   return [
@@ -1600,6 +1772,11 @@ function mergeRemoteIntoLocal(remote) {
   const nearLimit = [];
   let added = 0;
 
+  // 好みの設定(Geminiモデル・TTS音声等)。ストックより先に処理して、
+  // 取り込んだ場合はその値を書き戻し用のstateにも反映させる。
+  const settingsChanged = mergeRemoteSettings(remote.app_settings);
+  newState.app_settings = collectLocalSettings();
+
   for (const spec of syncSpecs()) {
     const remoteItems = parseIdArray(remote[spec.itemsKey]);
     const remoteTombstoneIds = parseIdArray(remote[spec.tombKey]);
@@ -1622,7 +1799,7 @@ function mergeRemoteIntoLocal(remote) {
     else if (percent >= CAPACITY_WARN_PERCENT) nearLimit.push(`${spec.label} ${percent}%`);
   }
 
-  return { newState, capacityLines, overLimit, nearLimit, added };
+  return { newState, capacityLines, overLimit, nearLimit, added, settingsChanged };
 }
 
 /**
@@ -1647,18 +1824,36 @@ async function autoPullOnStartup() {
 
   const cfg = sheetsConfig();
   // 設定が揃っていない・未ログインなら何もしない(起動時に勝手にログインの
-  // ポップアップやページ遷移を起こさないため)。
-  if (missingAuthConfigMessage() || !cfg.spreadsheetId) return;
+  // ポップアップやページ遷移を起こさないため)。スプレッドシートIDの有無は
+  // ここでは見ない——Workerの/appconfigから配られるので、ログイン後に判定する。
+  if (missingAuthConfigMessage()) return;
   if (!isSignedIn({ workerUrl: cfg.workerUrl })) return;
 
   const statusEl = $('header-sync-status');
   try {
     showLoading(statusEl, '他の端末の変更を確認中...');
     const accessToken = await getAccessToken(cfg);
-    const remote = await readSyncState({ spreadsheetId: cfg.spreadsheetId, accessToken });
+    // 新しい端末では、ここで初めてスプレッドシートIDやAPIキーが手に入る。
+    const appliedSettings = await ensureAppConfigLoaded(accessToken);
+    const spreadsheetId = sheetsConfig().spreadsheetId;
+    if (!spreadsheetId) {
+      hideLoading(statusEl);
+      setStatus(statusEl, '');
+      return;
+    }
+
+    const remote = await readSyncState({ spreadsheetId, accessToken });
     const { added } = mergeRemoteIntoLocal(remote);
     hideLoading(statusEl);
-    if (added > 0) {
+    if (appliedSettings.length > 0) {
+      // 新しい端末での初回。何が自動設定されたのかを伝える(APIキーの値
+      // そのものは出さず、項目名だけ)。
+      setStatus(
+        statusEl,
+        `設定を自動で読み込みました(${appliedSettings.join('・')})。`
+        + (added > 0 ? `カードも ${added} 件取り込みました。` : ''),
+      );
+    } else if (added > 0) {
       setStatus(statusEl, `他の端末の変更を ${added} 件取り込みました。`);
     } else {
       // 変更が無かった場合は黙っておく(毎回の起動でメッセージが出ると
@@ -1677,21 +1872,9 @@ async function autoPullOnStartup() {
 }
 
 async function runSync(statusEl, btnEl) {
-  const cfg = sheetsConfig();
-  const { spreadsheetId } = cfg;
   const missingAuth = missingAuthConfigMessage();
-  if (missingAuth || !spreadsheetId) {
-    setStatus(
-      statusEl,
-      `${missingAuth || 'スプレッドシートIDを設定してください(⚙ 設定 → スプレッドシート)。'}`
-      + '(シート名の設定は同期には使いません。これらの値はブラウザごとに別々に'
-      + '保存されるため、他の端末で設定済みでも、この端末では改めて入力が必要です)',
-      true,
-    );
-    // 該当の入力欄を実際に開いて見てもらう(2026-07-30追加。「設定したはず
-    // なのに同期がこのエラーになる」という報告を受けての対応。プレースホルダー
-    // の例文(灰色の薄い文字)を実際に保存済みの値と見間違えているだけの
-    // ケースもあるため、フォーカスして本当に空かどうか一目で分かるようにする)。
+  if (missingAuth) {
+    setStatus(statusEl, missingAuth, true);
     $('settings').hidden = false;
     const emptyField = firstEmptySheetsSettingField();
     if (emptyField) {
@@ -1704,8 +1887,31 @@ async function runSync(statusEl, btnEl) {
   btnEl.disabled = true;
   try {
     showLoading(statusEl, 'Googleにログイン中...');
-    const accessToken = await getAccessToken(cfg);
+    const accessToken = await getAccessToken(sheetsConfig());
+    // スプレッドシートIDはWorkerの/appconfigから配られるため、ログイン後に
+    // 受け取ってから有無を判定する(2026-08-05に順序を変更)。
+    await ensureAppConfigLoaded(accessToken);
     updateGoogleAuthStatus();
+
+    const { spreadsheetId } = sheetsConfig();
+    if (!spreadsheetId) {
+      hideLoading(statusEl);
+      setStatus(
+        statusEl,
+        'スプレッドシートIDが設定されていません。\n'
+        + '通常はログイン後にWorkerから自動で配られます。空のままの場合は、'
+        + 'Workerに SPREADSHEET_ID が登録されているか確認するか、'
+        + '下の欄に直接入力してください(⚙ 設定 → スプレッドシート)。',
+        true,
+      );
+      // 実際に空かどうかを目で確かめてもらう(2026-07-30追加。「設定したはず
+      // なのにこのエラーになる」という報告を受けての対応。プレースホルダーの
+      // 例文(灰色の薄い文字)を保存済みの値と見間違えているケースもあるため)。
+      $('settings').hidden = false;
+      $('sheets-spreadsheet-id').scrollIntoView({ block: 'center' });
+      $('sheets-spreadsheet-id').focus();
+      return;
+    }
 
     showLoading(statusEl, '同期データを読み込み中...');
     const remote = await readSyncState({ spreadsheetId, accessToken });
@@ -1911,16 +2117,24 @@ async function onBackupFileSelected(event) {
  * メッセージにして投げ直す(呼び出し側は catch して status に出すだけでよい)。
  */
 async function requireSheetsAccess() {
-  const cfg = sheetsConfig();
   const missingAuth = missingAuthConfigMessage();
-  if (missingAuth || !cfg.spreadsheetId || !cfg.sheetName) {
+  if (missingAuth) throw new SheetsAuthError(missingAuth);
+
+  // **トークンの取得を先に行う**(2026-08-05に順序を変更)。スプレッドシートIDは
+  // Workerの/appconfigから配られるようになったため、ログインより前に有無を
+  // 判定すると、まだ受け取っていない初回だけ必ず失敗してしまう。
+  const accessToken = await getAccessToken(sheetsConfig());
+  await ensureAppConfigLoaded(accessToken);
+  updateGoogleAuthStatus();
+
+  const cfg = sheetsConfig(); // 設定の反映後に読み直す
+  if (!cfg.spreadsheetId || !cfg.sheetName) {
     throw new SheetsAuthError(
-      missingAuth
-      || '⚙ 設定 → スプレッドシート で、スプレッドシートID・シート名を設定してください。',
+      '⚙ 設定 → スプレッドシート で、スプレッドシートID・シート名を設定してください。\n'
+      + '(通常はログイン後にWorkerから自動で配られます。空のままの場合は、'
+      + 'Workerに SPREADSHEET_ID / SHEET_NAME が登録されているか確認してください)',
     );
   }
-  const accessToken = await getAccessToken(cfg);
-  updateGoogleAuthStatus();
   return { ...cfg, accessToken };
 }
 

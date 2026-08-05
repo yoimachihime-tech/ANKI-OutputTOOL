@@ -460,10 +460,22 @@ console.log('\n[6] 認可コードフロー(ログイン維持用Worker方式)')
 
   if (q.get('response_type') === 'code' && q.get('client_id') === CLIENT_ID
       && q.get('redirect_uri') === `${ORIGIN}${PATHNAME}`
-      && q.get('scope') === sheets.SHEETS_SCOPE) {
+      && q.get('scope') === sheets.OAUTH_SCOPE) {
     ok('response_type/client_id/redirect_uri/scope が正しい');
   } else {
     fail(`認可リクエストのパラメータが想定と違う: ${authUrl.search}`);
+  }
+
+  // **`openid email` は Worker の GET /appconfig の本人確認に必須**
+  // (2026-08-05追加)。これが欠けると Google の tokeninfo がメールアドレスを
+  // 返さず、Worker が「呼んでいるのが本人か」を判定できないため、
+  // APIキー等の設定を配れなくなる(症状は「新しい端末で設定が降ってこない」)。
+  const scopes = (q.get('scope') || '').split(' ');
+  if (scopes.includes('openid') && scopes.includes('email')
+      && scopes.includes(sheets.SHEETS_SCOPE)) {
+    ok('スコープに openid / email / spreadsheets がすべて含まれる');
+  } else {
+    fail(`スコープが不足している: ${q.get('scope')}`);
   }
 
   if (q.get('code_challenge_method') === 'S256' && (q.get('code_challenge') || '').length >= 43
@@ -751,6 +763,92 @@ console.log('\n[7] 401時のアクセストークン自動リトライ');
     ok('従来方式(Workerなし)では自動リトライせず、1回で利用者に返す');
   } else {
     fail(`従来方式でリトライが走った: ${legacyHits} 回`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// [8] fetchAppConfig(Workerから設定一式を受け取る、2026-08-05追加)
+//
+// 新しい端末で使い始めるたびにAPIキー・スプレッドシートIDを手入力する手間を
+// なくすための経路。Worker側の検証は test_worker.mjs が担当するので、ここでは
+// 「アクセストークンを Authorization ヘッダーで送ること」と、失敗時に
+// 分かるメッセージになることだけを固定する。
+// ---------------------------------------------------------------------------
+console.log('\n[8] fetchAppConfig(Workerからの設定の受け取り)');
+{
+  const sheets = await import(new URL('../docs/lib/sheets.js', import.meta.url));
+  const WORKER = 'https://anki-tool-oauth.example.workers.dev';
+
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), headers: init.headers || {} });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        spreadsheet_id: 'SHEET_ID', sheet_name: '添削結果',
+        gemini_api_key: 'gemini-key', tts_api_key: null,
+      }),
+    };
+  };
+
+  const config = await sheets.fetchAppConfig(WORKER, 'ya29.token');
+  if (config.spreadsheet_id === 'SHEET_ID' && config.gemini_api_key === 'gemini-key') {
+    ok('Workerから設定一式を受け取れる');
+  } else {
+    fail(`受け取った設定が想定と違う: ${JSON.stringify(config)}`);
+  }
+  if (calls[0]?.url === `${WORKER}/appconfig`
+      && calls[0]?.headers.Authorization === 'Bearer ya29.token') {
+    ok('アクセストークンを Authorization: Bearer で送る');
+  } else {
+    fail(`リクエストが想定と違う: ${JSON.stringify(calls[0])}`);
+  }
+  if (config.tts_api_key === null) {
+    ok('Worker側で未登録の項目は null のまま渡す(呼び出し側が反映しない判断に使う)');
+  } else {
+    fail(`未登録項目の扱いが想定と違う: ${config.tts_api_key}`);
+  }
+
+  // 末尾スラッシュ付きのURLでも二重スラッシュにならないこと
+  calls.length = 0;
+  await sheets.fetchAppConfig(`${WORKER}/`, 'ya29.token');
+  if (calls[0]?.url === `${WORKER}/appconfig`) {
+    ok('Worker URL の末尾スラッシュは無視する');
+  } else {
+    fail(`URLの正規化が効いていない: ${calls[0]?.url}`);
+  }
+
+  // 未ログイン・Worker未設定は呼ぶ前に弾く
+  let thrown = null;
+  try {
+    await sheets.fetchAppConfig(WORKER, '');
+  } catch (e) { thrown = e; }
+  if (thrown instanceof SheetsAuthError) ok('未ログインなら呼び出す前に SheetsAuthError にする');
+  else fail(`未ログイン時の扱いが想定と違う: ${thrown}`);
+
+  thrown = null;
+  try {
+    await sheets.fetchAppConfig('', 'ya29.token');
+  } catch (e) { thrown = e; }
+  if (thrown instanceof SheetsAuthError) ok('Worker URL 未設定なら呼び出す前に SheetsAuthError にする');
+  else fail(`Worker URL 未設定時の扱いが想定と違う: ${thrown}`);
+
+  // Worker が 403 を返した場合(別アカウント・スコープ不足)
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 403,
+    text: async () => JSON.stringify({ error: 'このアカウントには設定の取得を許可していません。' }),
+  });
+  thrown = null;
+  try {
+    await sheets.fetchAppConfig(WORKER, 'ya29.token');
+  } catch (e) { thrown = e; }
+  if (thrown && /設定の取得に失敗しました/.test(thrown.message)
+      && /許可していません/.test(thrown.message)) {
+    ok('失敗時は「トークン取得」ではなく「設定の取得」の失敗として伝える');
+  } else {
+    fail(`失敗時のメッセージが想定と違う: ${thrown?.message}`);
   }
 }
 

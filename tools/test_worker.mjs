@@ -197,7 +197,164 @@ console.log('\n[4] POST /refresh(リフレッシュ → 新しいアクセスト
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n[5] 設定漏れ・未知のパス');
+// [5] GET /appconfig(2026-08-05追加)
+//
+// 秘密情報(APIキー・スプレッドシートID)を返すエンドポイントなので、
+// **本人確認を通さずに返してしまわないこと**がここでの最重要事項。
+// CORSはブラウザ内のJSしか縛れず、curl等の直接呼び出しは防げないため、
+// アクセストークンをGoogleのtokeninfoで検証してから返す設計になっている。
+// ---------------------------------------------------------------------------
+console.log('\n[5] GET /appconfig(ログイン済みの本人にだけ設定を配る)');
+
+const CONFIG_ENV = {
+  ...ENV,
+  ALLOWED_EMAIL: 'Yoimachihime@GMail.com', // 大小差があっても一致させる
+  SPREADSHEET_ID: 'SHEET_ID_VALUE',
+  SHEET_NAME: '添削結果',
+  GEMINI_API_KEY: 'gemini-key-value',
+  TTS_API_KEY: 'tts-key-value',
+};
+
+/** tokeninfo の応答を差し替える。 */
+function mockTokenInfo(handler) {
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push({ url: String(url) });
+    const { status = 200, body } = await handler(String(url));
+    return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  return calls;
+}
+
+function appConfigReq(token) {
+  return new Request('https://worker.example.workers.dev/appconfig', {
+    method: 'GET',
+    headers: token ? { Origin: ORIGIN, Authorization: `Bearer ${token}` } : { Origin: ORIGIN },
+  });
+}
+
+const VALID_INFO = {
+  aud: ENV.GOOGLE_CLIENT_ID,
+  azp: ENV.GOOGLE_CLIENT_ID,
+  email: 'yoimachihime@gmail.com',
+  email_verified: 'true',
+  scope: 'openid email https://www.googleapis.com/auth/spreadsheets',
+};
+
+{
+  const calls = mockTokenInfo(() => ({ body: VALID_INFO }));
+  const res = await worker.fetch(appConfigReq('ya29.valid'), CONFIG_ENV);
+  const body = await res.json();
+
+  if (res.status === 200 && body.spreadsheet_id === 'SHEET_ID_VALUE'
+    && body.gemini_api_key === 'gemini-key-value' && body.tts_api_key === 'tts-key-value'
+    && body.sheet_name === '添削結果') {
+    ok('本人のトークンなら設定一式を返す');
+  } else {
+    fail(`/appconfig の応答が想定と違う: ${res.status} / ${JSON.stringify(body)}`);
+  }
+  if (calls[0]?.url.startsWith('https://oauth2.googleapis.com/tokeninfo')) {
+    ok('返す前に必ず Google の tokeninfo で検証する');
+  } else {
+    fail(`tokeninfo を呼んでいない: ${JSON.stringify(calls)}`);
+  }
+  if (res.headers.get('Cache-Control') === 'no-store') {
+    ok('秘密を含む応答はキャッシュさせない');
+  } else {
+    fail(`Cache-Control が no-store でない: ${res.headers.get('Cache-Control')}`);
+  }
+}
+
+{
+  // トークン無しで叩く(curl等での直接呼び出しを想定)
+  mockTokenInfo(() => ({ body: VALID_INFO }));
+  const res = await worker.fetch(appConfigReq(null), CONFIG_ENV);
+  const text = JSON.stringify(await res.json());
+  if (res.status === 401 && !text.includes('gemini-key-value')) {
+    ok('トークン無しの要求は401で拒否し、秘密を一切返さない');
+  } else {
+    fail(`トークン無しで秘密が漏れている可能性: ${res.status} / ${text}`);
+  }
+}
+
+{
+  // 別のGoogleアカウントのトークン
+  mockTokenInfo(() => ({ body: { ...VALID_INFO, email: 'someone-else@gmail.com' } }));
+  const res = await worker.fetch(appConfigReq('ya29.other'), CONFIG_ENV);
+  const text = JSON.stringify(await res.json());
+  if (res.status === 403 && !text.includes('gemini-key-value')) {
+    ok('別アカウントのトークンは403で拒否する');
+  } else {
+    fail(`別アカウントに秘密が漏れている: ${res.status} / ${text}`);
+  }
+}
+
+{
+  // 別アプリ向けに発行されたトークン(aud/azp が違う)
+  mockTokenInfo(() => ({ body: { ...VALID_INFO, aud: 'other-app', azp: 'other-app' } }));
+  const res = await worker.fetch(appConfigReq('ya29.foreign'), CONFIG_ENV);
+  const text = JSON.stringify(await res.json());
+  if (res.status === 403 && !text.includes('gemini-key-value')) {
+    ok('別アプリ向けのトークンは403で拒否する');
+  } else {
+    fail(`別アプリのトークンが通ってしまった: ${res.status} / ${text}`);
+  }
+}
+
+{
+  // 期限切れ・無効なトークン(tokeninfo が 400 を返す)
+  mockTokenInfo(() => ({ status: 400, body: { error: 'invalid_token' } }));
+  const res = await worker.fetch(appConfigReq('ya29.expired'), CONFIG_ENV);
+  if (res.status === 401) ok('無効・期限切れのトークンは401で拒否する');
+  else fail(`無効トークンの扱いが想定と違う: ${res.status}`);
+}
+
+{
+  // メールが未確認 / スコープ不足でメールが取れない場合
+  mockTokenInfo(() => ({ body: { ...VALID_INFO, email_verified: 'false' } }));
+  const unverified = await worker.fetch(appConfigReq('ya29.unverified'), CONFIG_ENV);
+  if (unverified.status === 403) ok('メール未確認のトークンは403で拒否する');
+  else fail(`メール未確認が通ってしまった: ${unverified.status}`);
+
+  mockTokenInfo(() => ({ body: { aud: ENV.GOOGLE_CLIENT_ID, azp: ENV.GOOGLE_CLIENT_ID } }));
+  const noEmail = await worker.fetch(appConfigReq('ya29.noemail'), CONFIG_ENV);
+  const noEmailBody = await noEmail.json();
+  if (noEmail.status === 403 && /openid email/.test(noEmailBody.error)) {
+    ok('メールが取れない場合はスコープ不足だと分かるメッセージを返す');
+  } else {
+    fail(`スコープ不足時の案内が想定と違う: ${noEmail.status} / ${JSON.stringify(noEmailBody)}`);
+  }
+}
+
+{
+  // **最重要**: ALLOWED_EMAIL 未設定のまま秘密を返さないこと(fail closed)。
+  // ここが開いていると、ログインさえすれば誰でもAPIキーを取得できてしまう。
+  mockTokenInfo(() => ({ body: VALID_INFO }));
+  const res = await worker.fetch(appConfigReq('ya29.valid'), { ...CONFIG_ENV, ALLOWED_EMAIL: undefined });
+  const text = JSON.stringify(await res.json());
+  if (res.status === 500 && !text.includes('gemini-key-value')) {
+    ok('ALLOWED_EMAIL 未設定なら誰にも秘密を返さない(fail closed)');
+  } else {
+    fail(`ALLOWED_EMAIL 未設定で秘密が漏れている: ${res.status} / ${text}`);
+  }
+}
+
+{
+  // 一部のシークレットだけ登録されている場合(TTSキー未設定など)
+  mockTokenInfo(() => ({ body: VALID_INFO }));
+  const res = await worker.fetch(appConfigReq('ya29.valid'), {
+    ...CONFIG_ENV, TTS_API_KEY: undefined, SHEET_NAME: undefined,
+  });
+  const body = await res.json();
+  if (body.tts_api_key === null && body.sheet_name === null && body.gemini_api_key === 'gemini-key-value') {
+    ok('未登録の項目は null で返す(端末側の手入力値を消さないため)');
+  } else {
+    fail(`未登録項目の扱いが想定と違う: ${JSON.stringify(body)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[6] 設定漏れ・未知のパス');
 
 {
   const res = await worker.fetch(req('/config'), { ALLOWED_ORIGINS: ORIGIN });

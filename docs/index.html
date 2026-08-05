@@ -67,7 +67,14 @@
     <button type="button" id="settings-close" class="ghost">✕ 閉じる</button>
   </div>
   <p class="hint">
-    APIキーはこのブラウザ内(localStorage)にのみ保存され、サーバーには送信されません。
+    <b>新しい端末でも、ふつうは何も入力する必要はありません。</b>
+    「Googleにログイン」を押すと、APIキーやスプレッドシートIDが自動で設定されます
+    (ログイン維持用 Worker から受け取ります)。以下の欄は、自動で入らないときや、
+    一時的に別の値を試したいときのためのものです。
+  </p>
+  <p class="hint">
+    APIキーはこのブラウザ内(localStorage)にのみ保存され、
+    Google以外のサーバーには送信されません。
     共用の端末では使用後に「キーを消去」してください。
   </p>
 
@@ -174,11 +181,16 @@
          placeholder="xxxxxxxx.apps.googleusercontent.com">
 
   <label for="sheets-spreadsheet-id">スプレッドシートID</label>
-  <p class="hint">シートのURL <code>/spreadsheets/d/<b>ここ</b>/edit</code> の部分です。</p>
+  <p class="hint">
+    <b>通常は入力不要です。</b>ログインすると Worker から自動で設定されます。
+    自動で入らない場合のみ、シートのURL
+    <code>/spreadsheets/d/<b>ここ</b>/edit</code> の部分を貼ってください。
+  </p>
   <input type="text" id="sheets-spreadsheet-id" autocomplete="off" spellcheck="false"
          placeholder="1ruIEHQk8J0rjjQQdiaT2Nvnje...">
 
   <label for="sheets-sheet-name">シート(タブ)名</label>
+  <p class="hint"><b>通常は入力不要です</b>(ログイン時に自動設定されます)。</p>
   <input type="text" id="sheets-sheet-name" autocomplete="off" spellcheck="false" value="添削結果">
 
   <hr>

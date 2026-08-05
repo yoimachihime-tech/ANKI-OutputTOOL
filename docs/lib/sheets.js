@@ -54,6 +54,19 @@ const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 
 export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
+/**
+ * 実際にログインで要求するスコープ(2026-08-05に `openid email` を追加)。
+ *
+ * `openid email` が必要なのは、Worker の `GET /appconfig` が
+ * 「呼んでいるのが片桐本人か」をメールアドレスで確かめるため
+ * (worker/src/index.js の verifyAccessToken を参照)。これが無いと
+ * Google の tokeninfo がメールアドレスを返さず、本人確認ができない。
+ *
+ * **スコープを増やすと同意画面がもう一度出る**(既存のリフレッシュトークンは
+ * 古いスコープのまま)。これは追加時の一度きり。
+ */
+export const OAUTH_SCOPE = `openid email ${SHEETS_SCOPE}`;
+
 /** リフレッシュトークンの保存先(localStorage)。 */
 const REFRESH_TOKEN_KEY = 'anki_tool_google_refresh_token';
 /** 認可コードフローの途中経過(PKCEのcode_verifier・state)の保存先。 */
@@ -156,7 +169,12 @@ export function redirectUri() {
   return window.location.origin + window.location.pathname;
 }
 
-async function workerFetch(workerUrl, path, init) {
+/**
+ * Worker のエンドポイントを叩く共通処理。
+ * @param {string} failureLabel 失敗時のメッセージ先頭に付ける説明
+ *   (エンドポイントごとに何をしようとして失敗したのかが分かるようにするため)
+ */
+async function workerFetch(workerUrl, path, init, failureLabel = 'Googleのトークン取得') {
   const base = normalizeWorkerUrl(workerUrl);
   let res;
   try {
@@ -177,15 +195,46 @@ async function workerFetch(workerUrl, path, init) {
   }
   if (!res.ok) {
     const err = new SheetsAuthError(
-      `Googleのトークン取得に失敗しました: ${data?.error || res.status}`
+      `${failureLabel}に失敗しました: ${data?.error || res.status}`
       + (data?.detail ? `\n\n詳細: ${data.detail}` : ''),
     );
     // invalid_grant = リフレッシュトークンが失効・取り消された。呼び出し側が
     // 「保存済みトークンを捨てて再ログインを促す」判断に使う。
     err.code = data?.error || null;
+    err.status = res.status;
     throw err;
   }
   return data;
+}
+
+/**
+ * Worker から**アプリの設定一式**を受け取る(2026-08-05追加)。
+ *
+ * 【なぜ】新しいPC・スマホで使い始めるたびに、APIキー・スプレッドシートIDなど
+ * 8項目を手入力する必要があった。これらを Worker のシークレットに集約し、
+ * ログイン後に配ってもらうことで「開いてログインするだけ」で使えるようにする。
+ *
+ * このエンドポイントは秘密情報(APIキー)を返すため、Worker 側が
+ * アクセストークンを Google の tokeninfo で検証し、**片桐本人のトークンで
+ * あることを確かめてから**返す(worker/src/index.js の verifyAccessToken)。
+ * そのため呼び出しにはログイン済みのアクセストークンが要る。
+ *
+ * @returns {Promise<{spreadsheet_id: string|null, sheet_name: string|null,
+ *                    gemini_api_key: string|null, tts_api_key: string|null}>}
+ *   Worker 側で未登録の項目は null。呼び出し側は**null の項目を反映しない**こと
+ *   (端末で手入力した値を消してしまわないため)。
+ */
+export async function fetchAppConfig(workerUrl, accessTokenValue) {
+  if (!normalizeWorkerUrl(workerUrl)) {
+    throw new SheetsAuthError('ログイン維持用 Worker の URL が設定されていません。');
+  }
+  if (!accessTokenValue) {
+    throw new SheetsAuthError('Googleにログインしていません。');
+  }
+  return workerFetch(workerUrl, '/appconfig', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessTokenValue}` },
+  }, 'Workerからの設定の取得');
 }
 
 /** Worker から client_id を受け取る(Workerを使う場合、これが唯一の出所)。 */
@@ -220,7 +269,7 @@ export async function beginAuthCodeFlow(workerUrl) {
     client_id: clientId,
     redirect_uri: uri,
     response_type: 'code',
-    scope: SHEETS_SCOPE,
+    scope: OAUTH_SCOPE,
     access_type: 'offline',
     prompt: 'consent',
     include_granted_scopes: 'true',
@@ -372,7 +421,7 @@ async function ensureTokenClient(clientId) {
 
   tokenClient = window.google.accounts.oauth2.initTokenClient({
     client_id: clientId,
-    scope: SHEETS_SCOPE,
+    scope: OAUTH_SCOPE,
     // コールバックは requestToken() のたびに差し替える(Promise を解決するため)。
     callback: () => {},
   });
@@ -859,6 +908,13 @@ export const SYNC_ROW_KEYS = [
   'word_stock_items', 'word_stock_tombstones',
   'ai_ask_stock_items', 'ai_ask_stock_tombstones',
   'shuujuku_stock_items', 'shuujuku_stock_tombstones',
+  // 好みの設定(Geminiモデル・TTS音声/言語/音量ゲイン・日本語除外)。
+  // 2026-08-05追加。**秘密情報(APIキー)はここに入れないこと**——それらは
+  // Worker のシークレットに置き、GET /appconfig で配る(このシートには
+  // サービスアカウントも編集者権限を持っているため。app.js の
+  // ensureAppConfigLoaded と worker/src/index.js を参照)。
+  // 行の対応付けはA列のキー名で行うので、末尾への追加は既存端末に影響しない。
+  'app_settings',
 ];
 
 /** `_AppSync` タブが無ければ、片桐の目に触れない隠しタブとして作成する。 */

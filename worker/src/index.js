@@ -37,6 +37,7 @@
 // ---------------------------------------------------------------------------
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+const GOOGLE_TOKENINFO_ENDPOINT = 'https://oauth2.googleapis.com/tokeninfo';
 
 /** ALLOWED_ORIGINS(カンマ区切り)を配列にする。未設定なら空配列。 */
 function allowedOrigins(env) {
@@ -124,6 +125,75 @@ async function postToGoogle(params, { request, env }) {
   return { data };
 }
 
+/**
+ * アクセストークンが「片桐本人のもの」かを Google に問い合わせて確かめる
+ * (2026-08-05追加、GET /appconfig 用)。
+ *
+ * 【なぜ必要か】
+ * /config は誰でも curl で叩ける公開エンドポイント(クライアントIDは秘密では
+ * ないので問題ない)。一方 /appconfig は APIキーなどの秘密情報を返すため、
+ * 「呼んでいるのが本人か」を確かめてからでないと返せない。CORS は
+ * ブラウザ内のJavaScriptしか縛れず、curl等の直接呼び出しは防げない。
+ *
+ * 【確認していること】
+ *   1. トークンが有効であること(tokeninfo が 200 を返す)
+ *   2. **このアプリのクライアントID向けに発行されたトークン**であること
+ *      (aud/azp の照合。他のアプリのトークンを持ち込ませない)
+ *   3. メールアドレスが ALLOWED_EMAIL と一致し、確認済みであること
+ *
+ * @returns {Promise<{ok: true, email: string} | {ok: false, status: number, message: string}>}
+ */
+async function verifyAccessToken(token, env) {
+  // ALLOWED_EMAIL 未設定のまま秘密を返してしまうと、ログインさえすれば誰でも
+  // APIキーを取得できることになる。**必ず fail closed にする。**
+  if (!env.ALLOWED_EMAIL) {
+    return {
+      ok: false,
+      status: 500,
+      message: 'Worker側の設定が未完了です(ALLOWED_EMAIL)。'
+        + 'npx wrangler@4 secret put ALLOWED_EMAIL で登録してください。',
+    };
+  }
+
+  let res;
+  try {
+    res = await fetch(`${GOOGLE_TOKENINFO_ENDPOINT}?access_token=${encodeURIComponent(token)}`);
+  } catch (e) {
+    return { ok: false, status: 502, message: `Googleへのトークン確認に失敗しました: ${e.message}` };
+  }
+  if (!res.ok) {
+    return { ok: false, status: 401, message: 'アクセストークンが無効か期限切れです。' };
+  }
+
+  let info;
+  try {
+    info = await res.json();
+  } catch {
+    return { ok: false, status: 502, message: 'Googleからの応答を解釈できませんでした。' };
+  }
+
+  // このアプリ向けに発行されたトークンか(別アプリのトークンを弾く)
+  if (info.aud !== env.GOOGLE_CLIENT_ID && info.azp !== env.GOOGLE_CLIENT_ID) {
+    return { ok: false, status: 403, message: 'このアプリ向けに発行されたトークンではありません。' };
+  }
+
+  // tokeninfo は email_verified を**文字列**で返すことがあるため両方を許容する。
+  const verified = info.email_verified === true || info.email_verified === 'true';
+  const email = String(info.email || '').trim().toLowerCase();
+  if (!email) {
+    return {
+      ok: false,
+      status: 403,
+      message: 'トークンにメールアドレスが含まれていません'
+        + '(スコープに openid email が必要です。アプリでログインし直してください)。',
+    };
+  }
+  if (!verified || email !== String(env.ALLOWED_EMAIL).trim().toLowerCase()) {
+    return { ok: false, status: 403, message: 'このアカウントには設定の取得を許可していません。' };
+  }
+  return { ok: true, email };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -148,6 +218,49 @@ export default {
     // -----------------------------------------------------------------------
     if (url.pathname === '/config' && request.method === 'GET') {
       return jsonResponse({ client_id: env.GOOGLE_CLIENT_ID }, { request, env });
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /appconfig … ログイン済みの本人にだけ、アプリの設定一式を配る
+    //   Authorization: Bearer <Googleのアクセストークン>
+    //
+    // 【なぜ Worker が配るのか】(2026-08-05追加)
+    // 以前は APIキー・スプレッドシートIDを端末ごとに手入力していたため、
+    // 新しいPC・スマホで使い始めるたびに8項目を入れ直す必要があった。
+    // これらを Worker のシークレットに集約し、ログイン後に配ることで
+    // 「開いてログインするだけ」で使える状態にする。
+    //
+    // 保管先としてスプレッドシート(_AppSyncタブ)ではなくここを選んだのは、
+    // あのシートにはサービスアカウントが編集者権限を持っており、その鍵JSONが
+    // Google Drive同期フォルダに仮置きのままだから(CLAUDE.md参照)。課金対象の
+    // APIキーは、秘密情報用に作られた場所(Cloudflareのシークレットストア)に
+    // 置くほうが素直。キーを入れ替えたくなったときも、ここを更新すれば
+    // 全端末が次回ログイン時に拾う。
+    //
+    // **秘密を返すので、必ず本人確認を通してから返すこと**(verifyAccessToken)。
+    // -----------------------------------------------------------------------
+    if (url.pathname === '/appconfig' && request.method === 'GET') {
+      const auth = request.headers.get('Authorization') || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : '';
+      if (!token) {
+        return errorResponse('アクセストークンが必要です(Authorization: Bearer ...)。', {
+          status: 401, request, env,
+        });
+      }
+
+      const verified = await verifyAccessToken(token, env);
+      if (!verified.ok) {
+        return errorResponse(verified.message, { status: verified.status, request, env });
+      }
+
+      // 未設定の項目は null で返す(アプリ側は「返ってきた項目だけ」を反映し、
+      // null の項目は端末側の手入力値をそのまま残す)。
+      return jsonResponse({
+        spreadsheet_id: env.SPREADSHEET_ID || null,
+        sheet_name: env.SHEET_NAME || null,
+        gemini_api_key: env.GEMINI_API_KEY || null,
+        tts_api_key: env.TTS_API_KEY || null,
+      }, { request, env });
     }
 
     // -----------------------------------------------------------------------
