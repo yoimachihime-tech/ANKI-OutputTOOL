@@ -503,7 +503,6 @@ function showLoading(statusEl, message) {
   if (statusEl.hasAttribute('data-autohide')) {
     cancelAutoHideStatus(statusEl);
     statusEl.hidden = false;
-    refreshStatusRevealButton();
   }
 }
 
@@ -512,22 +511,28 @@ function hideLoading(statusEl) {
 }
 
 // ---------------------------------------------------------------------------
-// 状態表示の自動非表示(2026-07-30追加)
+// 状態表示の自動非表示(2026-07-30追加、2026-08-05に表示場所を変更)
 //
 // 「ログイン済みです」(header-auth-status)・同期結果のセル容量使用率
-// (header-sync-status/sync-status)は、常時ヘッダーに出しっぱなしだと
-// 画面が煩雑になるという指摘を受け、`data-autohide`属性を持つ要素に限り
-// 一定時間後に自動で隠す(el.hidden = true)。エラー表示中は片桐が気づける
-// よう自動で隠さない。隠れている間は`header-status-reveal`ボタンが現れ、
-// 押すと再表示+タイマー再セットする。定数(STATUS_AUTO_HIDE_MS等)は
-// TDZの都合でモジュール先頭側(FILTER_STORAGE_PREFIXの近く)に置いてある。
+// (header-sync-status/sync-status)は、常時出しっぱなしだと画面が煩雑に
+// なるという指摘を受け、`data-autohide`属性を持つ要素に限り一定時間後に
+// 自動で隠す(el.hidden = true)。エラー表示中は片桐が気づけるよう自動で
+// 隠さない。
+// 2026-08-05: 以前はヘッダーの枠(toolbar-group)の中に直接文字として
+// 置いていたため、表示/非表示のたびに枠のサイズが変わって煩わしいという
+// 指摘を受け、位置をボタン下のポップアップ(header-log-popup、
+// position:absolute)に変更した——枠のサイズに影響しなくなったため、
+// 「隠れている間だけボタンを表示する」出し分けは不要になり、
+// `header-status-reveal`(🗒 ログ)ボタンは常時表示の普通のボタンにした
+// (以前あったrefreshStatusRevealButton()によるbtn.hiddenの出し分けは
+// 撤去済み)。定数(STATUS_AUTO_HIDE_MS等)はTDZの都合でモジュール先頭側
+// (FILTER_STORAGE_PREFIXの近く)に置いてある。
 // ---------------------------------------------------------------------------
 
 function scheduleAutoHideStatus(el) {
   cancelAutoHideStatus(el);
   const timer = setTimeout(() => {
     el.hidden = true;
-    refreshStatusRevealButton();
   }, STATUS_AUTO_HIDE_MS);
   autoHideTimers.set(el, timer);
 }
@@ -540,29 +545,27 @@ function cancelAutoHideStatus(el) {
   }
 }
 
-/** `header-status-reveal`ボタンの表示/非表示を、実際に隠れている状態表示が
- *  あるかどうかに合わせて切り替える。 */
-function refreshStatusRevealButton() {
-  const btn = $('header-status-reveal');
-  if (!btn) return;
-  const anyHidden = AUTO_HIDE_STATUS_IDS.some((id) => {
-    const el = $(id);
-    return el && el.hidden && el.textContent.trim();
-  });
-  btn.hidden = !anyHidden;
-}
-
-/** 自動で隠れた状態表示を再度見せる(2026-07-30追加)。再表示後は
- *  タイマーを立て直すため、放置すればまた自動で隠れる。 */
+/** 「🗒 ログ」ボタン押下時: 自動で隠れた状態表示を再度見せる
+ *  (2026-07-30追加、2026-08-05にボタンを常時表示化)。再表示後はタイマーを
+ *  立て直すため、放置すればまた自動で隠れる。1件も表示するものが無い場合は
+ *  「まだログはありません」を一時的に表示する(ボタンを押しても何も
+ *  起きないと壊れているように見えるため)。 */
 function onStatusRevealClick() {
+  let revealed = false;
   for (const id of AUTO_HIDE_STATUS_IDS) {
     const el = $(id);
     if (el && el.hidden && el.textContent.trim()) {
       el.hidden = false;
       scheduleAutoHideStatus(el);
+      revealed = true;
     }
   }
-  refreshStatusRevealButton();
+  if (!revealed) {
+    const el = $('header-auth-status');
+    if (el && !el.textContent.trim()) {
+      setStatus(el, 'まだログはありません。');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2954,6 +2957,5 @@ function setStatus(el, message, isError = false) {
     el.hidden = false;
     // エラーは片桐が気づけるよう自動で隠さない。正常な文言だけ一定時間後に隠す。
     if (!isError && message) scheduleAutoHideStatus(el);
-    refreshStatusRevealButton();
   }
 }

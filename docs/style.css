@@ -58,22 +58,21 @@ body {
   flex-wrap: nowrap;
   gap: 8px;
   /* 2026-08-05: ボタンの折り返しでtoolbar-groupの高さが変わらないよう
-     常に1行に収める(下記toolbar-groupの固定幅とセット)。極端に狭い画面
-     でだけ、枠を広げる代わりに横スクロールで逃がす。 */
+     常に1行に収める。極端に狭い画面でだけ、枠を広げる代わりに
+     横スクロールで逃がす。 */
   overflow-x: auto;
 }
 
-/* ログイン/同期/設定のボタンと、その状態表示(ログイン済み表示・同期結果)を
-   1つの枠にまとめ、統一感を出す(2026-07-30。当初はボタンだけを枠に
-   入れていたが、隠れている状態表示もこの枠の中に入れてほしいとの指摘を
-   受けて拡張した)。枠自体は本文の背景色(--bg)にし、中の要素(ボタン)は
-   --surface背景+枠線を保つことで、「枠の中にさらにボタンの枠がある」
-   という入れ子のツールバーらしい見た目にしてある。
-   2026-08-05: ログイン状態(ボタンの文言長)や状態表示の有無・行数によって
-   枠自体の幅・高さが変わってしまい煩わしいという指摘を受け、幅を固定
-   (width+flex-shrink:0)した上でmargin-left:autoでapp-header内の右側に
-   常に寄せるようにした(タイトルと同じ行に収まらず折り返した場合も、
-   その行の右端に張り付く)。高さの安定化はheader-status-row側で行う。 */
+/* ログイン/同期/設定のボタンをまとめ、統一感を出す(2026-07-30。当初は
+   状態表示もこの枠の中に文字として入れていたが、2026-08-05にボタンの
+   下に浮くポップアップへ切り離した。枠自体は本文の背景色(--bg)にし、
+   中の要素(ボタン)は--surface背景+枠線を保つことで、「枠の中にさらに
+   ボタンの枠がある」という入れ子のツールバーらしい見た目にしてある。
+   2026-08-05: 中身がボタンの並びだけになったことで、枠の幅・高さは
+   常に一定になった(ログイン状態やログ表示の有無で変わる要素が無くなった
+   ため、以前入れていたwidth固定・高さ固定のハックは不要になり撤去した)。
+   margin-left:autoでapp-header内の右側に寄せるのは維持する(タイトルと
+   同じ行に収まらず折り返した場合も、その行の右端に張り付く)。 */
 .toolbar-group {
   display: flex;
   flex-direction: column;
@@ -82,7 +81,6 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  width: 320px;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -94,42 +92,24 @@ body {
 }
 .toolbar-group button:hover:not(:disabled) { border-color: var(--accent); }
 
-/* ヘッダーのログイン/同期の状態表示(2026-07-30追加)。通常は空文字で、
-   処理中・エラー時だけ短い文言が入る(常に領域を確保するため、他の
-   .status 同様に空でも要素自体は残す)。
-   2026-08-05: 状態表示の表示/非表示(自動非表示・再表示ボタン)や、
-   文言の長さによる改行のたびにこの枠(ひいてはtoolbar-group全体)の高さが
-   変わって煩わしいという指摘を受け、高さを固定してoverflow-y:autoで
-   吸収するようにした(稀に長い文言が入ってもスクロールで読めるようにし、
-   枠のサイズそのものは常に一定に保つことを優先した)。 */
-.header-status-row {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  height: 96px;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-.header-status { margin: 0; flex-shrink: 0; }
-
-/* 自動で隠れた状態表示を再度見るためのボタン(2026-07-30追加)。
-   通常のボタンより控えめに見せるため小さめのpadding・文字サイズにする。
-   flex-shrink:0(2026-08-05追加): header-status-rowの高さを固定した
-   ことで縦方向がscroll化されたが、その中でこのボタンだけが潰れないよう
-   明示しておく。 */
+/* 「🗒 ログ」ボタン(2026-08-05変更)。以前は「隠れた状態表示を再表示」
+   として状態表示が自動で隠れた時だけ現れる可変要素だったため、出現/消失の
+   たびにヘッダーの枠(toolbar-group)の高さが変わる原因になっていた。
+   常時表示の普通のボタンに変え、控えめな見た目だけ従来のまま維持する。 */
 .status-reveal-btn {
   padding: 4px 10px;
   font-size: .8rem;
   font-weight: 500;
   color: var(--sub);
-  flex-shrink: 0;
 }
 
 /* 頻度の低い「設定」を格納する⋮メニュー(2026-07-30追加。常時見えるボタンを
    ログイン(またはログアウト)/同期だけに絞り、ヘッダーをすっきりさせる
    ための整理)。position:relativeの基準にするためheader-menuにidも
-   振ってある(app.js側の外側クリック判定で使う)。 */
+   振ってある(app.js側の外側クリック判定で使う)。
+   2026-08-05: 「🗒 ログ」ボタンの位置合わせ(header-log-popupの土台)にも
+   同じposition:relativeが要るため、.header-logにも同じ.header-menuクラス
+   を付与して共用している。 */
 .header-menu { position: relative; }
 .header-menu-panel {
   position: absolute;
@@ -154,6 +134,41 @@ body {
    上書きする必要がある)。 */
 .header-menu-panel[hidden] { display: none; }
 .header-menu-panel button { width: 100%; text-align: left; }
+
+/* ログイン・同期の状態表示ポップアップ(2026-08-05追加)。以前はヘッダーの
+   枠(toolbar-group)の中に直接文字として置いていたため、表示/非表示や
+   文言の改行のたびに枠自体のサイズが変わって煩わしいという指摘を受け、
+   position:absoluteで通常のレイアウトの流れから完全に切り離した。
+   「🗒 ログ」ボタン(header-status-reveal)の真下に浮くポップアップとして
+   表示され、toolbar-groupのサイズ計算には一切影響しない。中身
+   (header-auth-status/header-sync-status)は従来どおりapp.jsの
+   setStatus/showLoading・自動非表示(data-autohide)がそのまま動く
+   ——変わったのは見た目の置き場所だけで、表示/非表示のロジックは
+   変更していない。 */
+.header-log-popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 32px));
+  /* 中身が空(hidden)の間はクリックを素通りさせる(ポップアップの土台
+     自体は常にDOM上にあるため、透明な当たり判定で他のボタンを邪魔しない
+     ようにする)。 */
+  pointer-events: none;
+}
+.header-status {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
+  pointer-events: auto;
+}
 
 /* ⚙設定パネルの見出し行(2026-07-30追加)。開くボタン(settings-toggle)が
    ⋮メニューの中に格納されたため、開いた後に毎回メニューを開き直さなくても
