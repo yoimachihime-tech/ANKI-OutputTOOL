@@ -55,8 +55,12 @@ body {
 .header-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
+  /* 2026-08-05: ボタンの折り返しでtoolbar-groupの高さが変わらないよう
+     常に1行に収める(下記toolbar-groupの固定幅とセット)。極端に狭い画面
+     でだけ、枠を広げる代わりに横スクロールで逃がす。 */
+  overflow-x: auto;
 }
 
 /* ログイン/同期/設定のボタンと、その状態表示(ログイン済み表示・同期結果)を
@@ -64,7 +68,12 @@ body {
    入れていたが、隠れている状態表示もこの枠の中に入れてほしいとの指摘を
    受けて拡張した)。枠自体は本文の背景色(--bg)にし、中の要素(ボタン)は
    --surface背景+枠線を保つことで、「枠の中にさらにボタンの枠がある」
-   という入れ子のツールバーらしい見た目にしてある。 */
+   という入れ子のツールバーらしい見た目にしてある。
+   2026-08-05: ログイン状態(ボタンの文言長)や状態表示の有無・行数によって
+   枠自体の幅・高さが変わってしまい煩わしいという指摘を受け、幅を固定
+   (width+flex-shrink:0)した上でmargin-left:autoでapp-header内の右側に
+   常に寄せるようにした(タイトルと同じ行に収まらず折り返した場合も、
+   その行の右端に張り付く)。高さの安定化はheader-status-row側で行う。 */
 .toolbar-group {
   display: flex;
   flex-direction: column;
@@ -73,6 +82,9 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  width: 320px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 /* 枠内でタップできる対象(ボタン)は、通常のボタンと同じ枠を保ち、
    タップ対象であることが分かるようにする(2026-07-30)。 */
@@ -84,17 +96,34 @@ body {
 
 /* ヘッダーのログイン/同期の状態表示(2026-07-30追加)。通常は空文字で、
    処理中・エラー時だけ短い文言が入る(常に領域を確保するため、他の
-   .status 同様に空でも要素自体は残す)。 */
-.header-status-row { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
-.header-status { margin: 0; }
+   .status 同様に空でも要素自体は残す)。
+   2026-08-05: 状態表示の表示/非表示(自動非表示・再表示ボタン)や、
+   文言の長さによる改行のたびにこの枠(ひいてはtoolbar-group全体)の高さが
+   変わって煩わしいという指摘を受け、高さを固定してoverflow-y:autoで
+   吸収するようにした(稀に長い文言が入ってもスクロールで読めるようにし、
+   枠のサイズそのものは常に一定に保つことを優先した)。 */
+.header-status-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.header-status { margin: 0; flex-shrink: 0; }
 
 /* 自動で隠れた状態表示を再度見るためのボタン(2026-07-30追加)。
-   通常のボタンより控えめに見せるため小さめのpadding・文字サイズにする。 */
+   通常のボタンより控えめに見せるため小さめのpadding・文字サイズにする。
+   flex-shrink:0(2026-08-05追加): header-status-rowの高さを固定した
+   ことで縦方向がscroll化されたが、その中でこのボタンだけが潰れないよう
+   明示しておく。 */
 .status-reveal-btn {
   padding: 4px 10px;
   font-size: .8rem;
   font-weight: 500;
   color: var(--sub);
+  flex-shrink: 0;
 }
 
 /* 頻度の低い「設定」を格納する⋮メニュー(2026-07-30追加。常時見えるボタンを
