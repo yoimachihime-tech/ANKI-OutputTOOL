@@ -1260,6 +1260,57 @@ if (localStorage.getItem('anki_tool_filter_sync-auto-pull') === '0') {
   fail(`永続化されていない: ${localStorage.getItem('anki_tool_filter_sync-auto-pull')}`);
 }
 
+// ---------------------------------------------------------------------------
+// [26] 通知バナーと⚙設定の「ログ」(2026-08-06追加)
+//
+// 状態表示は、ヘッダーのボタンに被らないようページ上端のバナー
+// (#notice-banner)に出す。自動で消えた文言を見返すための仕組みは、
+// 以前の「🗒 ログ」ボタン(直前の1件を再表示するだけ)をやめ、⚙設定の
+// 「ログ」に履歴として積む方式にした。
+// ---------------------------------------------------------------------------
+console.log('\n[26] 通知バナーと⚙設定のログ');
+
+if ($('header-auth-status').closest('#notice-banner')
+  && $('header-sync-status').closest('#notice-banner')) {
+  ok('ログイン・同期の状態表示はページ上端の通知バナーの中にある');
+} else {
+  fail('状態表示が #notice-banner の中に無い(ヘッダーのボタンに被る配置に戻っている)');
+}
+
+// ヘッダーに残るのは実際にタップするボタンだけ(枠が折り返さずに収まるよう
+// ボタン数を減らしたのが、ログを設定内へ移した理由の一つ)。
+if (!$('header-status-reveal') && !$('header-log')) {
+  ok('ヘッダーから「🗒 ログ」ボタンが無くなっている');
+} else {
+  fail('ヘッダーに「🗒 ログ」ボタンが残っている');
+}
+
+// 直前のセクションまでで多数の状態表示(ログイン/ログアウト等)を出しているが、
+// ログに積まれるのは data-log を持つ通知バナーの文言だけ。
+const logItems = [...$('app-log').children].map((li) => li.textContent);
+if (logItems.length > 0 && logItems.some((t) => t.includes('ログイン'))) {
+  ok('通知バナーに出た文言が⚙設定のログに残る');
+} else {
+  fail(`ログが積まれていない: ${JSON.stringify(logItems)}`);
+}
+if (logItems.every((t) => !t.includes('中...'))) {
+  ok('処理中の経過表示(「〜中...」)はログに残さない');
+} else {
+  fail(`経過表示までログに残っている: ${JSON.stringify(logItems)}`);
+}
+if ($('app-log-empty').hidden === true) {
+  ok('ログが1件以上あるときは「まだログはありません」を隠す');
+} else {
+  fail('ログがあるのに空表示が出たままになっている');
+}
+
+$('app-log-clear').click();
+if ($('app-log').children.length === 0 && $('app-log-empty').hidden === false) {
+  ok('「ログを消去」で履歴が空になり、空表示が戻る');
+} else {
+  fail(`消去できていない: ${$('app-log').children.length} 件`);
+}
+
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
   : '\n✅ Web版UIの通し動作(単語・AIに質問・習熟用(音読)・DailyConversationの'

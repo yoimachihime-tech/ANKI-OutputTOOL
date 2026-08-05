@@ -11,6 +11,27 @@
 </head>
 <body>
 
+<!-- 通知バナー(2026-08-06追加)
+     ログイン・同期の状態表示の置き場所。2026-08-05にはヘッダーの枠の中の
+     文字 → ボタン下のポップアップ → 画面右上に浮かせるトースト、と変えて
+     きたが、いずれも「ヘッダーのボタンに被って読みづらい」という指摘が
+     残った(浮かせている以上、下にあるボタンのどれかは必ず隠れる)。
+     そこで浮かせるのをやめ、**ページの一番上に横いっぱいで差し込まれる
+     バナー**にした。position:stickyなのでスクロールしても画面上端に
+     残り続けるが、position:fixedと違って通常のレイアウトに参加するため、
+     表示された分だけ下の内容(ヘッダー・タブ)が押し下げられる
+     = 何にも重ならない。中身の<p>が全てhidden(display:none)のときは
+     高さ0になり、ページの見た目には一切影響しない。
+
+     data-autohide: 一定時間後に自動で隠す(app.jsのsetStatus/showLoading)。
+     data-log: 同じ文言を⚙設定の「ログ」へも残す(自動で消えた後から
+     見返せるようにするため。2026-08-06に「🗒 ログ」ボタンを廃止し、
+     ログ本体を設定内へ移動した)。 -->
+<div id="notice-banner" class="notice-banner">
+  <p id="header-auth-status" class="status notice" role="status" aria-live="polite" data-autohide data-log hidden></p>
+  <p id="header-sync-status" class="status notice" role="status" aria-live="polite" data-autohide data-log hidden></p>
+</div>
+
 <header class="app-header">
   <h1>ANKI出力ツール <span class="badge">Web版</span></h1>
   <!-- ログイン/同期/設定のボタンをまとめて1つの枠に入れ、統一感を出している
@@ -18,10 +39,13 @@
        (通常のボタンと同じ見た目)を持たせ、タップ対象であることが分かる
        ようにしてある。
        2026-08-05: ログイン済み表示・同期結果はこの枠の中に直接文字として
-       置くのをやめ、ボタンの下に浮くポップアップ(header-log内)に変更した。
-       表示/非表示や文言の改行のたびにこの枠(toolbar-group)自体のサイズが
-       変わって煩わしいという指摘を受け、ボタンの並び(=枠のサイズ)を
-       常に一定に保つための変更。 -->
+       置くのをやめた(表示/非表示や文言の改行のたびにこの枠自体のサイズが
+       変わって煩わしいという指摘への対応)。
+       2026-08-06: 状態表示はページ上端の通知バナー(#notice-banner)、
+       ログ本体は⚙設定の中へそれぞれ移した。この枠に残るのは実際に
+       タップするボタンだけになり、折り返しても中身が隠れない
+       (以前はoverflowによる横スクロールで逃がしていたため、内容が
+       見切れてスクロールが必要になっていた)。 -->
   <div class="header-toolbar toolbar-group">
     <div class="header-actions">
       <!-- Googleログインの唯一の窓口(2026-07-30追加。以前はDailyConversation
@@ -36,31 +60,11 @@
       <!-- ⚙設定の中にも同じ操作(sync-now)があるが、設定を開かなくても同期
            できるようヘッダーにも常設してある(2026-07-30追加、片桐の指示)。 -->
       <button type="button" id="header-sync-now" class="ghost">🔄 同期</button>
-      <!-- ログイン・同期の状態表示を見るためのボタン(2026-08-05変更)。
-           以前は「隠れた状態表示を再表示」として、状態表示が自動で隠れた
-           時だけ現れる可変要素だったため、出現/消失のたびにヘッダーの枠
-           (toolbar-group)の高さが変わってしまう問題があった。常時表示の
-           普通のボタンに変え、実際の状態表示(header-log-popup)は画面
-           右上に浮くトースト通知として完全に別レイヤーに切り離した
-           (position:fixedで画面(ビューポート)基準になるため、枠の
-           サイズや祖先のoverflowには一切影響されない。当初はこのボタンの
-           真下のposition:absoluteポップアップにしていたが、祖先要素の
-           overflow設定で見切れる・見た目が「枠の付属物」止まりという
-           指摘を受けてposition:fixedへ変更した)。 -->
-      <div id="header-log" class="header-menu">
-        <button type="button" id="header-status-reveal" class="ghost status-reveal-btn" title="ログイン・同期のログを表示">
-          🗒 ログ
-        </button>
-        <!-- data-autohide: ログイン済み表示・同期結果(セル容量使用率)は、
-             常時表示し続けると画面が煩雑になるという指摘を受け、一定時間後に
-             自動で隠すようにした(2026-07-30)。エラー表示中は隠さない
-             (app.jsのsetStatus/showLoadingを参照)。隠れた後は上のボタンで
-             再表示できる。 -->
-        <div class="header-log-popup">
-          <p id="header-auth-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
-          <p id="header-sync-status" class="status header-status" role="status" aria-live="polite" data-autohide></p>
-        </div>
-      </div>
+      <!-- 2026-08-06: ここにあった「🗒 ログ」ボタンとそのポップアップは
+           廃止した。状態表示はページ上端の通知バナー(#notice-banner)へ、
+           過去の履歴を見返すためのログ本体は⚙設定の「ログ」節へ移した
+           (ヘッダーのボタン数を減らし、枠の中身が折り返さずに収まる
+           ようにするためでもある)。 -->
       <!-- 頻度の低い「設定」は⋮メニューに格納する(2026-07-30、「ログイン
            周りがごちゃごちゃしている」との指摘を受けた整理。ログアウトは
            ログイン状態を切り替える主要な操作なのでメニューには入れず、
@@ -256,6 +260,25 @@
     (同じ内容が二重に見えることがありますが、一覧の「⚠ 重複」表示から選んで削除できます)。
   </p>
   <p id="backup-status" class="status" role="status" aria-live="polite"></p>
+
+  <hr>
+
+  <!-- ログ(2026-08-06追加)。以前はヘッダーの「🗒 ログ」ボタンで
+       「自動で隠れた状態表示をもう一度出す」だけの仕組みだったが、
+       ヘッダーのボタンが増えて枠に収まらなくなったこと・直近1件しか
+       見返せなかったことから、履歴として残す形にして設定内へ移した。
+       ページを再読み込みすると消える(保存はしない)。 -->
+  <h3>ログ</h3>
+  <p class="hint">
+    画面上部に出たログイン・同期の通知の履歴です(新しいものが上)。
+    通知は数秒で自動的に消えるため、見逃した内容をここで確認できます。
+    ページを再読み込みすると消えます。
+  </p>
+  <ul id="app-log" class="log-list"></ul>
+  <p id="app-log-empty" class="empty">まだログはありません。</p>
+  <div class="row">
+    <button type="button" id="app-log-clear" class="ghost">ログを消去</button>
+  </div>
 </section>
 
 <!-- ⚙設定を開いている間は、これより下(タブバー+各タブの中身)をまとめて

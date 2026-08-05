@@ -68,8 +68,10 @@ const FILTER_STORAGE_PREFIX = 'anki_tool_filter_';
 const DEFAULT_OAUTH_WORKER_URL = 'https://anki-tool-oauth.anki-tool-oauth-worker.workers.dev';
 
 const STATUS_AUTO_HIDE_MS = 10000;
-const AUTO_HIDE_STATUS_IDS = ['header-auth-status', 'header-sync-status', 'sync-status'];
 const autoHideTimers = new WeakMap();
+
+// ⚙設定の「ログ」に残す最大件数(2026-08-06追加)。古いものから捨てる。
+const APP_LOG_MAX = 50;
 
 const STORAGE = {
   apiKey: 'anki_tool_gemini_api_key',
@@ -320,7 +322,6 @@ function bindEvents() {
   // ヘッダーのログインボタン(全タブ共通、2026-07-30追加)
   $('header-signin').addEventListener('click', onHeaderSignIn);
   $('header-sync-now').addEventListener('click', onHeaderSyncNow);
-  $('header-status-reveal').addEventListener('click', onStatusRevealClick);
 
   // ⋮メニュー(設定/ログアウトの格納先、2026-07-30追加)。
   $('header-menu-toggle').addEventListener('click', onHeaderMenuToggle);
@@ -418,6 +419,9 @@ function bindEvents() {
   $('backup-import').addEventListener('click', () => $('backup-file').click());
   $('backup-file').addEventListener('change', onBackupFileSelected);
 
+  // ⚙設定の「ログ」(2026-08-06追加)
+  $('app-log-clear').addEventListener('click', onClearAppLog);
+
   // 単語タブ
   $('word-generate').addEventListener('click', onWordGenerate);
   $('word-delete-selected').addEventListener('click', () => onDeleteSelected('word'));
@@ -511,21 +515,18 @@ function hideLoading(statusEl) {
 }
 
 // ---------------------------------------------------------------------------
-// 状態表示の自動非表示(2026-07-30追加、2026-08-05に表示場所を変更)
+// 状態表示の自動非表示(2026-07-30追加、2026-08-06に表示場所を変更)
 //
 // 「ログイン済みです」(header-auth-status)・同期結果のセル容量使用率
 // (header-sync-status/sync-status)は、常時出しっぱなしだと画面が煩雑に
 // なるという指摘を受け、`data-autohide`属性を持つ要素に限り一定時間後に
 // 自動で隠す(el.hidden = true)。エラー表示中は片桐が気づけるよう自動で
 // 隠さない。
-// 2026-08-05: 以前はヘッダーの枠(toolbar-group)の中に直接文字として
-// 置いていたため、表示/非表示のたびに枠のサイズが変わって煩わしいという
-// 指摘を受け、位置をボタン下のポップアップ(header-log-popup、
-// position:absolute)に変更した——枠のサイズに影響しなくなったため、
-// 「隠れている間だけボタンを表示する」出し分けは不要になり、
-// `header-status-reveal`(🗒 ログ)ボタンは常時表示の普通のボタンにした
-// (以前あったrefreshStatusRevealButton()によるbtn.hiddenの出し分けは
-// 撤去済み)。定数(STATUS_AUTO_HIDE_MS等)はTDZの都合でモジュール先頭側
+// 2026-08-06: 表示場所をページ上端の通知バナー(#notice-banner、
+// index.html参照)に変更した。自動で消えた文言を見返すための仕組みは、
+// 以前の「🗒 ログ」ボタン(直前の1件を再表示するだけ)をやめ、
+// ⚙設定の「ログ」に履歴として積む方式(`data-log`属性、appendAppLog)に
+// 置き換えた。定数(STATUS_AUTO_HIDE_MS等)はTDZの都合でモジュール先頭側
 // (FILTER_STORAGE_PREFIXの近く)に置いてある。
 // ---------------------------------------------------------------------------
 
@@ -545,27 +546,41 @@ function cancelAutoHideStatus(el) {
   }
 }
 
-/** 「🗒 ログ」ボタン押下時: 自動で隠れた状態表示を再度見せる
- *  (2026-07-30追加、2026-08-05にボタンを常時表示化)。再表示後はタイマーを
- *  立て直すため、放置すればまた自動で隠れる。1件も表示するものが無い場合は
- *  「まだログはありません」を一時的に表示する(ボタンを押しても何も
- *  起きないと壊れているように見えるため)。 */
-function onStatusRevealClick() {
-  let revealed = false;
-  for (const id of AUTO_HIDE_STATUS_IDS) {
-    const el = $(id);
-    if (el && el.hidden && el.textContent.trim()) {
-      el.hidden = false;
-      scheduleAutoHideStatus(el);
-      revealed = true;
-    }
-  }
-  if (!revealed) {
-    const el = $('header-auth-status');
-    if (el && !el.textContent.trim()) {
-      setStatus(el, 'まだログはありません。');
-    }
-  }
+// ---------------------------------------------------------------------------
+// ⚙設定の「ログ」(2026-08-06追加)
+//
+// 通知バナーは数秒で自動的に消えるため、見逃した内容を後から確認できる
+// 場所として設定内にログを置く。以前はヘッダーの「🗒 ログ」ボタンが
+// 「自動で隠れた直前の状態表示をもう一度出す」役割を担っていたが、
+// (1) ヘッダーのボタンが増えて枠に収まらない (2) 直前の1件しか見返せない、
+// という2点から履歴方式にして設定内へ移した。
+// 保存はしない(ページを再読み込みすると消える)。診断のための一時的な
+// 記録であり、localStorageの容量を使ってまで残す価値は無いと判断した。
+// ---------------------------------------------------------------------------
+
+/** 通知バナーに出した文言を設定内のログへ1件追加する(新しいものが上)。
+ *  `data-log`属性を持つ状態表示要素についてのみ、setStatus から呼ばれる。 */
+function appendAppLog(message, isError) {
+  const list = $('app-log');
+  if (!list || !message) return;
+
+  const li = document.createElement('li');
+  if (isError) li.className = 'error';
+  const time = document.createElement('span');
+  time.className = 'log-time';
+  time.textContent = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+  const text = document.createElement('span');
+  text.textContent = message;
+  li.append(time, text);
+  list.prepend(li);
+
+  while (list.children.length > APP_LOG_MAX) list.lastElementChild.remove();
+  $('app-log-empty').hidden = true;
+}
+
+function onClearAppLog() {
+  $('app-log').replaceChildren();
+  $('app-log-empty').hidden = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -2952,6 +2967,11 @@ function setStatus(el, message, isError = false) {
   el.classList.remove('loading');
   el.textContent = message;
   el.classList.toggle('error', isError);
+  // 通知バナーに出す文言は、数秒で自動的に消えても後から確認できるよう
+  // ⚙設定の「ログ」にも残す(2026-08-06追加)。処理中の経過表示
+  // (showLoading)は残さない——「〜中...」が大量に積もってログが
+  // 読みにくくなるだけで、結果は必ず最後のsetStatusで記録されるため。
+  if (el.hasAttribute('data-log')) appendAppLog(message, isError);
   if (el.hasAttribute('data-autohide')) {
     cancelAutoHideStatus(el);
     if (!message) {

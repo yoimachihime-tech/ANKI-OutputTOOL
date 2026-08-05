@@ -55,18 +55,19 @@ body {
 .header-actions {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  /* 2026-08-06: 以前は「枠の高さを一定に保つ」ためにflex-wrap:nowrap +
+     overflow-x:autoで横スクロールに逃がしていたが、狭い画面でボタンが
+     枠からはみ出して見切れ、スクロールしないと全部を見られない状態に
+     なっていた(片桐の指摘)。overflowを指定していたこと自体も問題で、
+     CSSの仕様上overflow-xだけを指定するとoverflow-yも'auto'扱いになり、
+     ⋮メニュー(position:absoluteで下へ飛び出す)まで巻き込んでいた
+     (overflow-y:visibleを明示しても、この規則により無効化される)。
+     スクロールさせず素直に折り返す方式に変更し、overflowの指定は
+     まるごと撤去した。ログボタンを設定内へ移してボタン数が減ったため、
+     通常の画面幅であればそもそも折り返さない。 */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
-  /* 2026-08-05: ボタンの折り返しでtoolbar-groupの高さが変わらないよう
-     常に1行に収める。極端に狭い画面でだけ、枠を広げる代わりに
-     横スクロールで逃がす。
-     overflow-y:visibleを明示しているのは、overflow-xだけを指定すると
-     CSSの仕様上overflow-yも自動的に'auto'扱いになり、この中にある
-     ⋮設定メニュー(header-menu-panel、position:absoluteで下に飛び出す)が
-     この行の高さで見切れてしまうため(2026-08-05、ログのポップアップが
-     見切れると報告された際に見つけて合わせて直した)。 */
-  overflow-x: auto;
-  overflow-y: visible;
 }
 
 /* ログイン/同期/設定のボタンをまとめ、統一感を出す(2026-07-30。当初は
@@ -87,7 +88,11 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  flex-shrink: 0;
+  /* 2026-08-06: 中身(.header-actions)が折り返す方式にしたので、枠側は
+     縮んでよい(flex-shrink:0のままだと、狭い画面で枠ごと画面外へ
+     はみ出してページ全体が横スクロールしてしまう)。 */
+  flex-shrink: 1;
+  max-width: 100%;
   margin-left: auto;
 }
 /* 枠内でタップできる対象(ボタン)は、通常のボタンと同じ枠を保ち、
@@ -98,24 +103,10 @@ body {
 }
 .toolbar-group button:hover:not(:disabled) { border-color: var(--accent); }
 
-/* 「🗒 ログ」ボタン(2026-08-05変更)。以前は「隠れた状態表示を再表示」
-   として状態表示が自動で隠れた時だけ現れる可変要素だったため、出現/消失の
-   たびにヘッダーの枠(toolbar-group)の高さが変わる原因になっていた。
-   常時表示の普通のボタンに変え、控えめな見た目だけ従来のまま維持する。 */
-.status-reveal-btn {
-  padding: 4px 10px;
-  font-size: .8rem;
-  font-weight: 500;
-  color: var(--sub);
-}
-
 /* 頻度の低い「設定」を格納する⋮メニュー(2026-07-30追加。常時見えるボタンを
    ログイン(またはログアウト)/同期だけに絞り、ヘッダーをすっきりさせる
    ための整理)。position:relativeの基準にするためheader-menuにidも
-   振ってある(app.js側の外側クリック判定で使う)。
-   #header-log(「🗒 ログ」ボタンの土台)にも見た目を揃えるため同じ
-   .header-menuクラスを付けているが、中のheader-log-popupは
-   position:fixed(画面基準)なのでこのposition:relativeには依存していない。 */
+   振ってある(app.js側の外側クリック判定で使う)。 */
 .header-menu { position: relative; }
 .header-menu-panel {
   position: absolute;
@@ -141,46 +132,49 @@ body {
 .header-menu-panel[hidden] { display: none; }
 .header-menu-panel button { width: 100%; text-align: left; }
 
-/* ログイン・同期の状態表示トースト通知(2026-08-05追加、同日中に
-   position:absolute→position:fixedへ変更)。
-   最初はヘッダーの枠(toolbar-group)の中に直接文字として置いていたため、
-   表示/非表示や文言の改行のたびに枠自体のサイズが変わって煩わしいという
-   指摘を受け、いったん「🗒 ログ」ボタンの真下に浮くposition:absolute
-   ポップアップにした。しかしこのやり方だと、祖先要素
-   (.header-actionsのoverflow-x:auto。CSSの仕様上overflow-yも暗黙に
-   'auto'扱いになる)にクリップされて見切れてしまう、かつ見た目もあくまで
-   「ヘッダーの枠の付属物」でしかなく、画面全体に対する通知
-   (いわゆるトースト/スナックバー)らしくないという指摘を受け、
-   position:fixedで画面(ビューポート)そのものを基準にする方式へ変更した。
-   position:fixedは(transform等で新たな包含ブロックを作る祖先が無い限り)
-   祖先のoverflow設定の影響を受けず、常に画面の右上に浮いた状態で表示
-   される。中身(header-auth-status/header-sync-status)は従来どおり
-   app.jsのsetStatus/showLoading・自動非表示(data-autohide)がそのまま
-   動く——変わったのは見た目の置き場所(画面基準)だけで、表示/非表示の
-   ロジックは変更していない。 */
-.header-log-popup {
-  position: fixed;
-  top: 72px;
-  right: 16px;
-  z-index: 1000;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: max-content;
-  max-width: min(340px, calc(100vw - 32px));
-  /* 中身が空(hidden)の間はクリックを素通りさせる(ポップアップの土台
-     自体は常にDOM上にあるため、透明な当たり判定で他のボタン・タブを
-     邪魔しないようにする)。 */
-  pointer-events: none;
+/* ログイン・同期の状態表示バナー(2026-08-06)。
+   2026-08-05にはヘッダーの枠の中の文字 → 「🗒 ログ」ボタン直下の
+   position:absoluteポップアップ → 画面右上のposition:fixedトースト、と
+   3度置き場所を変えたが、いずれも「ヘッダーのボタンに被って読みづらい」
+   という問題が残った(画面に浮かせる以上、下にある何かは必ず隠れる)。
+   浮かせるのをやめ、ページの一番上に横いっぱいで差し込まれるバナー
+   (スマホのバナー通知と同じ見た目)にした。
+
+   position:sticky を使う理由: 通常のレイアウトに参加するため、表示された
+   分だけ下の内容(ヘッダー・タブ)が押し下げられ、何とも重ならない。
+   同時に、ページを下までスクロールしても画面上端に貼り付いたまま残る
+   (position:staticではスクロールで流れて見えなくなり、position:fixedでは
+   重なりの問題が元に戻ってしまう)。
+   中身の<p>が全てhidden(display:none)のときは高さ0・パディング0になり、
+   ページの見た目には一切影響しない(そのためgap/paddingはこの土台では
+   なく個々の.noticeのmarginで付けている)。 */
+.notice-banner {
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
-.header-status {
-  margin: 0;
+
+.notice {
+  margin: 8px 0 0;
   padding: 10px 14px;
+  color: var(--fg);
   background: var(--surface);
   border: 1px solid var(--border);
+  /* 左端の色帯で、通常の通知(アクセント色)とエラー(赤)を一目で区別する。 */
+  border-left: 4px solid var(--accent);
   border-radius: var(--radius);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, .3);
-  pointer-events: auto;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+  animation: notice-slide-in .18s ease-out;
+}
+.notice.error { border-left-color: var(--danger); }
+
+@keyframes notice-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notice { animation: none; }
 }
 
 /* ⚙設定パネルの見出し行(2026-07-30追加)。開くボタン(settings-toggle)が
@@ -320,6 +314,11 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 
 .status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }
 .status.error { color: var(--danger); }
+/* 下の .status.loading が display:flex を直接指定しているため、hidden属性の
+   既定スタイル(display:none)がそちらに負けて隠れなくなる(.header-menu-panel
+   [hidden]と同じパターン)。通知バナーは目立つ位置にあり、消えるべきものが
+   残ると分かりやすい不具合になるので明示的に上書きしておく。 */
+.status[hidden] { display: none; }
 
 /* ⚙設定のTTSテスト再生の波形表示(2026-07-29追加)。 */
 .waveform {
@@ -359,6 +358,31 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 
 .count { font-size: .8rem; font-weight: 400; color: var(--sub); }
 .empty { color: var(--sub); font-size: .9rem; padding: 12px 0; }
+
+/* ⚙設定の「ログ」(2026-08-06追加)。通知バナーに出た文言の履歴。
+   件数が増えても設定画面が極端に長くならないよう、ここだけは
+   スクロールさせる(ヘッダーと違い、隠れて困る操作対象が無いため)。 */
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .85rem;
+}
+.log-list:empty { display: none; }
+.log-list li {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  white-space: pre-wrap;
+}
+.log-list li + li { border-top: 1px solid var(--border); }
+.log-list li.error { color: var(--danger); }
+.log-time { flex: none; color: var(--sub); font-variant-numeric: tabular-nums; }
 
 /* 2026-07-29追加: シートの行数やストック件数が増えても画面が際限なく
    縦に伸びないよう、一覧自体をスクロール可能にする(全タブ共通)。 */
