@@ -1144,6 +1144,122 @@ if (JSON.parse(localStorage.getItem('anki_tool_daily_exported_ids') || '[]').len
 }
 $('daily-mark-exported').checked = true;
 
+// ---------------------------------------------------------------------------
+// [24] バックアップの書き出し / 読み込み(2026-08-05追加)
+//
+// Web版はapkgの自動バックアップを持たないため、ストックの項目が「Ankiに
+// 取り込む前の内容」を再現できる唯一のコピーになる。ここで固定したいのは、
+// **削除済み(打ち消し記録にあるid)の項目も復元できること**。元のidのまま
+// マージすると打ち消し記録に弾かれ、「バックアップから戻したのに復活しない」
+// という一番困る挙動になるため、新しいidを振り直す実装にしてある。
+// ---------------------------------------------------------------------------
+console.log('\n[24] バックアップの書き出し / 読み込み');
+
+// app.js は起動時にしか localStorage を読まないため、状態はUI経由で作る。
+// 「AIに質問」タブで1件生成してから書き出す(このテスト内で確実に作れる経路)。
+document.querySelector('[data-tab="ai_ask"]').click();
+$('ai-ask-clear-stock').click();
+await sleep(20);
+geminiMode = 'grammar_multi';
+// grammar_multi のモックは「1回目=3問、2回目以降=習熟用4問目」を
+// geminiCalls で判別するため、必ず0に戻してから生成すること
+// (通しで走ると前のセクションのぶんが累積していて、いきなり4問目の応答が
+//  返り `parsed.map is not a function` になる)。
+geminiCalls = 0;
+$('ai-ask-input').value = 'バックアップ検証用の質問';
+$('ai-ask-generate').click();
+await sleep(400);
+const beforeBackup = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
+if (beforeBackup.length > 0) ok(`書き出し用に ${beforeBackup.length} 件のカードを用意`);
+else fail(`バックアップ検証用のカードを用意できなかった: ${$('ai-ask-generate-status').textContent}`);
+
+downloaded = null;
+$('backup-export').click();
+await sleep(50);
+const backupJson = downloaded ? JSON.parse(await downloaded.text()) : null;
+if (backupJson?.format === 'anki-tool-backup' && backupJson.version === 1
+  && Array.isArray(backupJson.stocks.ai_ask_stock_items)
+  && backupJson.stocks.ai_ask_stock_items.length === beforeBackup.length) {
+  ok('バックアップJSONに3ストックの内容と形式・版番号が含まれる');
+} else {
+  fail(`書き出したJSONが想定と違う: ${JSON.stringify(backupJson)?.slice(0, 200)}`);
+}
+if (typeof backupJson?.shuujuku_next_num === 'number') {
+  ok('習熟用の続き番号も一緒に書き出す(復元後のNum衝突を避けるため)');
+} else {
+  fail(`続き番号が書き出されていない: ${backupJson?.shuujuku_next_num}`);
+}
+
+// --- 全部削除してから復元する(打ち消し記録が残った状態での復元) ---
+const restoredIds = backupJson.stocks.ai_ask_stock_items.map((it) => it.id);
+$('ai-ask-clear-stock').click();
+await sleep(20);
+const tombstones = JSON.parse(localStorage.getItem('anki_tool_ai_ask_tombstones') || '[]');
+if (JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]').length === 0
+  && restoredIds.every((id) => tombstones.includes(id))) {
+  ok('削除するとストックが空になり、打ち消し記録にidが残る');
+} else {
+  fail(`削除後の状態がおかしい: 記録=${JSON.stringify(tombstones)}`);
+}
+
+// ファイル選択をエミュレートする(jsdom の File は text() を持つ)
+const backupFile = new window.File(
+  [JSON.stringify(backupJson)], 'backup.json', { type: 'application/json' },
+);
+Object.defineProperty($('backup-file'), 'files', { value: [backupFile], configurable: true });
+$('backup-file').dispatchEvent(new window.Event('change'));
+await sleep(100);
+
+const afterRestore = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
+if (afterRestore.length === beforeBackup.length) {
+  ok('削除済みの内容もバックアップから復元できる');
+} else {
+  fail(`復元後の件数が想定と違う: ${afterRestore.length} / 期待 ${beforeBackup.length}`);
+}
+if (afterRestore.every((it) => !tombstones.includes(it.id))) {
+  ok('復元した項目には新しいidが振られる(打ち消し記録に弾かれない)');
+} else {
+  fail('復元した項目が打ち消し記録のidのままになっている');
+}
+if (afterRestore.every((it, i) => it.question === beforeBackup[i].question)) {
+  ok('カードの中身(質問文)はそのまま復元される');
+} else {
+  fail('復元後の内容が元と違う');
+}
+
+// --- 形式が違うファイルは弾く ---
+const badFile = new window.File(['{"hello":1}'], 'other.json', { type: 'application/json' });
+Object.defineProperty($('backup-file'), 'files', { value: [badFile], configurable: true });
+$('backup-file').dispatchEvent(new window.Event('change'));
+await sleep(50);
+if (/バックアップファイルではないようです/.test($('backup-status').textContent)) {
+  ok('このツールのバックアップでないファイルは読み込まずに知らせる');
+} else {
+  fail(`形式チェックが効いていない: ${$('backup-status').textContent}`);
+}
+
+// ---------------------------------------------------------------------------
+// [25] 起動時の自動読み込み(2026-08-05追加)
+//
+// チェックボックスの状態が localStorage に永続化され、既定でONであることだけを
+// ここで固定する(実際のpullは autoPullOnStartup がログイン済み・設定済みの
+// ときにだけ走るもので、その中身は test_sync.mjs 側のマージ検証が担保する)。
+// ---------------------------------------------------------------------------
+console.log('\n[25] 起動時の自動読み込みの設定');
+
+if ($('sync-auto-pull').checked === true) {
+  ok('「起動時に自動で読み込む」は既定でONになっている');
+} else {
+  fail('既定値がONになっていない');
+}
+$('sync-auto-pull').checked = false;
+$('sync-auto-pull').dispatchEvent(new window.Event('change'));
+if (localStorage.getItem('anki_tool_filter_sync-auto-pull') === '0') {
+  ok('OFFにした状態はlocalStorageへ永続化される(次回の起動でも維持される)');
+} else {
+  fail(`永続化されていない: ${localStorage.getItem('anki_tool_filter_sync-auto-pull')}`);
+}
+
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
   : '\n✅ Web版UIの通し動作(単語・AIに質問・習熟用(音読)・DailyConversationの'

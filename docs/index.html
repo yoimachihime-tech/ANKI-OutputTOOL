@@ -187,13 +187,44 @@
   <p class="hint">
     単語・AIに質問・習熟用(音読)の3ストックを、上記と同じスプレッドシート内の
     隠しタブへ保存し、別のPC・スマホと共有します。追加の同意やAPIキーは不要
-    (上のGoogleログイン設定をそのまま使います)。同期は自動では行われないため、
-    端末を切り替える前後に押してください。
+    (上のGoogleログイン設定をそのまま使います)。作業を終えて端末を切り替える
+    前に「🔄 今すぐ同期」を押してください。
   </p>
   <div class="row">
     <button type="button" id="sync-now" class="ghost">🔄 今すぐ同期</button>
   </div>
+  <label class="check">
+    <input type="checkbox" id="sync-auto-pull" checked>
+    起動時に自動で読み込む(書き戻しはしない)
+  </label>
+  <p class="hint">
+    ページを開いたときに、他の端末が保存した内容を自動で取り込みます
+    (読み込むだけで、この端末の内容をシートへ書き戻すことはしません)。
+    同期ボタンの押し忘れで、古い状態のまま作業を始めてしまうのを防ぐためのものです。
+  </p>
   <p id="sync-status" class="status" role="status" aria-live="polite" data-autohide></p>
+
+  <hr>
+
+  <h3>バックアップ(書き出し / 読み込み)</h3>
+  <p class="hint">
+    3ストックの内容をJSONファイルとして手元に保存します。
+    <strong>この画面はデスクトップ版と違い、書き出した .apkg を自動保存していません。</strong>
+    ストックの項目が「Ankiに取り込む前の内容」を再現できる唯一のコピーなので、
+    「出力済みを削除」を実行する前や、ブラウザのデータを消す前に書き出しておくことを
+    強く推奨します。
+  </p>
+  <div class="row">
+    <button type="button" id="backup-export" class="ghost">💾 バックアップを書き出す</button>
+    <button type="button" id="backup-import" class="ghost">📂 バックアップを読み込む</button>
+    <input type="file" id="backup-file" accept="application/json,.json" hidden>
+  </div>
+  <p class="hint">
+    読み込みは<strong>現在の内容に足し合わせる</strong>方式です(既存の項目は消えません)。
+    削除済みの項目が含まれていた場合は、新しい項目として復元します
+    (同じ内容が二重に見えることがありますが、一覧の「⚠ 重複」表示から選んで削除できます)。
+  </p>
+  <p id="backup-status" class="status" role="status" aria-live="polite"></p>
 </section>
 
 <!-- ⚙設定を開いている間は、これより下(タブバー+各タブの中身)をまとめて

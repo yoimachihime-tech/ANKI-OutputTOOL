@@ -41,7 +41,7 @@ build_grammar_dailyconv_v1_final.py は、tts_gui.py がimportしているため
   PATH(コマンド検索対象のフォルダ一覧)に含まれていない環境でも確実に
   動くようにするためです。
 - 以前のバージョンの手順では単純に
-    pyinstaller --onefile --windowed --name ANKI出力ツール anki_tts_gui.py
+    pyinstaller --onefile --windowed --name ANKI出力ツール tts_gui.py
   としていましたが、この書き方だと ankiパッケージ内のRust製バイナリや
   tkinterdnd2の付属ファイルがexeに含まれず、実行時にエラーになることが
   あります。上記の --collect-all オプション付きコマンドを使ってください。

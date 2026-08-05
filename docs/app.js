@@ -212,6 +212,12 @@ async function init() {
   shared.correctionResponseSchema = correctionResponseSchema;
   shared.cardDefs = cardDefsJson.defs;
   shared.ankiSchema = ankiSchema;
+
+  // 他の端末が保存した内容を起動時に取り込む(2026-08-05追加、読み込みのみ)。
+  // **await しない**: 通信を待つ間アプリが使えないと不便なので、裏で進めて
+  // 完了したらヘッダーに件数を出すだけにする。失敗しても起動は妨げない
+  // (autoPullOnStartup 側で握り潰してステータス表示に留めている)。
+  autoPullOnStartup();
 }
 
 /**
@@ -369,6 +375,15 @@ function bindEvents() {
     localStorage.setItem(STORAGE.sheetName, e.target.value.trim());
   });
   $('sync-now').addEventListener('click', onSyncNow);
+  // 起動時の自動読み込み(2026-08-05追加、既定ON)。init()末尾の
+  // autoPullOnStartup() がこのチェックボックスを見るため、そこより前に
+  // 状態を復元しておく必要がある(bindEvents() は init() の先頭で呼ばれる)。
+  bindPersistentCheckbox('sync-auto-pull', true, () => {});
+
+  // バックアップ(書き出し/読み込み、2026-08-05追加)
+  $('backup-export').addEventListener('click', onBackupExport);
+  $('backup-import').addEventListener('click', () => $('backup-file').click());
+  $('backup-file').addEventListener('change', onBackupFileSelected);
 
   // 単語タブ
   $('word-generate').addEventListener('click', onWordGenerate);
@@ -1565,6 +1580,102 @@ function syncSpecs() {
  * するため)の両方から呼ばれるため、状態表示先・disabledにするボタン要素を
  * 引数で受け取れるようにしてある。
  */
+/**
+ * シートから読んだ内容(`readSyncState`の戻り値)を3ストックへマージし、
+ * ローカルへ反映・再描画する。**書き戻しは行わない**。
+ *
+ * `runSync`(pull-merge-push)と`autoPullOnStartup`(pullのみ)の共通部分として
+ * 2026-08-05に切り出した。戻り値の`newState`は`writeSyncState`にそのまま
+ * 渡せる形で、pullのみの経路では単に使わない。
+ *
+ * @returns {{newState: Record<string,string>, capacityLines: string[],
+ *            overLimit: string[], nearLimit: string[], added: number}}
+ *   `added` はマージによって増えた項目数(pullのみの経路で「何件取り込んだか」を
+ *   知らせるために使う)。
+ */
+function mergeRemoteIntoLocal(remote) {
+  const newState = {};
+  const capacityLines = [];
+  const overLimit = [];
+  const nearLimit = [];
+  let added = 0;
+
+  for (const spec of syncSpecs()) {
+    const remoteItems = parseIdArray(remote[spec.itemsKey]);
+    const remoteTombstoneIds = parseIdArray(remote[spec.tombKey]);
+    const localTombstoneIds = loadTombstoneIds(spec.tombStorage);
+
+    const before = spec.get().length;
+    const merged = mergeStock(spec.get(), remoteItems, localTombstoneIds, remoteTombstoneIds);
+    added += Math.max(0, merged.items.length - before);
+    spec.set(merged.items);
+    saveTombstoneIds(spec.tombStorage, merged.tombstoneIds);
+    spec.render();
+
+    const itemsJson = JSON.stringify(merged.items);
+    const tombJson = JSON.stringify(merged.tombstoneIds);
+    newState[spec.itemsKey] = itemsJson;
+    newState[spec.tombKey] = tombJson;
+    const percent = Math.max(capacityPercent(itemsJson), capacityPercent(tombJson));
+    capacityLines.push(`${spec.label} ${percent}%`);
+    if (exceedsCellLimit(itemsJson) || exceedsCellLimit(tombJson)) overLimit.push(spec.label);
+    else if (percent >= CAPACITY_WARN_PERCENT) nearLimit.push(`${spec.label} ${percent}%`);
+  }
+
+  return { newState, capacityLines, overLimit, nearLimit, added };
+}
+
+/**
+ * 起動時に、シートの内容を**読み込むだけ**の同期を行う(2026-08-05追加)。
+ *
+ * 【なぜ pull だけなのか】
+ * 同期は手動ボタンのみだったため、押し忘れると「古い状態の端末で作業を
+ * 始めてしまう」という、衝突のいちばんの原因が残っていた。起動時に自動で
+ * 取り込むだけでこの事故はほぼ消える。
+ * 一方で**書き戻し(push)は自動化しない**: 利用者が何も操作していないのに
+ * この端末の内容でシートを上書きすることになり、意図しない伝播
+ * (例: 別端末で追加された直後に、古い端末を開いただけで巻き戻る)が
+ * 起きうるため。マージ自体は和集合なので pull だけでもデータは失われない。
+ *
+ * 【非ブロッキング】
+ * 未ログイン・設定未入力・通信失敗のいずれでも、静かに諦めてアプリの起動を
+ * 続ける(ログインが要らないタブは使えるため)。実際に取り込めたときだけ
+ * ヘッダーに件数を出す。
+ */
+async function autoPullOnStartup() {
+  if (!$('sync-auto-pull').checked) return;
+
+  const cfg = sheetsConfig();
+  // 設定が揃っていない・未ログインなら何もしない(起動時に勝手にログインの
+  // ポップアップやページ遷移を起こさないため)。
+  if (missingAuthConfigMessage() || !cfg.spreadsheetId) return;
+  if (!isSignedIn({ workerUrl: cfg.workerUrl })) return;
+
+  const statusEl = $('header-sync-status');
+  try {
+    showLoading(statusEl, '他の端末の変更を確認中...');
+    const accessToken = await getAccessToken(cfg);
+    const remote = await readSyncState({ spreadsheetId: cfg.spreadsheetId, accessToken });
+    const { added } = mergeRemoteIntoLocal(remote);
+    hideLoading(statusEl);
+    if (added > 0) {
+      setStatus(statusEl, `他の端末の変更を ${added} 件取り込みました。`);
+    } else {
+      // 変更が無かった場合は黙っておく(毎回の起動でメッセージが出ると
+      // ノイズになるため)。
+      setStatus(statusEl, '');
+    }
+  } catch (e) {
+    hideLoading(statusEl);
+    // 起動を妨げない。理由だけ出して、あとは手動の「🔄 同期」に任せる。
+    setStatus(statusEl, `起動時の自動読み込みに失敗しました: ${e.message}`, true);
+    if (e instanceof SheetsAuthError) {
+      clearAccessToken();
+      updateGoogleAuthStatus();
+    }
+  }
+}
+
 async function runSync(statusEl, btnEl) {
   const cfg = sheetsConfig();
   const { spreadsheetId } = cfg;
@@ -1599,29 +1710,7 @@ async function runSync(statusEl, btnEl) {
     showLoading(statusEl, '同期データを読み込み中...');
     const remote = await readSyncState({ spreadsheetId, accessToken });
 
-    const newState = {};
-    const capacityLines = [];
-    const overLimit = [];
-    const nearLimit = [];
-    for (const spec of syncSpecs()) {
-      const remoteItems = parseIdArray(remote[spec.itemsKey]);
-      const remoteTombstoneIds = parseIdArray(remote[spec.tombKey]);
-      const localTombstoneIds = loadTombstoneIds(spec.tombStorage);
-
-      const merged = mergeStock(spec.get(), remoteItems, localTombstoneIds, remoteTombstoneIds);
-      spec.set(merged.items);
-      saveTombstoneIds(spec.tombStorage, merged.tombstoneIds);
-      spec.render();
-
-      const itemsJson = JSON.stringify(merged.items);
-      const tombJson = JSON.stringify(merged.tombstoneIds);
-      newState[spec.itemsKey] = itemsJson;
-      newState[spec.tombKey] = tombJson;
-      const percent = Math.max(capacityPercent(itemsJson), capacityPercent(tombJson));
-      capacityLines.push(`${spec.label} ${percent}%`);
-      if (exceedsCellLimit(itemsJson) || exceedsCellLimit(tombJson)) overLimit.push(spec.label);
-      else if (percent >= CAPACITY_WARN_PERCENT) nearLimit.push(`${spec.label} ${percent}%`);
-    }
+    const { newState, capacityLines, overLimit, nearLimit } = mergeRemoteIntoLocal(remote);
 
     // 1セルの上限(50,000文字)を超えていたら、書き込む前に中断する
     // (2026-08-05追加)。そのまま送るとSheets APIが素の400を返し、どの
@@ -1674,6 +1763,147 @@ async function onSyncNow() {
 /** ヘッダーの「🔄 同期」ボタン(2026-07-30追加)。 */
 async function onHeaderSyncNow() {
   await runSync($('header-sync-status'), $('header-sync-now'));
+}
+
+// ---------------------------------------------------------------------------
+// バックアップ(書き出し / 読み込み、2026-08-05追加)
+//
+// 【なぜ必要か】
+// デスクトップ版はapkg生成のたびに`backup/`へ自動保存するが、Web版は
+// `downloadBlob()`がブラウザのダウンロード機構を呼ぶだけで、アプリ側は
+// 生成物を一切保持していない(File System Access APIによる保存先固定は
+// モバイルでの対応状況が不安定なため見送られている)。つまり**ストックの
+// 項目こそが「Ankiに取り込む前の内容」を再現できる唯一のコピー**であり、
+// 「出力済みを削除」やブラウザのデータ削除で失うと復元できない。
+// この非対称性を埋めるための、依存を増やさない最小の手当て。
+//
+// 【複数端末間の同期との違い】
+// 同期はシート上の1セット(=最新の状態)しか持たないため、誤って削除した
+// 内容は同期しても戻ってこない(むしろ削除が他端末へ伝播する)。
+// バックアップは「その時点のスナップショットをファイルとして手元に残す」
+// もので、役割が違う。
+// ---------------------------------------------------------------------------
+
+/** バックアップファイルの形式。将来の変更に備えて版番号を持たせる。 */
+const BACKUP_FORMAT_VERSION = 1;
+
+function onBackupExport() {
+  const status = $('backup-status');
+  const specs = syncSpecs();
+  const stocks = {};
+  for (const spec of specs) stocks[spec.itemsKey] = spec.get();
+
+  const total = specs.reduce((n, spec) => n + spec.get().length, 0);
+  if (total === 0) {
+    setStatus(status, '書き出すカードがありません。', true);
+    return;
+  }
+
+  const backup = {
+    format: 'anki-tool-backup',
+    version: BACKUP_FORMAT_VERSION,
+    exported_at: new Date().toISOString(),
+    stocks,
+    // 習熟用の続き番号(Num)は、復元後に既存カードと番号が衝突しないよう
+    // 一緒に残しておく(復元時は大きい方を採用する)。
+    shuujuku_next_num: getNextNum(),
+  };
+
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  downloadBlob(blob, `anki_tool_backup_${stamp}.json`);
+  setStatus(
+    status,
+    `${total} 件を書き出しました(${specs.map((s) => `${s.label} ${s.get().length}`).join(' / ')})。`,
+  );
+}
+
+async function onBackupFileSelected(event) {
+  const status = $('backup-status');
+  const input = event.target;
+  const file = input.files?.[0];
+  // 同じファイルを続けて選び直せるよう、必ず値をクリアしておく
+  // (input[type=file] は同じ値の再選択では change が起きない)。
+  input.value = '';
+  if (!file) return;
+
+  let backup;
+  try {
+    backup = JSON.parse(await file.text());
+  } catch (e) {
+    setStatus(status, `ファイルを読み込めませんでした(JSONとして解釈できません): ${e.message}`, true);
+    return;
+  }
+  if (backup?.format !== 'anki-tool-backup' || !backup.stocks) {
+    setStatus(
+      status,
+      'このツールのバックアップファイルではないようです'
+      + '(「バックアップを書き出す」で作った .json を選んでください)。',
+      true,
+    );
+    return;
+  }
+
+  const specs = syncSpecs();
+  const counts = specs.map((spec) => (backup.stocks[spec.itemsKey] || []).length);
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total === 0) {
+    setStatus(status, 'このファイルにはカードが入っていません。', true);
+    return;
+  }
+  if (!confirm(
+    `${total} 件を現在の内容に追加します`
+    + `(${specs.map((s, i) => `${s.label} ${counts[i]}`).join(' / ')})。\n\n`
+    + '既存のカードは削除されません。よろしいですか？',
+  )) return;
+
+  let restored = 0;
+  let resurrected = 0;
+  for (const spec of specs) {
+    const incoming = backup.stocks[spec.itemsKey];
+    if (!Array.isArray(incoming) || incoming.length === 0) continue;
+
+    // 削除済み(打ち消し記録にあるid)の項目は、**新しいidを振り直して**復元する。
+    // 元のidのままだと mergeStock が打ち消し記録を見て除外してしまい、
+    // 「バックアップから戻したのに復活しない」という一番困る挙動になる
+    // (打ち消し記録から取り除く方式は、リモート側の記録が残っている限り
+    //  次の同期でまた消えるため解決にならない)。新しいidにすれば他端末へも
+    //  普通の新規追加として伝わる。同じ内容が二重に見えることはあるが、
+    //  このアプリは元々「重複は常に追加して⚠表示し、手動で間引く」方針で
+    //  統一されており、既存の重複検出UIでそのまま解消できる。
+    const tombstoned = new Set(loadTombstoneIds(spec.tombStorage));
+    const now = new Date().toISOString();
+    const prepared = incoming.map((item) => {
+      if (!item?.id || tombstoned.has(item.id)) {
+        resurrected += 1;
+        return { ...item, id: newSyncId(), updated_at: now };
+      }
+      return item;
+    });
+
+    // 既存の内容との突き合わせは通常のマージに任せる(同じidが両方にあれば
+    // updated_at が新しい方を採用)。打ち消し記録は上で回避済みなので空で渡す。
+    const before = spec.get().length;
+    const merged = mergeStock(spec.get(), prepared, [], []);
+    restored += Math.max(0, merged.items.length - before);
+    spec.set(merged.items);
+    spec.render();
+  }
+
+  // 習熟用の続き番号は、既存の値とバックアップの値の大きい方を採用する
+  // (小さい方に戻すと、既にAnkiにあるカードとNumが衝突しうるため)。
+  const backupNum = Number(backup.shuujuku_next_num) || 0;
+  const gap = backupNum - getNextNum();
+  if (gap > 0) advanceNextNum(gap);
+
+  setStatus(
+    status,
+    `${restored} 件を復元しました。`
+    + (resurrected > 0
+      ? `(うち ${resurrected} 件は削除済みだったため、新しいカードとして復元しました)`
+      : '')
+    + '\n複数端末間の同期を使っている場合は、「🔄 今すぐ同期」で他の端末にも反映してください。',
+  );
 }
 
 /**
