@@ -304,6 +304,11 @@ function loadJson(key) {
  */
 function bindPersistentCheckbox(id, defaultValue, onChange) {
   const el = $(id);
+  // on() と同じ理由で、要素が無くてもここで例外にしない(2026-08-06)。
+  if (!el) {
+    console.warn(`[bindEvents] チェックボックスが見つかりません: #${id}`);
+    return;
+  }
   const key = FILTER_STORAGE_PREFIX + id;
   const stored = localStorage.getItem(key);
   el.checked = stored === null ? defaultValue : stored === '1';
@@ -313,6 +318,33 @@ function bindPersistentCheckbox(id, defaultValue, onChange) {
   });
 }
 
+/**
+ * イベント登録のヘルパー(2026-08-06追加)。要素が見つからなければ登録を
+ * 飛ばし、コンソールに警告を出すだけにする。
+ *
+ * 【なぜ必要か】以前は `$('id').addEventListener(...)` を素で並べていたため、
+ * **1つでもIDが見つからないとそこで例外になり、bindEvents()の残り全部と、
+ * bindEvents()を先頭で呼ぶinit()の残り全部(Worker URLの既定値の設定など)が
+ * 丸ごと実行されなくなる**という壊れ方をしていた。実際に2026-08-06、
+ * ブラウザに古い app.js だけがキャッシュされて新しい index.html と組み合わさり
+ * (通知バナー対応で `header-status-reveal` を削除し `app-log-clear` を
+ * 追加したため、どちらが古くてもIDが食い違う)、
+ * 「⋮メニューが開かない」「ログイン設定が空だと言われる」という
+ * 一見無関係な2つの症状が同時に出た。
+ * 個々の登録が独立して失敗するようにしておけば、多少の食い違いがあっても
+ * アプリ全体が使えなくなることはない。
+ */
+function on(id, type, handler) {
+  const el = $(id);
+  if (!el) {
+    console.warn(`[bindEvents] 要素が見つかりません: #${id}`
+      + '(index.html と app.js の版が食い違っている可能性があります。'
+      + 'ブラウザのキャッシュを消して読み込み直してください)');
+    return;
+  }
+  el.addEventListener(type, handler);
+}
+
 function bindEvents() {
   // タブ切り替え
   document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -320,81 +352,82 @@ function bindEvents() {
   });
 
   // ヘッダーのログインボタン(全タブ共通、2026-07-30追加)
-  $('header-signin').addEventListener('click', onHeaderSignIn);
-  $('header-sync-now').addEventListener('click', onHeaderSyncNow);
+  on('header-signin', 'click', onHeaderSignIn);
+  on('header-sync-now', 'click', onHeaderSyncNow);
 
   // ⋮メニュー(設定/ログアウトの格納先、2026-07-30追加)。
-  $('header-menu-toggle').addEventListener('click', onHeaderMenuToggle);
-  $('header-signout').addEventListener('click', () => {
+  on('header-menu-toggle', 'click', onHeaderMenuToggle);
+  on('header-signout', 'click', () => {
     onHeaderSignOut();
     closeHeaderMenu();
   });
   // メニューの外側をクリック/タップしたら閉じる。Escapeキーでも閉じる。
   document.addEventListener('click', (e) => {
-    if (!$('header-menu').contains(e.target)) closeHeaderMenu();
+    const menu = $('header-menu');
+    if (menu && !menu.contains(e.target)) closeHeaderMenu();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeHeaderMenu();
   });
 
   // 設定(全タブ共通)
-  $('settings-toggle').addEventListener('click', () => {
+  on('settings-toggle', 'click', () => {
     toggleSettings();
     closeHeaderMenu();
   });
   // 設定パネル自身の閉じるボタン(2026-07-30追加)。settings-toggleが⋮メニュー
   // の中に格納されたため、閉じるためだけに毎回メニューを開き直さずに済む。
-  $('settings-close').addEventListener('click', toggleSettings);
-  $('toggle-key').addEventListener('click', () => {
+  on('settings-close', 'click', toggleSettings);
+  on('toggle-key', 'click', () => {
     const el = $('api-key');
     el.type = el.type === 'password' ? 'text' : 'password';
   });
-  $('api-key').addEventListener('change', (e) => {
+  on('api-key', 'change', (e) => {
     localStorage.setItem(STORAGE.apiKey, e.target.value.trim());
   });
-  $('model').addEventListener('change', (e) => {
+  on('model', 'change', (e) => {
     localStorage.setItem(STORAGE.model, e.target.value.trim());
     markSettingsChanged();
   });
-  $('clear-key').addEventListener('click', onClearKey);
-  $('fetch-models').addEventListener('click', onFetchModels);
+  on('clear-key', 'click', onClearKey);
+  on('fetch-models', 'click', onFetchModels);
 
   // TTS設定(全タブ共通)
-  $('toggle-tts-key').addEventListener('click', () => {
+  on('toggle-tts-key', 'click', () => {
     const el = $('tts-api-key');
     el.type = el.type === 'password' ? 'text' : 'password';
   });
-  $('tts-api-key').addEventListener('change', (e) => {
+  on('tts-api-key', 'change', (e) => {
     localStorage.setItem(STORAGE.ttsApiKey, e.target.value.trim());
   });
-  $('tts-voice').addEventListener('change', (e) => {
+  on('tts-voice', 'change', (e) => {
     localStorage.setItem(STORAGE.ttsVoice, e.target.value.trim());
     markSettingsChanged();
   });
-  $('tts-lang').addEventListener('change', (e) => {
+  on('tts-lang', 'change', (e) => {
     localStorage.setItem(STORAGE.ttsLang, e.target.value.trim());
     markSettingsChanged();
   });
-  $('tts-volume-gain').addEventListener('change', (e) => {
+  on('tts-volume-gain', 'change', (e) => {
     localStorage.setItem(STORAGE.ttsVolumeGainDb, e.target.value.trim());
     markSettingsChanged();
   });
-  $('tts-exclude-japanese').addEventListener('change', (e) => {
+  on('tts-exclude-japanese', 'change', (e) => {
     localStorage.setItem(STORAGE.ttsExcludeJapanese, e.target.checked ? '1' : '0');
     markSettingsChanged();
   });
-  $('tts-test-play').addEventListener('click', onTestPlay);
-  $('tts-auto-gain').addEventListener('click', onAutoGain);
-  $('clear-tts-key').addEventListener('click', onClearTtsKey);
+  on('tts-test-play', 'click', onTestPlay);
+  on('tts-auto-gain', 'click', onAutoGain);
+  on('clear-tts-key', 'click', onClearTtsKey);
 
   // スプレッドシート設定(DailyConversationタブ用)
-  $('google-client-id').addEventListener('change', (e) => {
+  on('google-client-id', 'change', (e) => {
     localStorage.setItem(STORAGE.googleClientId, e.target.value.trim());
     // クライアントIDが変わったら、古いトークンは使い回さない
     clearAccessToken();
     updateGoogleAuthStatus();
   });
-  $('oauth-worker-url').addEventListener('change', (e) => {
+  on('oauth-worker-url', 'change', (e) => {
     localStorage.setItem(STORAGE.oauthWorkerUrl, e.target.value.trim());
     // 認証方式そのものが切り替わるため、手元のアクセストークンは捨てる
     // (保存済みのリフレッシュトークンは残す。Worker URLの打ち間違いを
@@ -402,63 +435,63 @@ function bindEvents() {
     clearAccessToken();
     updateGoogleAuthStatus();
   });
-  $('sheets-spreadsheet-id').addEventListener('change', (e) => {
+  on('sheets-spreadsheet-id', 'change', (e) => {
     localStorage.setItem(STORAGE.spreadsheetId, e.target.value.trim());
   });
-  $('sheets-sheet-name').addEventListener('change', (e) => {
+  on('sheets-sheet-name', 'change', (e) => {
     localStorage.setItem(STORAGE.sheetName, e.target.value.trim());
   });
-  $('sync-now').addEventListener('click', onSyncNow);
+  on('sync-now', 'click', onSyncNow);
   // 起動時の自動読み込み(2026-08-05追加、既定ON)。init()末尾の
   // autoPullOnStartup() がこのチェックボックスを見るため、そこより前に
   // 状態を復元しておく必要がある(bindEvents() は init() の先頭で呼ばれる)。
   bindPersistentCheckbox('sync-auto-pull', true, () => {});
 
   // バックアップ(書き出し/読み込み、2026-08-05追加)
-  $('backup-export').addEventListener('click', onBackupExport);
-  $('backup-import').addEventListener('click', () => $('backup-file').click());
-  $('backup-file').addEventListener('change', onBackupFileSelected);
+  on('backup-export', 'click', onBackupExport);
+  on('backup-import', 'click', () => $('backup-file').click());
+  on('backup-file', 'change', onBackupFileSelected);
 
   // ⚙設定の「ログ」(2026-08-06追加)
-  $('app-log-clear').addEventListener('click', onClearAppLog);
+  on('app-log-clear', 'click', onClearAppLog);
 
   // 単語タブ
-  $('word-generate').addEventListener('click', onWordGenerate);
-  $('word-delete-selected').addEventListener('click', () => onDeleteSelected('word'));
-  $('word-clear-stock').addEventListener('click', () => onClearStock('word'));
+  on('word-generate', 'click', onWordGenerate);
+  on('word-delete-selected', 'click', () => onDeleteSelected('word'));
+  on('word-clear-stock', 'click', () => onClearStock('word'));
   bindPersistentCheckbox('word-filter-hide-exported', true, renderWordStock);
-  $('word-reset-exported').addEventListener('click', () => onResetExported('word'));
-  $('word-delete-exported').addEventListener('click', () => onDeleteExported('word'));
-  $('word-export').addEventListener('click', () => onExport('word'));
+  on('word-reset-exported', 'click', () => onResetExported('word'));
+  on('word-delete-exported', 'click', () => onDeleteExported('word'));
+  on('word-export', 'click', () => onExport('word'));
 
   // AIに質問タブ
-  $('ai-ask-generate').addEventListener('click', onAiAskGenerate);
-  $('ai-ask-delete-selected').addEventListener('click', () => onDeleteSelected('ai_ask'));
-  $('ai-ask-clear-stock').addEventListener('click', () => onClearStock('ai_ask'));
+  on('ai-ask-generate', 'click', onAiAskGenerate);
+  on('ai-ask-delete-selected', 'click', () => onDeleteSelected('ai_ask'));
+  on('ai-ask-clear-stock', 'click', () => onClearStock('ai_ask'));
   bindPersistentCheckbox('ai-ask-filter-hide-exported', true, renderAiAskStock);
-  $('ai-ask-reset-exported').addEventListener('click', () => onResetExported('ai_ask'));
-  $('ai-ask-delete-exported').addEventListener('click', () => onDeleteExported('ai_ask'));
-  $('ai-ask-export').addEventListener('click', () => onExport('ai_ask'));
+  on('ai-ask-reset-exported', 'click', () => onResetExported('ai_ask'));
+  on('ai-ask-delete-exported', 'click', () => onDeleteExported('ai_ask'));
+  on('ai-ask-export', 'click', () => onExport('ai_ask'));
 
   // 習熟用(音読)タブ(入力欄は無く、AIに質問からの4問目でのみ増える)
-  $('shuujuku-delete-selected').addEventListener('click', () => onDeleteSelected('shuujuku'));
-  $('shuujuku-clear-stock').addEventListener('click', () => onClearStock('shuujuku'));
-  $('shuujuku-export').addEventListener('click', onExportShuujuku);
+  on('shuujuku-delete-selected', 'click', () => onDeleteSelected('shuujuku'));
+  on('shuujuku-clear-stock', 'click', () => onClearStock('shuujuku'));
+  on('shuujuku-export', 'click', onExportShuujuku);
 
   // DailyConversationタブ(ログイン/ログアウトはヘッダーに一本化してあるため
   // ここには無い。下記「ヘッダーのログインボタン」を参照)
-  $('daily-correct').addEventListener('click', onDailyCorrect);
-  $('daily-refresh').addEventListener('click', () => refreshDailyPending($('daily-export-status')));
+  on('daily-correct', 'click', onDailyCorrect);
+  on('daily-refresh', 'click', () => refreshDailyPending($('daily-export-status')));
   bindPersistentCheckbox('daily-filter-hide-no-error', false, renderDailyPending);
   bindPersistentCheckbox('daily-filter-only-duplicates', false, renderDailyPending);
   bindPersistentCheckbox('daily-filter-hide-exported', true, renderDailyPending);
-  $('daily-exclude-selected').addEventListener('click', onDailyExcludeSelected);
-  $('daily-clear-exclusions').addEventListener('click', onDailyClearExclusions);
-  $('daily-reset-exported').addEventListener('click', onDailyResetExported);
-  $('daily-export').addEventListener('click', onDailyExport);
+  on('daily-exclude-selected', 'click', onDailyExcludeSelected);
+  on('daily-clear-exclusions', 'click', onDailyClearExclusions);
+  on('daily-reset-exported', 'click', onDailyResetExported);
+  on('daily-export', 'click', onDailyExport);
 
   // プレビュー(共通)
-  $('preview-close').addEventListener('click', () => $('preview-dialog').close());
+  on('preview-close', 'click', () => $('preview-dialog').close());
 }
 
 function switchTab(key) {

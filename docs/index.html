@@ -5,7 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>ANKI出力ツール (Web版)</title>
-<link rel="stylesheet" href="./style.css">
+<!-- ?v= はキャッシュ避け(2026-08-06追加)。GitHub Pages/ブラウザは
+     style.css・app.js を長めにキャッシュするため、index.html だけが
+     新しくなり app.js が古いまま、という食い違いが起きうる。実際に
+     通知バナー対応(IDの追加・削除)の直後にこれが起き、bindEvents() が
+     途中で例外になって「⋮メニューが開かない」「ログイン設定が空だと
+     言われる」という症状が出た。**docs/ 配下を変更したらこの値も
+     更新すること**(日付+連番。app.js が import する lib/*.js を
+     変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
+<link rel="stylesheet" href="./style.css?v=20260806a">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -517,6 +525,10 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
   <iframe id="preview-frame" title="カードプレビュー"></iframe>
 </dialog>
 
-<script type="module" src="./app.js"></script>
+<!-- ?v= の意味は先頭の <link rel="stylesheet"> のコメントを参照。
+     index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
+     食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
+     読み込ませる。 -->
+<script type="module" src="./app.js?v=20260806a"></script>
 </body>
 </html>

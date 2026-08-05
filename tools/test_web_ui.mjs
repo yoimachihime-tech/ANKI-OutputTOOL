@@ -307,6 +307,18 @@ const $ = (id) => window.document.getElementById(id);
 if ($('word-stock-empty').hidden === false) ok('起動直後は「カードがありません」を表示');
 else fail('起動直後の空表示がおかしい');
 
+// init() は bindEvents() を先頭で呼ぶ。以前は bindEvents() 内の
+// `$('id').addEventListener(...)` が1つでも失敗すると init() の残り全部が
+// 実行されず(2026-08-06、index.html と app.js の版が食い違って発生)、
+// 「⋮メニューが開かない」「ログイン設定が空だと言われる」という
+// 一見無関係な症状が同時に出た。init() が最後まで進んだことの目印として、
+// bindEvents() より後で入るWorker URLの既定値を確認する。
+if ($('oauth-worker-url').value.startsWith('https://')) {
+  ok('init()がbindEvents()の先で止まらず、ログイン維持用WorkerのURLの既定値が入る');
+} else {
+  fail(`init()が途中で止まっている可能性がある(oauth-worker-url: ${JSON.stringify($('oauth-worker-url').value)})`);
+}
+
 if ($('settings').hidden === true && $('main-content').hidden === false) {
   ok('起動直後は設定が隠れ、通常画面(タブ)が表示されている');
 } else {
@@ -1302,6 +1314,23 @@ if ($('app-log-empty').hidden === true) {
   ok('ログが1件以上あるときは「まだログはありません」を隠す');
 } else {
   fail('ログがあるのに空表示が出たままになっている');
+}
+
+// ⋮メニュー(⚙設定の入口)。bindEvents()が途中で止まると「押しても何も
+// 起きない」という形で壊れるため、開閉を実際に確かめる(2026-08-06、
+// 実機でこの症状が報告された)。
+$('header-menu-toggle').click();
+if ($('header-menu-panel').hidden === false
+  && $('header-menu-toggle').getAttribute('aria-expanded') === 'true') {
+  ok('⋮ボタンで設定メニューが開く');
+} else {
+  fail('⋮ボタンを押してもメニューが開かない');
+}
+$('header-menu-toggle').click();
+if ($('header-menu-panel').hidden === true) {
+  ok('もう一度⋮ボタンを押すとメニューが閉じる');
+} else {
+  fail('⋮ボタンでメニューが閉じない');
 }
 
 $('app-log-clear').click();
