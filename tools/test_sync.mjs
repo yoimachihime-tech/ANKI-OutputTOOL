@@ -375,5 +375,79 @@ console.log('\n[6] exceedsCellLimit / CAPACITY_WARN_PERCENT');
 }
 
 // ---------------------------------------------------------------------------
+// [7] 打ち消し記録(tombstone)の刈り込み(2026-08-05追加)
+//
+// 削除のたびにidが増え、無期限に膨らむ設計だった。tombstoneはitemsと同じ
+// 50,000文字のセル上限を持つ別の行に入るため、放っておくといずれ同期が
+// 書き込めなくなる。上限を超えたぶんを古い方から捨てる。
+// ---------------------------------------------------------------------------
+console.log('\n[7] pruneTombstoneIds(打ち消し記録の刈り込み)');
+
+{
+  const { pruneTombstoneIds, MAX_TOMBSTONES } = await import(
+    new URL('../docs/lib/sync.js', import.meta.url)
+  );
+
+  const few = ['a', 'b', 'c'];
+  if (pruneTombstoneIds(few) === few) {
+    ok('上限以下ならそのまま返す(無駄なコピーもしない)');
+  } else {
+    fail('上限以下で余計な加工をしている');
+  }
+
+  const many = Array.from({ length: MAX_TOMBSTONES + 30 }, (_, i) => `id-${i}`);
+  const pruned = pruneTombstoneIds(many);
+  if (pruned.length === MAX_TOMBSTONES) {
+    ok(`上限(${MAX_TOMBSTONES}件)まで減らす`);
+  } else {
+    fail(`刈り込み後の件数が想定と違う: ${pruned.length}`);
+  }
+  // 「新しい方を残す」= 配列の末尾を残す。ここが逆だと、直前に削除した
+  // 項目の打ち消しが消えてしまい、次の同期で削除がすぐ復活する。
+  if (pruned[pruned.length - 1] === `id-${many.length - 1}` && pruned[0] === 'id-30') {
+    ok('新しい方(配列の末尾)を残し、古い方から捨てる');
+  } else {
+    fail(`残した範囲が想定と違う: 先頭=${pruned[0]} / 末尾=${pruned[pruned.length - 1]}`);
+  }
+
+  // 刈り込んでもセル上限に十分な余裕があること(そもそもの目的)
+  const worstCase = JSON.stringify(
+    Array.from({ length: MAX_TOMBSTONES }, () => '123e4567-e89b-12d3-a456-426614174000'),
+  );
+  const { exceedsCellLimit } = await import(new URL('../docs/lib/sync.js', import.meta.url));
+  if (!exceedsCellLimit(worstCase) && capacityPercent(worstCase) < 70) {
+    ok(`上限まで貯まってもセル容量に余裕がある(${capacityPercent(worstCase)}%)`);
+  } else {
+    fail(`刈り込み後もセル容量が厳しい: ${capacityPercent(worstCase)}%`);
+  }
+}
+
+{
+  // mergeStock を通しても刈り込みが効くこと・並びがソートされないこと
+  const { pruneTombstoneIds, MAX_TOMBSTONES } = await import(
+    new URL('../docs/lib/sync.js', import.meta.url)
+  );
+  const localTomb = Array.from({ length: MAX_TOMBSTONES }, (_, i) => `local-${i}`);
+  const remoteTomb = ['remote-新しい削除'];
+  const merged = mergeStock([], [], localTomb, remoteTomb);
+
+  if (merged.tombstoneIds.length === MAX_TOMBSTONES) {
+    ok('mergeStock の戻り値も上限まで刈り込まれる');
+  } else {
+    fail(`mergeStock 後の件数が想定と違う: ${merged.tombstoneIds.length}`);
+  }
+  if (merged.tombstoneIds[merged.tombstoneIds.length - 1] === 'remote-新しい削除') {
+    ok('リモートで新しく増えた削除は残る(ソートされていない)');
+  } else {
+    fail(`並びがソートされている可能性: 末尾=${merged.tombstoneIds[merged.tombstoneIds.length - 1]}`);
+  }
+  if (pruneTombstoneIds(merged.tombstoneIds).length === MAX_TOMBSTONES) {
+    ok('刈り込みは繰り返し適用しても安定している');
+  } else {
+    fail('刈り込みが冪等でない');
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log(failures === 0 ? '\n✅ すべて成功しました。' : `\n❌ ${failures} 件失敗しました。`);
 process.exitCode = failures === 0 ? 0 : 1;

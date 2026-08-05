@@ -98,6 +98,47 @@ export function ensureItemIds(items) {
 }
 
 /**
+ * 打ち消し記録(tombstone)の上限件数(2026-08-05追加)。
+ *
+ * 【なぜ上限が要るか】
+ * 削除のたびにidが1つ増え、**無期限に増え続ける**設計だった。tombstoneは
+ * items と同じ50,000文字のセル上限を持つ別の行に入るため、UUID(36文字)+
+ * 引用符・カンマで1件約39バイトとして、1,280件ほどで書き込めなくなる。
+ *
+ * 【なぜ500件か】
+ * 500件で約20KB = セル上限の約39%。警告閾値(CAPACITY_WARN_PERCENT = 70%)にも
+ * 届かない余裕を残してある。片桐が1人で使う規模なら、500回の削除を遡って
+ * 打ち消しが要る場面は考えにくい。
+ */
+export const MAX_TOMBSTONES = 500;
+
+/**
+ * 打ち消し記録が上限を超えていたら、**古い方から**捨てる。
+ *
+ * 【捨てて安全か】
+ * 打ち消し記録は「この項目は削除済みだから、古いスナップショットを持つ端末が
+ * 同期しても復活させるな」という目印。全端末が同期を終えた後は、その項目は
+ * どこにも残っていないので記録も不要になる。捨てて問題が起きるのは
+ * 「非常に古い削除を、まだ一度も同期していない端末が持っている」場合だけで、
+ * 500件も削除が進んだ後にそれが起きるとは考えにくい。
+ * 万一復活しても**データ消失ではなく一覧に重複が現れる**だけで、既存の
+ * 「⚠ 重複」表示から手動で消せる(このアプリ全体の設計方針と同じ)。
+ *
+ * 【「古い」の判定について】
+ * 記録はid文字列だけで時刻を持たない(時刻を持たせると1件あたりの容量が
+ * 倍近くなり、容量を減らすという目的と衝突する)。そのため**配列の並び順を
+ * 挿入順とみなして**先頭から捨てる。マージ後の並びは「ローカルの並び →
+ * リモートにしか無かったid」なので厳密な時系列ではないが、この用途には十分。
+ * ——だからこそ `saveTombstoneIds` はソートしてはいけない(2026-08-05に
+ * ソートを廃止した。ソートすると並びがUUIDの辞書順になり、意味を失う)。
+ */
+export function pruneTombstoneIds(ids, max = MAX_TOMBSTONES) {
+  const list = ids || [];
+  if (list.length <= max) return list;
+  return list.slice(list.length - max);
+}
+
+/**
  * ローカルとリモートのストックをid単位でマージする。
  * @param {object[]} localItems 現在のローカルの配列(id/updated_atを持つ前提)
  * @param {object[]} remoteItems シートから読んだ配列
@@ -106,6 +147,9 @@ export function ensureItemIds(items) {
  * @returns {{items: object[], tombstoneIds: string[]}}
  */
 export function mergeStock(localItems, remoteItems, localTombstoneIds, remoteTombstoneIds) {
+  // Set は挿入順を保つので、「ローカルの並び → リモートにしか無かったid」の
+  // 順序になる。pruneTombstoneIds がこの並びを挿入順とみなして古い方から
+  // 捨てるため、**ここでソートしないこと**。
   const tombstoneIds = new Set([...(localTombstoneIds || []), ...(remoteTombstoneIds || [])]);
 
   const byId = new Map();
@@ -130,6 +174,8 @@ export function mergeStock(localItems, remoteItems, localTombstoneIds, remoteTom
 
   return {
     items: order.map((id) => byId.get(id)),
-    tombstoneIds: [...tombstoneIds].sort(),
+    // 上限を超えたぶんは古い方から捨てる(2026-08-05追加)。
+    // ソートしないのは上記のとおり(挿入順が刈り込みの判断材料になる)。
+    tombstoneIds: pruneTombstoneIds([...tombstoneIds]),
   };
 }

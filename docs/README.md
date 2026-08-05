@@ -426,6 +426,12 @@ npm install     # 初回のみ
 npm test        # 下記8つをまとめて実行
 ```
 
+**push / Pull Request のたびに GitHub Actions でも自動実行されます**
+（`.github/workflows/test.yml`、2026-08-05 追加）。外部サービスには一切
+アクセスしないので、CI 側にシークレットの設定は不要です。
+手元での実行が不要になったわけではありません（失敗に気づくのは早いほうが
+よいので、push 前にも通してください）。
+
 | コマンド | 内容 |
 | --- | --- |
 | `npm run verify` | 同じ入力からデスクトップ版(genanki)と Web 版それぞれで `.apkg` を作り(word・grammar_multi・shuujuku・daily の4カード種別)、guid・フィールド・タグ・カード構成・ノートタイプ定義を突き合わせる |

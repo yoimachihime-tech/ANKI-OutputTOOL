@@ -35,7 +35,7 @@ import {
 import * as dailyconv from './lib/dailyconv.js';
 import {
   newSyncId, ensureItemIds, mergeStock, capacityPercent, parseIdArray,
-  exceedsCellLimit, SHEET_CELL_LIMIT, CAPACITY_WARN_PERCENT,
+  exceedsCellLimit, SHEET_CELL_LIMIT, CAPACITY_WARN_PERCENT, pruneTombstoneIds,
 } from './lib/sync.js';
 
 // フィルターチェックボックスの状態をlocalStorageに永続化する際のキー接頭辞
@@ -162,7 +162,12 @@ function loadTombstoneIds(storageKey) {
 }
 
 function saveTombstoneIds(storageKey, ids) {
-  localStorage.setItem(storageKey, JSON.stringify([...new Set(ids)].filter(Boolean).sort()));
+  // **ソートしないこと**(2026-08-05にソートを廃止)。配列の並びを挿入順と
+  // みなして古い方から刈り込むため(sync.js の pruneTombstoneIds を参照)、
+  // ソートすると並びがUUIDの辞書順になって意味を失う。
+  // Set は挿入順を保つので、重複除去だけなら順序は壊れない。
+  const unique = [...new Set(ids)].filter(Boolean);
+  localStorage.setItem(storageKey, JSON.stringify(pruneTombstoneIds(unique)));
 }
 
 /** 削除・出力済みクリアしたidを打ち消し記録へ追記する(和集合)。 */

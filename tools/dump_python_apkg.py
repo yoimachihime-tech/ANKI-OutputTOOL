@@ -78,6 +78,15 @@ def build_deck_for(card_def_key: str, items: list):
         deck, _row_map = deck_builder.build_deck_and_row_map(items)
         return deck, dailyconv_canon.MODEL_ID, dailyconv_canon.DECK_ID
 
+    # card_defs.json は実行時に生成されるファイルで、Git管理外(実データを
+    # 含みうるため .gitignore 済み)。クリーンなチェックアウト(CI や新しい
+    # 開発環境)では存在しないので、デスクトップ版の起動時と同じシード処理を
+    # ここでも通しておく。既にあれば何もしない("_if_missing")。
+    # これをしないと、CI で verify が「カード定義が見つかりません」で落ちる。
+    card_defs.seed_default_word_def_if_missing()
+    card_defs.seed_default_daily_def_if_missing()
+    card_defs.seed_default_shuujuku_def_if_missing()
+
     card_def = card_defs.get_def(card_def_key)
     if not card_def:
         raise SystemExit(f"カード定義 '{card_def_key}' が見つかりません。")

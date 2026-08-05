@@ -1,0 +1,62 @@
+# Web版(docs/)とデスクトップ版の互換性・回帰テストを自動実行する。
+#
+# 【なぜ必要か】
+# Anki は guid が同じノートを「同一ノート」として更新する。Web版とデスクトップ版で
+# guid やフィールドの並びが食い違うと、同じカードが二重に作られて**既存カードの
+# 学習履歴が失われる**。これを人手の「変更したら npm test を通す」運用だけで
+# 守っているのは危ういため、push/PR のたびに自動で回す。
+#
+# 【外部サービスには一切アクセスしない】
+# Gemini / Cloud Text-to-Speech / Google Sheets / Cloudflare はすべて fetch を
+# モックしている。APIキーも割り当ても消費せず、シークレットの設定も不要。
+
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # 手動実行(Actions タブの「Run workflow」)も許可する
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      # verify 系2本(verify_web_parity / verify_grammar_multi_parity)は、
+      # デスクトップ版(genanki)の出力と突き合わせるために Python を起動する。
+      # **`python3` という名前で呼んでいる**ので、その名前で使える必要がある
+      # (ubuntu-latest では setup-python が python3 も用意する)。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # genanki だけが必要。anki 本体・tkinter・sv-ttk などGUI側の依存は
+      # ここで動かすテストには要らない。
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check genanki
+
+      - name: Install Node dependencies
+        working-directory: tools
+        run: npm ci
+
+      # 永続化JSON(json_store.py)の回帰テスト。一時フォルダに対して動くので
+      # リポジトリ内のファイルには触れない。
+      - name: Python tests
+        run: python test_json_store.py
+        env:
+          PYTHONUTF8: '1'
+
+      # 8本(apkg互換性の検証2本 + UI通し + TTS/Gemini/Sheets/同期/Worker の単体)
+      - name: Web tests
+        working-directory: tools
+        run: npm test
