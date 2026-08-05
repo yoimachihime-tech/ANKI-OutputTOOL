@@ -355,28 +355,14 @@ function bindEvents() {
   on('header-signin', 'click', onHeaderSignIn);
   on('header-sync-now', 'click', onHeaderSyncNow);
 
-  // ⋮メニュー(設定/ログアウトの格納先、2026-07-30追加)。
-  on('header-menu-toggle', 'click', onHeaderMenuToggle);
-  on('header-signout', 'click', () => {
-    onHeaderSignOut();
-    closeHeaderMenu();
-  });
-  // メニューの外側をクリック/タップしたら閉じる。Escapeキーでも閉じる。
-  document.addEventListener('click', (e) => {
-    const menu = $('header-menu');
-    if (menu && !menu.contains(e.target)) closeHeaderMenu();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeHeaderMenu();
-  });
+  on('header-signout', 'click', onHeaderSignOut);
 
-  // 設定(全タブ共通)
-  on('settings-toggle', 'click', () => {
-    toggleSettings();
-    closeHeaderMenu();
-  });
-  // 設定パネル自身の閉じるボタン(2026-07-30追加)。settings-toggleが⋮メニュー
-  // の中に格納されたため、閉じるためだけに毎回メニューを開き直さずに済む。
+  // 設定(全タブ共通)。2026-08-06に⋮メニューを廃止し、ヘッダーへ直接
+  // 置き直した(メニューの開閉・外側クリックで閉じる処理はまるごと不要に
+  // なったため撤去)。
+  on('settings-toggle', 'click', toggleSettings);
+  // 設定パネル自身の閉じるボタン(2026-07-30追加)。設定は縦に長いため、
+  // 下までスクロールした位置からでも閉じられるようにするためのもの。
   on('settings-close', 'click', toggleSettings);
   on('toggle-key', 'click', () => {
     const el = $('api-key');
@@ -1541,29 +1527,12 @@ function firstEmptySheetsSettingField() {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// ヘッダーの⋮メニュー(2026-07-30追加)
-//
-// 「ログイン周りがごちゃごちゃしている」との指摘を受け、常時見えるボタンを
-// ログイン/同期の2つだけに絞り、頻度の低い「設定」「ログアウト」はこの
-// メニューの中に格納した。開閉状態はheader-menu-panelのhidden属性のみで
-// 管理する(独自の状態変数は持たない)。
-// ---------------------------------------------------------------------------
-
-function openHeaderMenu() {
-  $('header-menu-panel').hidden = false;
-  $('header-menu-toggle').setAttribute('aria-expanded', 'true');
-}
-
-function closeHeaderMenu() {
-  $('header-menu-panel').hidden = true;
-  $('header-menu-toggle').setAttribute('aria-expanded', 'false');
-}
-
-function onHeaderMenuToggle() {
-  if ($('header-menu-panel').hidden) openHeaderMenu();
-  else closeHeaderMenu();
-}
+// 2026-08-06: ここにあったヘッダーの⋮メニュー(openHeaderMenu/
+// closeHeaderMenu/onHeaderMenuToggle)は廃止した。2026-07-30に
+// 「ログイン周りがごちゃごちゃしている」との指摘を受けて「設定」を
+// 格納するために作ったものだが、状態表示とログをこの枠から追い出して
+// ボタンが減り、幅に余裕ができたため「設定」をヘッダーへ直接戻した。
+// 中身が1つだけのメニューはワンクッション増やすだけなので、まるごと撤去。
 
 /**
  * ログイン状態の表示と、ヘッダーのログイン/ログアウトボタンの表示切り替えを

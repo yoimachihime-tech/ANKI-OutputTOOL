@@ -103,34 +103,9 @@ body {
 }
 .toolbar-group button:hover:not(:disabled) { border-color: var(--accent); }
 
-/* 頻度の低い「設定」を格納する⋮メニュー(2026-07-30追加。常時見えるボタンを
-   ログイン(またはログアウト)/同期だけに絞り、ヘッダーをすっきりさせる
-   ための整理)。position:relativeの基準にするためheader-menuにidも
-   振ってある(app.js側の外側クリック判定で使う)。 */
-.header-menu { position: relative; }
-.header-menu-panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 150px;
-  padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
-}
-/* [hidden]属性は本来ブラウザの既定スタイル(display:none)で隠れるが、
-   上のルールで.header-menu-panelに直接display:flexを指定しているため、
-   author側のクラス指定がUAスタイルシートより優先されてしまい、hidden属性を
-   付けても実際には隠れない(2026-07-30、「ポップが開きっぱなしになる」と
-   報告されたバグの原因。.tab-panel[hidden]と同じパターンで明示的に
-   上書きする必要がある)。 */
-.header-menu-panel[hidden] { display: none; }
-.header-menu-panel button { width: 100%; text-align: left; }
+/* 2026-08-06: ここにあった⋮メニュー(.header-menu / .header-menu-panel)の
+   スタイルは廃止した。「設定」ボタンはヘッダーへ直接戻してある
+   (詳細はindex.html側のコメントを参照)。 */
 
 /* ログイン・同期の状態表示バナー(2026-08-06)。
    2026-08-05にはヘッダーの枠の中の文字 → 「🗒 ログ」ボタン直下の
@@ -177,9 +152,8 @@ body {
   .notice { animation: none; }
 }
 
-/* ⚙設定パネルの見出し行(2026-07-30追加)。開くボタン(settings-toggle)が
-   ⋮メニューの中に格納されたため、開いた後に毎回メニューを開き直さなくても
-   閉じられるよう、専用の閉じるボタン(settings-close)をここに置いた。 */
+/* ⚙設定パネルの見出し行(2026-07-30追加)。設定は縦に長いため、
+   専用の閉じるボタン(settings-close)をここに置いてある。 */
 .settings-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .settings-head h2 { margin: 0; }
 
@@ -315,8 +289,8 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }
 .status.error { color: var(--danger); }
 /* 下の .status.loading が display:flex を直接指定しているため、hidden属性の
-   既定スタイル(display:none)がそちらに負けて隠れなくなる(.header-menu-panel
-   [hidden]と同じパターン)。通知バナーは目立つ位置にあり、消えるべきものが
+   既定スタイル(display:none)がそちらに負けて隠れなくなる(.tab-panel[hidden]と
+   同じパターン)。通知バナーは目立つ位置にあり、消えるべきものが
    残ると分かりやすい不具合になるので明示的に上書きしておく。 */
 .status[hidden] { display: none; }
 

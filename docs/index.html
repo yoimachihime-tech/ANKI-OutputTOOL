@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260806a">
+<link rel="stylesheet" href="./style.css?v=20260806b">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -73,26 +73,24 @@
            過去の履歴を見返すためのログ本体は⚙設定の「ログ」節へ移した
            (ヘッダーのボタン数を減らし、枠の中身が折り返さずに収まる
            ようにするためでもある)。 -->
-      <!-- 頻度の低い「設定」は⋮メニューに格納する(2026-07-30、「ログイン
-           周りがごちゃごちゃしている」との指摘を受けた整理。ログアウトは
-           ログイン状態を切り替える主要な操作なのでメニューには入れず、
-           上記のとおりログインボタンと同じ場所に直接置く)。 -->
-      <div id="header-menu" class="header-menu">
-        <button type="button" id="header-menu-toggle" class="ghost" title="その他"
-                aria-haspopup="true" aria-expanded="false">⋮</button>
-        <div id="header-menu-panel" class="header-menu-panel" role="menu" hidden>
-          <button type="button" id="settings-toggle" class="ghost" role="menuitem">⚙ 設定</button>
-        </div>
-      </div>
+      <!-- 「設定」は直接置く(2026-08-06)。2026-07-30に「ログイン周りが
+           ごちゃごちゃしている」との指摘を受けて⋮メニューへ格納していたが、
+           ログ・状態表示をこの枠から追い出してボタンが減り、幅に余裕が
+           できたため、1タップで開けるよう表に戻した(⋮メニュー自体は
+           中身が「設定」1つだけになっており、ワンクッション置く意味が
+           無くなっていた)。 -->
+      <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
     </div>
   </div>
 </header>
 
 <!-- ⚙ 設定(全タブ共通) -->
 <section id="settings" class="card" hidden>
-  <!-- 開くボタン(settings-toggle)が⋮メニューの中に格納されたため
-       (2026-07-30)、開いた後に毎回メニューを開き直さなくても閉じられる
-       よう、この中にも専用の閉じるボタンを置いてある。 -->
+  <!-- 設定が長いため、下までスクロールした位置からでも閉じられるよう
+       この中にも専用の閉じるボタンを置いてある(2026-07-30追加。当時は
+       開くボタンが⋮メニューの中にあり、閉じるためだけにメニューを開き直す
+       必要があったのが理由。2026-08-06に⋮メニューは廃止したが、
+       閉じるボタン自体は上記の理由で残している)。 -->
   <div class="settings-head">
     <h2>設定</h2>
     <button type="button" id="settings-close" class="ghost">✕ 閉じる</button>
@@ -529,6 +527,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260806a"></script>
+<script type="module" src="./app.js?v=20260806b"></script>
 </body>
 </html>

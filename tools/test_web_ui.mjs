@@ -1316,21 +1316,12 @@ if ($('app-log-empty').hidden === true) {
   fail('ログがあるのに空表示が出たままになっている');
 }
 
-// ⋮メニュー(⚙設定の入口)。bindEvents()が途中で止まると「押しても何も
-// 起きない」という形で壊れるため、開閉を実際に確かめる(2026-08-06、
-// 実機でこの症状が報告された)。
-$('header-menu-toggle').click();
-if ($('header-menu-panel').hidden === false
-  && $('header-menu-toggle').getAttribute('aria-expanded') === 'true') {
-  ok('⋮ボタンで設定メニューが開く');
+// ⚙設定はヘッダーに直接置いてある(2026-08-06、⋮メニューを廃止)。
+// ワンクッション無しに1タップで開けることを固定する。
+if ($('settings-toggle').closest('.header-actions') && !$('header-menu-toggle')) {
+  ok('⚙設定ボタンは⋮メニューに隠れずヘッダーに直接ある');
 } else {
-  fail('⋮ボタンを押してもメニューが開かない');
-}
-$('header-menu-toggle').click();
-if ($('header-menu-panel').hidden === true) {
-  ok('もう一度⋮ボタンを押すとメニューが閉じる');
-} else {
-  fail('⋮ボタンでメニューが閉じない');
+  fail('⚙設定ボタンがヘッダーに直接置かれていない');
 }
 
 $('app-log-clear').click();
