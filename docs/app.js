@@ -2954,8 +2954,19 @@ function setStatus(el, message, isError = false) {
   el.classList.toggle('error', isError);
   if (el.hasAttribute('data-autohide')) {
     cancelAutoHideStatus(el);
+    if (!message) {
+      // 2026-08-05: message が空文字の呼び出し(例:
+      // autoPullOnStartupの「変更なし」ケース)で el.hidden = false のまま
+      // 自動非表示タイマーも立てず、中身が空のトースト枠だけが画面に
+      // 残り続けるバグがあった(以前はこの状態表示が枠無しのインライン
+      // テキストだったため気づきにくかったが、トースト化して背景・枠を
+      // 付けたことで「空の丸い箱」として目立つようになり発覚した)。
+      // 空文字なら即座に隠す。
+      el.hidden = true;
+      return;
+    }
     el.hidden = false;
     // エラーは片桐が気づけるよう自動で隠さない。正常な文言だけ一定時間後に隠す。
-    if (!isError && message) scheduleAutoHideStatus(el);
+    if (!isError) scheduleAutoHideStatus(el);
   }
 }
