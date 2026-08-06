@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260806o">
+<link rel="stylesheet" href="./style.css?v=20260806p">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -484,11 +484,10 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       </li>
       <li>
         <b>単語・句動詞など、それ自体は文ではないもの</b>(例: <code>give up</code>) …
-        その表現が使われる文法構成を示し、<b>その表現を含む例文を3つ</b>作ります。
-        3つは同じ文法構成でも、内容(主語・場面・話題)はそれぞれ別のものになります。<br>
-        さらに、<b>複数の単語・句動詞をまとめて入力すると、他の表現も一緒に使った
-        例文が加わります</b>(2件なら計4つ、3件以上なら計5つ。1文で複数の新しい
-        表現を音読できます)。
+        複数入力しても<b>まとめて1枚</b>のカードになり、
+        <b>例文の数が語句の数に応じて増えます</b>(1件なら3つ、2件なら4つ、
+        3件なら5つ…最大10まで)。入力したどの表現も、例文のどこかに必ず登場します。
+        例文どうしは内容(主語・場面・話題)がそれぞれ別のものになります。
       </li>
     </ul>
     <textarea id="shuujuku-input" rows="4" spellcheck="false"
@@ -647,6 +646,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260806o"></script>
+<script type="module" src="./app.js?v=20260806p"></script>
 </body>
 </html>

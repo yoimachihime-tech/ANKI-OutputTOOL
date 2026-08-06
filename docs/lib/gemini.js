@@ -661,79 +661,69 @@ export async function generateShuujukuItemsFromSentences({
 // 含む例文を3つ生成させる(内容がそれぞれ別になるようプロンプトで指示する)。
 // ---------------------------------------------------------------------------
 
-/**
- * 表現1件だけを使う例文の数(常にこの数は作る)。
- */
+/** 表現が1件だけのときの例文数。 */
 export const BASE_PHRASE_EXAMPLES = 3;
 
 /**
- * 1枚あたりの例文数の上限(2026-08-06、片桐の選択)。
+ * 1枚あたりの例文数の上限。
  *
- * 例文数は「3 + (入力した表現の数 - 1)」だが、無制限にすると10件入れたときに
- * 12例文になり、**応答が出力トークン上限で途中で切れてバッチごと失敗する**
- * (chunkForBatch のコメントと同じ理由)。片桐の指示「2語句→4つ、3語句→5つ」が
- * ちょうど上限に一致するので、5で頭打ちにする。
+ * 2026-08-06に片桐は当初5を選んだが、それは「表現ごとに1枚のカードを作り、
+ * それぞれに最大5例文」という設計での話だった。実際に動かしたところ
+ * 「1枚のカードにまとめ、例文数が語句の数で変わる」のが本来の想定だったと
+ * 判明したため、上限を引き上げてある。理由は2つ:
+ *   - カードが1枚になったので、5だったときの根拠(N枚×M例文で応答が
+ *     出力トークン上限を超え、バッチごと失敗する)がほぼ無くなった。
+ *   - **5のままだと6件以上入れたときに、一度も例文に登場しない語句が出る**。
+ *     入力したものが黙って消えるのは、このアプリで一貫して避けている挙動。
+ * 8件までは全語句が必ず登場する。これを超える場合は呼び出し側が警告する。
  */
-export const MAX_PHRASE_EXAMPLES = 5;
+export const MAX_PHRASE_EXAMPLES = 10;
 
 /**
- * 「他の表現も一緒に使う」組み合わせ例文の数を、入力した表現の総数から決める。
- * 1件→0 / 2件→1 / 3件以上→2(上限)。
- *
- * **チャンクの件数ではなく入力全体の件数から決めること**。10件を超えて
- * BATCH_SIZEごとに分かれた場合、チャンクの件数で決めると最後の1件だけ
- * 例文数が減るという分かりにくい差が出る。
+ * 入力した表現の数から、1枚に載せる例文の数を決める。
+ * 1件→3 / 2件→4 / 3件→5 / ... / 8件以上→10(上限)。
  */
-export function comboExampleCount(totalPhrases) {
-  return Math.max(0, Math.min(totalPhrases - 1, MAX_PHRASE_EXAMPLES - BASE_PHRASE_EXAMPLES));
+export function phraseExampleCount(totalPhrases) {
+  const n = Math.max(1, totalPhrases);
+  return Math.min(Math.max(BASE_PHRASE_EXAMPLES, n + 2), MAX_PHRASE_EXAMPLES);
 }
 
-export async function generateShuujukuItemsFromPhrases({
-  phrases, apiKey, model, promptTemplate, onProgress,
+/** 上限に達して、全語句が例文に登場しない恐れがあるか。 */
+export function phraseExamplesMayOmit(totalPhrases) {
+  return totalPhrases > MAX_PHRASE_EXAMPLES;
+}
+
+/**
+ * 入力した単語・句動詞を**まとめて1枚**の習熟用カードにする
+ * (2026-08-06、片桐の想定に合わせて「1件=1枚」から変更)。
+ *
+ * 例文の数は入力した語句の数で変わり(`phraseExampleCount`)、入力した表現は
+ * 全体を通して必ず1回以上登場するようプロンプトで指示している。
+ *
+ * @returns {Promise<object>} 習熟用ストックに追加できる item(1件)
+ */
+export async function generateShuujukuItemFromPhrases({
+  phrases, apiKey, model, promptTemplate,
 }) {
-  const results = new Array(phrases.length).fill(null);
-  const chunks = chunkForBatch(phrases);
-  let done = 0;
+  const exampleCount = phraseExampleCount(phrases.length);
+  const prompt = fillPlaceholders(promptTemplate, {
+    count: String(phrases.length),
+    items: phrases.map((p, i) => `[${i + 1}] ${p}`).join('\n'),
+    example_count: String(exampleCount),
+  });
+  const parsed = extractJson(await callGemini(prompt, apiKey, model));
 
-  // 組み合わせ相手の一覧は入力全体から作る(チャンクをまたいでも同じ内容を
-  // 渡すので、どのチャンクの表現も同じ候補から相手を選べる)。
-  const comboCount = comboExampleCount(phrases.length);
-  const exampleCount = BASE_PHRASE_EXAMPLES + comboCount;
-  const allPhrases = phrases.length > 1
-    ? phrases.map((p) => `- ${p}`).join('\n')
-    : '(今回は1件だけなので、組み合わせる相手はありません)';
-
-  for (const chunk of chunks) {
-    const offset = done;
-    if (onProgress) onProgress(done, phrases.length);
-
-    const lines = chunk.map((p, i) => `[${i + 1}] ${p}`).join('\n');
-    const prompt = fillPlaceholders(promptTemplate, {
-      count: String(chunk.length),
-      items: lines,
-      example_count: String(exampleCount),
-      combo_count: String(comboCount),
-      all_phrases: allPhrases,
-    });
-    const parsed = extractJsonArray(await callGemini(prompt, apiKey, model));
-
-    alignBatchResults(parsed, chunk.length).forEach((entry, i) => {
-      if (!entry) return;
-      results[offset + i] = {
-        pattern: entry.pattern || '',
-        meaning: entry.meaning || null,
-        examples: Array.isArray(entry.examples) ? entry.examples : [],
-        expl: entry.expl || null,
-        source_kind: 'phrase',
-        source_topic: normalizeShuujukuTopic(chunk[i]),
-        source_label: '由来: 入力した単語・表現',
-      };
-    });
-    done += chunk.length;
-  }
-
-  if (onProgress) onProgress(done, phrases.length);
-  return results;
+  return {
+    pattern: parsed.pattern || '',
+    meaning: parsed.meaning || null,
+    examples: Array.isArray(parsed.examples) ? parsed.examples : [],
+    expl: parsed.expl || null,
+    source_kind: 'phrase',
+    // guidと重複検出のキー。**並び順で別カード扱いにならないよう並べ替える**
+    // (同じ語句を順番だけ変えて入れ直したときに、二重にカードができないため)。
+    source_topic: phrases.map(normalizeShuujukuTopic).sort().join(' | '),
+    source_label: '由来: 入力した単語・表現',
+  };
 }
 
 // ---------------------------------------------------------------------------

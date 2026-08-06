@@ -367,10 +367,11 @@ globalThis.fetch = async (url, init = {}) => {
         // 「何個作れと指示したか」をテスト側で検証できるようにする(モックが
         // 返す配列の長さを見ても、それはモック自身の値でしかない)。
         if (isPhrase) lastPhrasePrompt = init.body;
-        text = JSON.stringify(fakeBatchArray(
-          init.body,
-          isPhrase ? FAKE_SHUUJUKU_FROM_PHRASE : FAKE_SHUUJUKU_FROM_SENTENCE,
-        ));
+        // 単語・句動詞は入力が何件でも「まとめて1枚」なので、配列ではなく
+        // オブジェクトを1つ返す(2026-08-06に1件=1枚から変更)。
+        text = isPhrase
+          ? JSON.stringify(FAKE_SHUUJUKU_FROM_PHRASE)
+          : JSON.stringify(fakeBatchArray(init.body, FAKE_SHUUJUKU_FROM_SENTENCE));
       }
     } else {
       text = JSON.stringify(fakeBatchArray(init.body, FAKE_WORD_CARD));
@@ -1788,9 +1789,9 @@ if (phraseItem.pattern === FAKE_SHUUJUKU_FROM_PHRASE.pattern) {
 } else {
   fail(`pattern: ${JSON.stringify(phraseItem.pattern)}`);
 }
-// 1件だけのときは組み合わせ相手がいないので、例文は3つのまま。
-if (lastPhrasePrompt.includes('ちょうど3個') && lastPhrasePrompt.includes('残りの0個')) {
-  ok('1件だけなら例文3つ(組み合わせ例文は作らない)');
+// 1件だけのときは例文3つ(語句の数+2、ただし最低3)。
+if (lastPhrasePrompt.includes('ちょうど3個')) {
+  ok('1件だけなら例文3つ');
 } else {
   fail('1件のときの例文数の指示が想定と違う');
 }
@@ -1849,21 +1850,25 @@ if (geminiCalls === 3) {
   fail(`Gemini呼び出し回数: ${geminiCalls}(期待:3)`);
 }
 const mixed = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
-if (mixed.filter((i) => i.source_kind === 'phrase').length === 2
+// 英文は1文=1枚のまま。単語・表現は2件でもまとめて1枚(2026-08-06に変更)。
+if (mixed.filter((i) => i.source_kind === 'phrase').length === 1
   && mixed.filter((i) => i.source_kind === 'sentence').length === 1) {
-  ok('英文・表現それぞれの経路でカードが作られる');
+  ok('英文は1文=1枚、単語・表現は何件でもまとめて1枚になる');
 } else {
   fail(`内訳: ${JSON.stringify(mixed.map((i) => i.source_kind))}`);
 }
-// 入力した語句の数に応じて、他の表現も一緒に使った「組み合わせ例文」を増やす
-// (2026-08-06、片桐の選択)。2件→計4つ、3件→計5つ、それ以上も5つで頭打ち
-// (無制限だと応答が出力トークン上限で切れてバッチごと失敗するため)。
-// 例文の本数は**プロンプトで指示する**契約なので、送ったプロンプトを検証する
-// (モックの返す配列の長さを見てもモック自身の値でしかない)。
+// 入力した語句の数に応じて、1枚のカードに載る例文の数を増やす
+// (2026-08-06、片桐の想定)。**入力が何件でもカードは1枚**で、例文の数だけが
+// 1件→3 / 2件→4 / 3件→5 … と増える(上限10)。当初は「1件=1枚」で実装したが、
+// 実機で2枚できたのを見て本来の想定が分かり、まとめる方式へ直した。
+// 例文の本数はプロンプトで指示する契約なので、送ったプロンプトを検証する
+// (モックの返す値の長さを見てもモック自身の値でしかない)。
 const phraseExampleCases = [
-  { input: ['give up', 'look forward to'], total: 4, combo: 1 },
-  { input: ['give up', 'look forward to', 'put off'], total: 5, combo: 2 },
-  { input: ['a', 'b', 'c', 'd', 'e', 'f'], total: 5, combo: 2 },
+  { input: ['give up', 'look forward to'], total: 4 },
+  { input: ['give up', 'look forward to', 'put off'], total: 5 },
+  { input: ['a', 'b', 'c', 'd', 'e', 'f'], total: 8 },
+  // 上限10。11件入れても10のままで、一部の表現が例文に出ない可能性を警告する。
+  { input: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'], total: 10, mayOmit: true },
 ];
 for (const c of phraseExampleCases) {
   $('shuujuku-clear-stock').click();
@@ -1873,19 +1878,31 @@ for (const c of phraseExampleCases) {
   $('shuujuku-input').value = c.input.join('\n');
   $('shuujuku-generate').click();
   for (let i = 0; i < 200 && !lastPhrasePrompt; i += 1) await sleep(50);
-  await sleep(150);
+  await sleep(200);
 
-  if (lastPhrasePrompt.includes(`ちょうど${c.total}個`)
-    && lastPhrasePrompt.includes(`残りの${c.combo}個`)) {
-    ok(`${c.input.length}件の入力 → 例文${c.total}つ(うち組み合わせ${c.combo}つ)を指示する`);
+  if (lastPhrasePrompt.includes(`ちょうど${c.total}個`)) {
+    ok(`${c.input.length}件の入力 → 例文${c.total}つを指示する`);
   } else {
     fail(`${c.input.length}件のときの例文数の指示が想定と違う`);
   }
-  // 組み合わせ相手を選べるよう、入力した表現の一覧をプロンプトに渡していること。
-  if (c.input.every((p) => lastPhrasePrompt.includes(`- ${p}`))) {
-    ok(`  組み合わせ相手として入力${c.input.length}件すべてをAIに渡している`);
+  // 入力した表現をすべて1回の呼び出しでAIに渡していること。
+  if (c.input.every((p, i) => lastPhrasePrompt.includes(`[${i + 1}] ${p}`))) {
+    ok(`  入力${c.input.length}件すべてを1回の呼び出しでAIに渡している`);
   } else {
-    fail('  入力した表現の一覧がプロンプトに含まれていない');
+    fail('  入力した表現がプロンプトに含まれていない');
+  }
+  // 何件入れてもカードは1枚にまとまること(2026-08-06、片桐の想定)。
+  const madeCards = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+  if (madeCards.length === 1) {
+    ok(`  ${c.input.length}件入れてもカードは1枚にまとまる`);
+  } else {
+    fail(`  カード枚数: ${madeCards.length}(期待:1)`);
+  }
+  const omitNote = $('shuujuku-generate-status').textContent.includes('一部の表現が例文に出てこない');
+  if (omitNote === Boolean(c.mayOmit)) {
+    ok(`  上限超えの警告の有無が正しい(${c.mayOmit ? '出す' : '出さない'})`);
+  } else {
+    fail('  上限超えの警告の有無が逆');
   }
 }
 

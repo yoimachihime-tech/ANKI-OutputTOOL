@@ -18,8 +18,8 @@
 
 import {
   generateVocabCards, generateGrammarMultiItems, generateShuujukuItem, generateShuujukuItemsFromRows,
-  generateShuujukuItemsFromSentences, generateShuujukuItemsFromPhrases,
-  comboExampleCount, BASE_PHRASE_EXAMPLES,
+  generateShuujukuItemsFromSentences, generateShuujukuItemFromPhrases,
+  phraseExampleCount, phraseExamplesMayOmit, MAX_PHRASE_EXAMPLES,
   correctEnglishText, consolidateNoErrorCorrections, listModels,
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
@@ -1777,16 +1777,15 @@ async function onShuujukuGenerate() {
     }
 
     if (phrases.length > 0) {
-      showLoading(status, `カードを生成中... (単語・表現 ${phrases.length} 件)`);
-      pushItems(await generateShuujukuItemsFromPhrases({
+      // 単語・句動詞は**まとめて1枚**にする(2026-08-06、片桐の想定に合わせて
+      // 「1件=1枚」から変更)。例文の数が語句の数で変わる。
+      showLoading(status, `カードを生成中... (単語・表現 ${phrases.length} 件をまとめて1枚)`);
+      pushItems([await generateShuujukuItemFromPhrases({
         phrases,
         apiKey,
         model,
         promptTemplate: shared.shuujukuPhrasePrompt,
-        onProgress: (done, total) => {
-          if (total > done) showLoading(status, `カードを生成中... (単語・表現 ${done}/${total} 件)`);
-        },
-      }));
+      })]);
     }
 
     if (items.length > 0) {
@@ -1816,13 +1815,15 @@ async function onShuujukuGenerate() {
       );
     }
     if (phrases.length > 0) {
-      const combo = comboExampleCount(phrases.length);
       notes.push(
         `次の ${phrases.length} 件は「単語・表現」として扱い、正誤の添削はせずに`
-        + `その表現を使った例文${BASE_PHRASE_EXAMPLES + combo}つを作りました`
-        + (combo > 0 ? `(うち${combo}つは他の表現も一緒に使った例文)` : '')
-        + ':\n'
+        + `まとめて1枚のカードにしました(例文${phraseExampleCount(phrases.length)}つ):\n`
         + phrases.map((p) => `・${p}`).join('\n')
+        + (phraseExamplesMayOmit(phrases.length)
+          ? `\n⚠ 例文は最大${MAX_PHRASE_EXAMPLES}つまでのため、この件数だと`
+            + '一部の表現が例文に出てこない可能性があります。'
+            + '分けて実行すると確実です。'
+          : '')
         + '\n(文として添削してほしいものが混ざっていた場合は、文末に「.」を付けて'
         + 'もう一度実行してください)',
       );
