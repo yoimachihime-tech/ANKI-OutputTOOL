@@ -105,7 +105,11 @@ const FAKE_SHUUJUKU_FROM_SENTENCE = {
 
 // 習熟用タブの入力欄に「正しい文1つ + 誤りのある文1つ」を入れたときの
 // 添削応答(正しい方だけがカードになることを確認するため)。
-const FAKE_MIXED_CORRECTIONS = [
+// 誤りのある文はテストから差し替えられるようにしてある——DailyConversationへの
+// 二重転記を防ぐ仕組みは「一度転記した文は二度と転記しない」ので、別の判定
+// (入力欄への部分一致)を確かめるには未転記の文が要るため。
+let fakeErrorSentence = "She don't like coffee.";
+const fakeMixedCorrections = () => [
   {
     original: "I've been working here since 2020.",
     corrected: "I've been working here since 2020.",
@@ -118,7 +122,7 @@ const FAKE_MIXED_CORRECTIONS = [
     score_comment: '問題ありません。',
   },
   {
-    original: 'She don\'t like coffee.',
+    original: fakeErrorSentence,
     corrected: "She doesn't like coffee.",
     explanation: '三人称単数の否定は doesn\'t を使います。',
     category: '文法',
@@ -315,7 +319,7 @@ globalThis.fetch = async (url, init = {}) => {
       // 習熟用タブの入力欄(2026-08-06)。まず添削(構造化出力)で正誤を判定し、
       // 「誤りなし」の文だけカード生成を呼ぶ、という2段構えを再現する。
       text = isCorrectionRequest
-        ? JSON.stringify(FAKE_MIXED_CORRECTIONS)
+        ? JSON.stringify(fakeMixedCorrections())
         : JSON.stringify(FAKE_SHUUJUKU_FROM_SENTENCE);
     } else {
       text = JSON.stringify(FAKE_WORD_CARD);
@@ -966,6 +970,7 @@ if (sheetRows.length === 4) {
 if ($('daily-input').value === '') ok('追記成功後、入力欄がクリアされた');
 else fail('入力欄がクリアされていない');
 
+
 // 追記に成功したらそのまま②の読み込みまで連鎖する(デスクトップ版と同じ)
 if ($('daily-pending-list').children.length === 3) {
   ok('追記後に未出力行の一覧が自動更新された(未出力3件 / 出力済み1件は除外)');
@@ -1567,34 +1572,75 @@ if (document.querySelector('.tab-btn.active').dataset.tab === 'shuujuku') {
   fail('転記でタブが切り替わってしまった');
 }
 
+const regenerate = async () => {
+  $('shuujuku-generate').click();
+  for (let i = 0; i < 200; i += 1) {
+    await sleep(50);
+    if ($('shuujuku-generate-status').textContent.includes('カードにしませんでした')) break;
+  }
+};
+
 // 打ちかけの文を消さずに追記する。同じ文は重複させない。
 $('daily-input').value = '打ちかけの文';
-$('shuujuku-generate').click();
-for (let i = 0; i < 200; i += 1) {
-  await sleep(50);
-  if ($('shuujuku-generate-status').textContent.includes('カードにしませんでした')) break;
-}
-if ($('daily-input').value === "打ちかけの文\nShe don't like coffee.") {
-  ok('入力欄に先客があれば消さずに追記する');
+await regenerate();
+if ($('daily-input').value === '打ちかけの文') {
+  ok('一度転記した文は、入力欄に残っていなくても二度と転記しない');
 } else {
-  fail(`追記の結果が期待と違う: ${JSON.stringify($('daily-input').value)}`);
+  fail(`再転記された: ${JSON.stringify($('daily-input').value)}`);
 }
-$('shuujuku-generate').click();
-for (let i = 0; i < 200; i += 1) {
-  await sleep(50);
-  if ($('shuujuku-generate-status').textContent.includes('カードにしませんでした')) break;
-}
-if ($('daily-input').value === "打ちかけの文\nShe don't like coffee.") {
-  ok('同じ文は二重に転記しない');
+
+// 添削に成功すると onDailyCorrect が入力欄を空にする。そこで習熟用タブの
+// 入力欄に残った誤り文からもう一度生成しても、**同じ文を再び転記しない**こと
+// (再転記するとシートに重複行ができ、無駄なGemini呼び出しにもなる)。
+$('daily-input').value = '';
+await regenerate();
+if ($('daily-input').value === '') {
+  ok('添削後に入力欄が空になっても、転記済みの文は復活しない(シートの重複行を防ぐ)');
 } else {
-  fail(`重複して転記された: ${JSON.stringify($('daily-input').value)}`);
+  fail(`空にした後に再転記された: ${JSON.stringify($('daily-input').value)}`);
 }
+
+// 「複数文を1行にまとめて入力」(このタブが認めている使い方)された中に
+// 同じ文が含まれている場合も、行単位ではなく本文への部分一致で検出する。
+fakeErrorSentence = 'He go to school every day.';
+$('daily-input').value = 'I like tea. He go to school every day.';
+await regenerate();
+if ($('daily-input').value === 'I like tea. He go to school every day.') {
+  ok('1行にまとめられた文の中に同じ文があれば追記しない(行単位ではなく部分一致)');
+} else {
+  fail(`1行にまとめられた文を検出できなかった: ${JSON.stringify($('daily-input').value)}`);
+}
+
+fakeErrorSentence = "She don't like coffee.";
 $('daily-input').value = '';
 if ($('shuujuku-input').value !== '') {
   ok('誤りがあった場合は入力欄を消さない(どの文が弾かれたか見比べられるように)');
 } else {
   fail('誤りがあったのに入力欄が消えている');
 }
+
+// 添削の待ち時間(数十秒)の間に習熟用タブが誤り文を転記した場合、その分まで
+// 消してしまわないこと(2026-08-06修正。以前は成功時に無条件で入力欄を空に
+// していたため、転記されたばかりの文が「転記しました」と表示されたまま
+// 消えていた)。
+// **割り込みは click() の直後に同期的に行うこと**: fetchモックの応答は
+// マイクロタスクで解決するため、await sleep(0)(マクロタスク)を挟むと
+// その時点で添削が完了してしまい、「クリア後に追記」する形になって検証に
+// ならない(最初これで誤った失敗を出した)。
+document.querySelector('[data-tab="daily"]').click();
+geminiMode = 'correction';
+geminiCalls = 0;
+$('daily-input').value = 'I go to the park yesterday.';
+$('daily-correct').click();
+$('daily-input').value = `${$('daily-input').value}\n待ち時間中に転記された文。`;
+for (let i = 0; i < 200 && geminiCalls < 2; i += 1) await sleep(50);
+await sleep(300);
+if ($('daily-input').value === '待ち時間中に転記された文。') {
+  ok('添削中に追記された文は消さず、シートへ送った分だけを取り除く');
+} else {
+  fail(`待ち時間中の追記が保持されていない: ${JSON.stringify($('daily-input').value)}`);
+}
+$('daily-input').value = '';
 
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`

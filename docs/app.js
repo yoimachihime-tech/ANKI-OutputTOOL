@@ -1451,23 +1451,46 @@ async function onShuujukuGenerate() {
  * (2026-08-06追加。習熟用タブが弾いた文をそのまま添削へ回せるようにするため)。
  *
  * 既に入力されている内容は**消さずに追記**する(片桐が打ちかけの文を
- * 失わないため)。同じ文が既にあれば重複させない。ログインは不要
- * (テキストを入れるだけで、実際の添削・シート追記は従来どおり
- * DailyConversationタブ側の操作で行う)。
+ * 失わないため)。ログインは不要(テキストを入れるだけで、実際の添削・
+ * シート追記は従来どおりDailyConversationタブ側の操作で行う)。
  *
- * @returns {number} 実際に追記した件数(すべて重複なら0)
+ * 【二重転記を防ぐ2つの判定】(2026-08-06のレビュー指摘への対応)
+ * 当初は「入力欄の現在の中身に同じ行があるか」だけで判定していたが、
+ * それだけでは足りない:
+ *  (1) 添削に成功すると`onDailyCorrect`が入力欄を空にするため、習熟用タブの
+ *      入力欄に残った誤り文でもう一度生成すると、**同じ文が再び転記されて
+ *      シートに重複行ができる**。→ `transferredToDaily`(このセッション中に
+ *      転記した文の記録)で防ぐ。ページを再読み込みすれば消えるが、その時は
+ *      両方の入力欄も空になっているので取りこぼしにはならない。
+ *  (2) 行単位の比較では、「複数文を1行にまとめて入力」(このタブが明示的に
+ *      認めている使い方)した中に同じ文が含まれていても検出できない。
+ *      → 正規化した本文に対する部分一致で判定する。
+ *
+ * @returns {number} 実際に追記した件数(すべて転記済みなら0)
  */
+const transferredToDaily = new Set();
+
+/** 比較用の正規化(前後空白除去 + 空白の圧縮 + 小文字化)。
+ *  dailyDuplicateOriginalIds() の原文の正規化と同じ考え方。 */
+function normalizeForTransfer(text) {
+  return (text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 function transferToDailyInput(sentences) {
   const el = $('daily-input');
   if (!el) return 0;
   const current = el.value.trim();
-  const existing = new Set(current.split('\n').map((line) => line.trim()).filter(Boolean));
+  const currentNormalized = normalizeForTransfer(current);
   const added = [];
   for (const raw of sentences) {
     const sentence = (raw || '').trim();
-    if (!sentence || existing.has(sentence)) continue;
-    existing.add(sentence);
-    added.push(sentence);
+    if (!sentence) continue;
+    const key = normalizeForTransfer(sentence);
+    if (transferredToDaily.has(key)) continue;
+    // 入力欄に(1行にまとめられた形も含めて)既にあるなら追記しない。
+    // ただし「転記済み」としては記録し、以後も重ねて入れない。
+    if (!currentNormalized.includes(key)) added.push(sentence);
+    transferredToDaily.add(key);
   }
   if (added.length === 0) return 0;
   el.value = current ? `${current}\n${added.join('\n')}` : added.join('\n');
@@ -2540,7 +2563,17 @@ async function onDailyCorrect() {
     const newIds = await appendCorrectionRows({ ...cfg, corrections });
 
     hideLoading(status);
-    $('daily-input').value = '';
+    // **入力欄は「今回シートへ送った分」だけを取り除く**(2026-08-06修正)。
+    // 以前は無条件に空にしていたため、添削の待ち時間(数十秒)の間に習熟用タブが
+    // 誤り文を転記していると、それごと消えてしまっていた(習熟用タブ側は
+    // 「転記しました」と表示したまま)。転記は末尾への追記なので、送った分は
+    // 先頭に残っている。判別できない形(片桐が待ち時間中に自分で編集した等)
+    // なら、消さずにそのまま残す——勝手に消して入力を失わせるより安全。
+    const inputEl = $('daily-input');
+    const remaining = inputEl.value.trimStart();
+    if (remaining.startsWith(text)) {
+      inputEl.value = remaining.slice(text.length).replace(/^\s+/, '');
+    }
     setStatus(status, `${newIds.length} 件をシートに追加しました。②の一覧を更新します...`);
 
     // デスクトップ版と同じく、追記に成功したらそのまま②の読み込みまで連鎖させる
