@@ -121,6 +121,30 @@ const TTS_FIELD_KEYS = {
   daily: ['answer', 'example'],
 };
 
+// ---------------------------------------------------------------------------
+// .apkg 出力の同時実行防止(2026-08-06追加)
+//
+// 【なぜ必要か】片桐から「AIに質問でapkgを出力しながら習熟用タブでも同時に
+// 出力すると、AIに質問の方がちゃんと出力されないのに『出力済み』になる」と
+// 報告された。原因は2つある:
+//
+// (1) ブラウザは、1つのページが短時間に複数のファイルをダウンロードしようと
+//     すると、2つ目以降を確認プロンプトで止めたり黙って破棄したりする
+//     (Chromeの「複数のファイルのダウンロード」許可、iOS Safariの不安定さ)。
+//     `downloadBlob`の`a.click()`は**破棄されても例外を投げない**ため、
+//     アプリ側からは成功と区別が付かず、そのまま`exported_at`を付けてしまう。
+//     ダウンロードの成否を知るブラウザAPIは無いので、**そもそも同時に
+//     走らせない**のが唯一の確実な対処になる。
+// (2) TTS付きの出力は数分かかることがあり、その間に別タブの出力を始められると
+//     待ち時間が重なって「固まった」ようにも見える。
+//
+// 出力中は全タブの出力ボタンを無効化し(見た目で分かるように)、
+// それでも実行された場合(スクリプト経由・無効化前の連打)に備えて
+// この変数でも弾く。
+// ---------------------------------------------------------------------------
+let apkgExportInProgress = false;
+const EXPORT_BUTTON_IDS = ['word-export', 'ai-ask-export', 'shuujuku-export', 'daily-export'];
+
 const $ = (id) => document.getElementById(id);
 
 /** 共有アセット(プロンプト・カード定義・スキーマ)。起動時に読み込む。 */
@@ -1340,8 +1364,14 @@ async function onExportShuujuku() {
     return;
   }
 
-  const btn = $('shuujuku-export');
-  btn.disabled = true;
+  if (!beginApkgExport(status)) return;
+  // **出力対象を開始時点で固定する(2026-08-06修正)。** 以前は生成後の
+  // 後始末でも`shuujukuStock`(現在値)をそのまま使っていたが、習熟用ストックは
+  // 「AIに質問」の4問目生成・DailyConversationの添削から**非同期に増える**。
+  // TTS付きの生成は数分かかることがあるため、その間に増えた項目まで
+  // 「出力済み」として消し、打ち消し記録にまで載せてしまう(=他の端末からも
+  // 消える)データ消失の恐れがあった。出力したのはこのスナップショットだけ。
+  const targets = shuujukuStock.slice();
   try {
     setStatus(status, '.apkg を生成中...');
     // Numフィールド・cards.dueは出力するたびに続き番号を採番する(desktop版の
@@ -1351,8 +1381,8 @@ async function onExportShuujuku() {
     const startNum = getNextNum();
     // TTS APIキーが設定されていれば、例文ごとに音声を合成してContentに
     // 埋め込む(未設定なら従来どおり音声無し)。
-    const { audioTagsByItem, media } = await embedShuujukuTtsAudio(shuujukuStock, status);
-    const readyItems = buildFieldsReadyItems(shuujukuStock, startNum, audioTagsByItem);
+    const { audioTagsByItem, media } = await embedShuujukuTtsAudio(targets, status);
+    const readyItems = buildFieldsReadyItems(targets, startNum, audioTagsByItem);
     const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items: readyItems, media });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `shuujuku_${stamp}.apkg`);
@@ -1362,18 +1392,23 @@ async function onExportShuujuku() {
     // 生成に失敗した場合はストックも番号も変化させない)。
     // 出力済みで消える項目のidは打ち消し記録に残す(2026-07-30、複数端末間の
     // 同期が「削除済み(出力済み)は復活させない」と判定できるようにするため)。
-    addTombstoneIds(STORAGE.shuujukuTombstones, shuujukuStock.map((item) => item.id));
-    advanceNextNum(shuujukuStock.length);
-    const count = shuujukuStock.length;
-    shuujukuStock = [];
+    addTombstoneIds(STORAGE.shuujukuTombstones, targets.map((item) => item.id));
+    advanceNextNum(targets.length);
+    // 出力中に増えた項目は残す(参照比較。ストックは常に同じオブジェクトを
+    // 保持しているため、idを使わずSetでそのまま判定できる)。
+    const exportedSet = new Set(targets);
+    shuujukuStock = shuujukuStock.filter((item) => !exportedSet.has(item));
     localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
     renderShuujukuStock();
 
-    setStatus(status, `${count} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。`);
+    setStatus(
+      status,
+      `${targets.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。`,
+    );
   } catch (e) {
     setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
   } finally {
-    btn.disabled = false;
+    endApkgExport();
   }
 }
 
@@ -2519,8 +2554,7 @@ async function onDailyExport() {
   }
   const skippedExported = dailyPendingRows.length - notExportedRows.length;
 
-  const btn = $('daily-export');
-  btn.disabled = true;
+  if (!beginApkgExport(status)) return;
   try {
     setStatus(status, '.apkg を生成中...');
     const readyItems = dailyconv.buildFieldsReadyItems(rows);
@@ -2539,7 +2573,7 @@ async function onDailyExport() {
       clearAccessToken();
       updateGoogleAuthStatus();
     }
-    btn.disabled = false;
+    endApkgExport();
     return;
   }
 
@@ -2604,7 +2638,7 @@ async function onDailyExport() {
       updateGoogleAuthStatus();
     }
   } finally {
-    btn.disabled = false;
+    endApkgExport();
   }
 }
 
@@ -2874,9 +2908,7 @@ async function onExport(tabKey) {
     return;
   }
 
-  const btnId = tabKey === 'word' ? 'word-export' : 'ai-ask-export';
-  const btn = $(btnId);
-  btn.disabled = true;
+  if (!beginApkgExport(status)) return;
   try {
     setStatus(status, '.apkg を生成中...');
     // TTS APIキーが設定されていれば、対象フィールド(単語:Example、
@@ -2914,8 +2946,35 @@ async function onExport(tabKey) {
   } catch (e) {
     setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
   } finally {
-    btn.disabled = false;
+    endApkgExport();
   }
+}
+
+/**
+ * .apkg 出力の開始を宣言する。既に別の出力が走っていれば false を返し、
+ * 呼び出し側はそこで中止する(理由は上の EXPORT_BUTTON_IDS 付近を参照)。
+ * true を返した場合、呼び出し側は **必ず finally で endApkgExport() を
+ * 呼ぶこと**(でないと以後どのタブからも出力できなくなる)。
+ */
+function beginApkgExport(statusEl) {
+  if (apkgExportInProgress) {
+    setStatus(
+      statusEl,
+      '別のタブで .apkg を出力中です。そちらが終わってから実行してください。\n'
+      + '(同時にダウンロードするとブラウザ側で片方が破棄されることがあるため、'
+      + '1つずつ実行します)',
+      true,
+    );
+    return false;
+  }
+  apkgExportInProgress = true;
+  EXPORT_BUTTON_IDS.forEach((id) => { const b = $(id); if (b) b.disabled = true; });
+  return true;
+}
+
+function endApkgExport() {
+  apkgExportInProgress = false;
+  EXPORT_BUTTON_IDS.forEach((id) => { const b = $(id); if (b) b.disabled = false; });
 }
 
 function downloadBlob(blob, filename) {

@@ -1359,6 +1359,90 @@ if ($('app-log').children.length === 0 && $('app-log-empty').hidden === false) {
   fail(`消去できていない: ${$('app-log').children.length} 件`);
 }
 
+// ---------------------------------------------------------------------------
+// [27] .apkg出力の同時実行を防ぐ(2026-08-06追加)
+//
+// 片桐から「AIに質問でapkgを出力しながら習熟用タブでも同時に出力すると、
+// AIに質問の方がちゃんと出力されないのに『出力済み』になる」と報告された。
+// ブラウザは短時間に複数のダウンロードが起きると2つ目以降を破棄することが
+// あり、`a.click()`は破棄されても例外を投げないため、アプリ側からは成功と
+// 区別が付かない。**そもそも同時に走らせない**のが唯一の確実な対処。
+// ---------------------------------------------------------------------------
+console.log('\n[27] .apkg出力の同時実行を防ぐ');
+
+document.querySelector('[data-tab="ai_ask"]').click();
+$('ai-ask-clear-stock').click();
+await sleep(20);
+geminiMode = 'grammar_multi';
+geminiCalls = 0; // モックの「1回目=3問、2回目以降=習熟用4問目」判別のため必須
+$('ai-ask-input').value = '同時出力の検証用の質問';
+$('ai-ask-generate').click();
+await sleep(400);
+
+const shuujukuBefore = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]').length > 0
+  && shuujukuBefore.length > 0) {
+  ok('検証用に「AIに質問」と「習熟用」の両方へカードを用意');
+} else {
+  fail('検証用のカードを用意できなかった');
+}
+
+// AIに質問の出力を始めた直後(await の途中)に、習熟用の出力も試みる。
+const shuujukuStatusBefore = $('shuujuku-export-status').textContent;
+downloaded = null;
+$('ai-ask-export').click();
+
+// 第1の防御: 出力中は全タブの出力ボタンが無効になる。無効なボタンは
+// click()しても何も起きない(ハンドラ自体が呼ばれない)。
+if ($('shuujuku-export').disabled && $('word-export').disabled && $('daily-export').disabled) {
+  ok('出力中は他タブの出力ボタンも無効化される(押せないことが見て分かる)');
+} else {
+  fail('出力中に他タブの出力ボタンが無効化されていない');
+}
+$('shuujuku-export').click();
+if ($('shuujuku-export-status').textContent === shuujukuStatusBefore) {
+  ok('無効化されたボタンを押しても、2つ目の出力は始まらない');
+} else {
+  fail(`無効化中に出力が始まった: ${$('shuujuku-export-status').textContent}`);
+}
+
+// 第2の防御: 何らかの理由でボタンが有効なまま実行された場合(連打・
+// スクリプト経由)も、コード側で弾いて理由を伝える。
+$('shuujuku-export').disabled = false;
+$('shuujuku-export').click();
+if ($('shuujuku-export-status').textContent.includes('別のタブで')) {
+  ok('ボタンの無効化をすり抜けた場合も、コード側で弾いて理由を伝える');
+} else {
+  fail(`2つ目の出力が拒否されなかった: ${$('shuujuku-export-status').textContent}`);
+}
+if (JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]').length
+  === shuujukuBefore.length) {
+  ok('拒否された側のストックは消えない(習熟用は出力成功時に空になる設計のため)');
+} else {
+  fail('拒否されたのに習熟用ストックが消えている');
+}
+
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (downloaded) ok('先に始めた「AIに質問」の出力は最後まで完了する');
+else fail('先に始めた出力が完了しなかった');
+await sleep(50);
+if (!$('ai-ask-export').disabled && !$('shuujuku-export').disabled
+  && !$('word-export').disabled && !$('daily-export').disabled) {
+  ok('出力が終わると全タブの出力ボタンが再び有効になる');
+} else {
+  fail('出力後にボタンが無効のまま残っている');
+}
+
+// 直列にやり直せば、拒否された側もそのまま出力できる。
+downloaded = null;
+$('shuujuku-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (downloaded && JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]').length === 0) {
+  ok('終わってから実行すれば、拒否された側も問題なく出力できる');
+} else {
+  fail(`やり直しの出力に失敗: downloaded=${Boolean(downloaded)}`);
+}
+
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
   : '\n✅ Web版UIの通し動作(単語・AIに質問・習熟用(音読)・DailyConversationの'
