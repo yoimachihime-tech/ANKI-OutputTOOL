@@ -1943,7 +1943,8 @@ async function runSync(statusEl, btnEl) {
 
     const { newState, capacityLines, overLimit, nearLimit } = mergeRemoteIntoLocal(remote);
 
-    // 1セルの上限(50,000文字)を超えていたら、書き込む前に中断する
+    // 保存できる上限(SYNC_VALUE_LIMIT。1キーを複数セルに分割して保存する)を
+    // 超えていたら、書き込む前に中断する
     // (2026-08-05追加)。そのまま送るとSheets APIが素の400を返し、どの
     // ストックが原因かも分からないまま同期が丸ごと止まってしまう。
     // ここまでのマージ結果はローカルには反映済みなので、リモートの内容が
@@ -1955,7 +1956,7 @@ async function runSync(statusEl, btnEl) {
         `${overLimit.join('・')}のデータが保存できる上限(${SYNC_VALUE_LIMIT.toLocaleString()}文字)を`
         + '超えたため、シートへの書き戻しを中止しました。\n'
         + '(リモートの内容の取り込みは完了しています。この端末のデータは失われていません)\n\n'
-        + '各タブの「出力済みを削除」で、Ankiへ取り込み済みのカードを整理してから'
+        + '各タブの「出力済みのカードを削除」で、Ankiへ取り込み済みのカードを整理してから'
         + 'もう一度同期してください。',
         true,
       );
@@ -1971,7 +1972,7 @@ async function runSync(statusEl, btnEl) {
       `同期しました。(セル容量使用率: ${capacityLines.join(' / ')})`
       + (nearLimit.length > 0
         ? `\n⚠ ${nearLimit.join('・')} が上限に近づいています。`
-          + '「出力済みを削除」でAnkiへ取り込み済みのカードを整理することを推奨します。'
+          + '「出力済みのカードを削除」でAnkiへ取り込み済みのカードを整理することを推奨します。'
         : ''),
       nearLimit.length > 0,
     );
@@ -2005,7 +2006,7 @@ async function onHeaderSyncNow() {
 // 生成物を一切保持していない(File System Access APIによる保存先固定は
 // モバイルでの対応状況が不安定なため見送られている)。つまり**ストックの
 // 項目こそが「Ankiに取り込む前の内容」を再現できる唯一のコピー**であり、
-// 「出力済みを削除」やブラウザのデータ削除で失うと復元できない。
+// 「出力済みのカードを削除」やブラウザのデータ削除で失うと復元できない。
 // この非対称性を埋めるための、依存を増やさない最小の手当て。
 //
 // 【複数端末間の同期との違い】
@@ -2483,18 +2484,40 @@ async function onDailyExport() {
     return;
   }
 
+  // 既にこのブラウザで出力した行を除く(2026-08-06追加)。
+  //
+  // 【なぜ必要か】以前はフィルターの状態に関わらず、読み込んだ行を毎回すべて
+  // 出力していた。ところが「出力済み(このブラウザで記録)を隠す」は既定ONなので、
+  // **一度出力して一覧から消えた行が、次の出力にも毎回入り、TTSも作り直される**
+  // (Anki側はguidが同じなので上書き更新されるが、時間とAPI料金は毎回かかる)。
+  // 画面の説明とも食い違っていたため、単語/AIに質問タブの`onExport`と同じ
+  // 「まだ出力していないものだけ」に揃えた。もう一度出したい場合は
+  // ②の「出力済みの印を外す」で戻せる。
+  const exportedIds = dailyconv.loadExportedIds();
+  const notExportedRows = dailyPendingRows.filter((row) => !exportedIds.has(row.id));
+  if (notExportedRows.length === 0) {
+    setStatus(
+      status,
+      '出力していない行がありません(読み込んだ行はすべて出力済みです)。\n'
+      + 'もう一度出力したい場合は、②の「出力済みの印を外す」を押してください。',
+      true,
+    );
+    return;
+  }
+
   // build_grammar_dailyconv_v1_final.process_sheet_rows() と同じ除外
   // (「誤りなし」の行・ID重複行はカード化しない)。
-  const { rows, duplicateIds } = dailyconv.processSheetRows(dailyPendingRows);
+  const { rows, duplicateIds } = dailyconv.processSheetRows(notExportedRows);
   if (rows.length === 0) {
     setStatus(
       status,
-      '出力対象の行がありません。読み込んだ行はすべて「誤りなし」またはID重複のため'
+      '出力対象の行がありません。まだ出力していない行はすべて「誤りなし」またはID重複のため'
       + '除外されました(誤りのある行だけがカード化の対象です)。',
       true,
     );
     return;
   }
+  const skippedExported = dailyPendingRows.length - notExportedRows.length;
 
   const btn = $('daily-export');
   btn.disabled = true;
@@ -2538,6 +2561,9 @@ async function onDailyExport() {
     renderDailyPending();
 
     let note = '';
+    if (skippedExported > 0) {
+      note += `\n既に出力済みの ${skippedExported} 件は今回の対象から除きました。`;
+    }
     if (duplicateIds.length > 0) note += `\nID重複の ${duplicateIds.length} 件は除外しました。`;
 
     // 「Anki出力済み」のマークは、.apkg の生成に**実際に成功してから**行う
@@ -2570,7 +2596,7 @@ async function onDailyExport() {
       `.apkg は ${rows.length} 件で出力済みです(ダウンロード済みのファイルをAnkiで開いてください)。\n`
       + `ただしシートの「Anki出力済み」への書き込みに失敗しました: ${e.message}\n`
       + '(この端末では出力済みとして記録済みです。シート側のマークだけやり直したい場合は、'
-      + '一覧を更新してからもう一度出力してください)',
+      + '②の「出力済みの印を外す」を押してから、もう一度出力してください)',
       true,
     );
     if (e instanceof SheetsAuthError) {
@@ -2777,7 +2803,7 @@ function onResetExported(tabKey) {
 
 /**
  * 「出力済みを削除」(2026-07-30追加、単語/AIに質問タブ)。片桐から
- * 「複数端末間の同期でAIに質問のセル使用率(50,000文字上限に対する%)が
+ * 「複数端末間の同期でAIに質問のセル使用率(保存上限に対する%)が
  * 19.6%とかなり高い」という報告を受けての対応。原因は、出力(`.apkg`
  * ダウンロード)しても`onExport`はカードを削除せず`exported_at`を付けて
  * ストックに残し続けており(「出力済みを隠す」フィルターで見えなくなるだけ)、
@@ -2805,10 +2831,10 @@ function onDeleteExported(tabKey) {
     return;
   }
   if (!confirm(
-    `出力済みの ${exportedItems.length} 件をストックから完全に削除します(カードの内容自体が消え、`
-    + `復元できません)。\n\nダウンロードした.apkgが実際にAnkiへ取り込み済みであることを`
-    + '必ず確認してから実行してください(Web版はデスクトップ版と違いapkgの自動バックアップを'
-    + '保存していないため、この操作を取り消す手段がありません)。',
+    `出力済みの ${exportedItems.length} 件をストックから完全に削除します(カードの内容自体が消えます)。\n\n`
+    + 'ダウンロードした.apkgが実際にAnkiへ取り込み済みであることを必ず確認してから'
+    + '実行してください(Web版はデスクトップ版と違い、出力した.apkgを自動保存していません)。\n'
+    + '事前に⚙設定の「バックアップを書き出す」を実行していれば、後から復元できます。',
   )) return;
   const exportedSet = new Set(exportedItems);
   cfg.setStock(cfg.stock.filter((item) => !exportedSet.has(item)));

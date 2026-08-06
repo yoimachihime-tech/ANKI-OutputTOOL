@@ -330,6 +330,16 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   to { transform: rotate(360deg); }
 }
 
+/* 操作ボタンの小見出し(2026-08-06追加)。「カードごと消える」ボタンと
+   「印だけ変える」ボタンが1行に混在していて見分けられない、という指摘への
+   対応で、役割ごとに行を分けてこのラベルを付けた。通常の.hintより余白を
+   詰めて、直後のボタン行との結び付きを見た目でも示す。 */
+.btn-group-label {
+  margin: 12px 0 4px;
+  font-size: .8rem;
+  font-weight: 600;
+}
+
 .count { font-size: .8rem; font-weight: 400; color: var(--sub); }
 .empty { color: var(--sub); font-size: .9rem; padding: 12px 0; }
 

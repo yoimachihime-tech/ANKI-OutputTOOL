@@ -1146,14 +1146,42 @@ if ($('daily-filter-hide-exported').checked
     + `行数=${$('daily-pending-list').children.length} / count=${$('daily-pending-count').textContent}`);
 }
 
+// 出力済みの行は次回の出力対象から外れる(2026-08-06に単語/AIに質問タブと
+// 挙動を揃えた)。以前は表示フィルターに関わらず読み込んだ行を毎回すべて
+// 出力しており、一覧から消えた行のTTSを毎回作り直していた。
+// ここでは「読み込んだ2件のうち1件が出力済み」の状態なので、もう一度
+// 押しても出力されるのは残り1件だけ……のはずだが、残る1件はID重複
+// (id-dup-1/id-dup-2)側なのでprocessSheetRowsに弾かれ、結果として
+// 「出力対象が無い」になる。どちらの経路でも「出力済みの行を作り直さない」
+// ことは同じなので、.apkgが生成されないことで確認する。
+downloaded = null;
+$('daily-export').click();
+await sleep(300);
+if (!downloaded && $('daily-export-status').textContent.includes('出力対象の行がありません')) {
+  ok('出力済みの行は次回の出力対象から外れる(同じ.apkgを作り直さない)');
+} else {
+  fail(`再出力の結果: downloaded=${Boolean(downloaded)} / `
+    + `status=${$('daily-export-status').textContent}`);
+}
+
 $('daily-reset-exported').click();
 if (JSON.parse(localStorage.getItem('anki_tool_daily_exported_ids') || '[]').length === 0
   && $('daily-pending-list').children.length === 2) {
-  ok('「出力済み履歴をリセット」でローカル記録が消え、一覧に2件とも再表示される');
+  ok('「出力済みの印を外す」でローカル記録が消え、一覧に2件とも再表示される');
 } else {
   fail(`リセット後: 記録=${localStorage.getItem('anki_tool_daily_exported_ids')} / `
     + `行数=${$('daily-pending-list').children.length}`);
 }
+
+// 印を外した後は、同じ行をもう一度出力できる(逃げ道が実際に機能すること)。
+downloaded = null;
+$('daily-mark-exported').checked = false;
+$('daily-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (downloaded) ok('印を外せば、同じ行をもう一度出力できる');
+else fail('印を外した後も再出力できない');
+await sleep(200);
+$('daily-reset-exported').click();
 $('daily-mark-exported').checked = true;
 
 // ---------------------------------------------------------------------------

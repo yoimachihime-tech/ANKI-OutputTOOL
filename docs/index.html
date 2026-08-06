@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260806b">
+<link rel="stylesheet" href="./style.css?v=20260806c">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -98,13 +98,15 @@
   <p class="hint">
     <b>新しい端末でも、ふつうは何も入力する必要はありません。</b>
     「Googleにログイン」を押すと、APIキーやスプレッドシートIDが自動で設定されます
-    (ログイン維持用 Worker から受け取ります)。以下の欄は、自動で入らないときや、
-    一時的に別の値を試したいときのためのものです。
+    (ログイン維持用 Worker から受け取ります。下の「起動時に自動で読み込む」を
+    OFFにしている場合は、同期かDailyConversationタブを使った時点で設定されます)。
+    以下の欄は、自動で入らないときや、一時的に別の値を試したいときのためのものです。
   </p>
   <p class="hint">
     APIキーはこのブラウザ内(localStorage)にのみ保存され、
     Google以外のサーバーには送信されません。
-    共用の端末では使用後に「キーを消去」してください。
+    共用の端末では使用後に「キーを消去」「TTSキーを消去」「ログアウト」を
+    それぞれ実行してください。
   </p>
 
   <label for="api-key">Gemini APIキー</label>
@@ -151,8 +153,9 @@
     <button type="button" id="tts-auto-gain" class="ghost">自動調整</button>
   </div>
   <p class="hint">
-    「自動調整」は、テスト再生と同じサンプル文で0dBを超えない(音割れしない)範囲まで
-    自動的に音量ゲインを引き上げます。
+    「自動調整」は、テスト再生と同じサンプル文で0dBを超えない(音割れしない)範囲に
+    音量ゲインを自動調整します(小さければ引き上げ、すでに音割れしている場合は
+    下げます)。
   </p>
 
   <label class="checkbox">
@@ -195,6 +198,12 @@
     従来どおり約1時間で切れ、そのつどログインし直しになります)。
     セットアップ手順はリポジトリの <code>worker/README.md</code> を参照してください。
     設定した場合、下のクライアントID欄は使いません(Workerから受け取ります)。
+  </p>
+  <p class="hint">
+    ただし、Google Cloud の OAuth 同意画面が「テスト」ステータスのままの場合、
+    Googleの仕様で<b>7日ごとに1回はログインし直しが必要です</b>
+    (1時間ごとよりは大幅に長くなります)。しばらく使えていたのに急に
+    ログインを求められた場合は、不具合ではなくこれが原因の可能性が高いです。
   </p>
   <input type="text" id="oauth-worker-url" autocomplete="off" spellcheck="false"
          placeholder="https://anki-tool-oauth.xxxx.workers.dev">
@@ -252,7 +261,7 @@
     3ストックの内容をJSONファイルとして手元に保存します。
     <strong>この画面はデスクトップ版と違い、書き出した .apkg を自動保存していません。</strong>
     ストックの項目が「Ankiに取り込む前の内容」を再現できる唯一のコピーなので、
-    「出力済みを削除」を実行する前や、ブラウザのデータを消す前に書き出しておくことを
+    「出力済みのカードを削除」を実行する前や、ブラウザのデータを消す前に書き出しておくことを
     強く推奨します。
   </p>
   <div class="row">
@@ -330,11 +339,21 @@ resilient | She remained resilient."></textarea>
     </div>
     <div id="word-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="word-stock-list" class="stock"></ul>
+    <!-- 2026-08-06: ボタンを役割ごとに2行へ分けた。以前は4つを1行に並べて
+         いたため、「カードごと消える」3つと「印を外すだけ」の1つが見分け
+         られず、どれが何をするのか分からないという指摘を受けた。
+         「出力済み履歴をリセット」も、別に「履歴」という記録があるように
+         読めてしまうため(実体は各カードが持つ印)、動作そのままの名前に
+         変えてある。 -->
+    <p class="hint btn-group-label">カードを削除する(取り消せません)</p>
     <div class="row">
-      <button type="button" id="word-delete-selected">選択項目を削除</button>
-      <button type="button" id="word-clear-stock" class="danger">すべて削除</button>
-      <button type="button" id="word-reset-exported">出力済み履歴をリセット</button>
-      <button type="button" id="word-delete-exported" class="danger">出力済みを削除(同期の容量節約)</button>
+      <button type="button" id="word-delete-selected">選択したカードを削除</button>
+      <button type="button" id="word-delete-exported" class="danger">出力済みのカードを削除</button>
+      <button type="button" id="word-clear-stock" class="danger">すべてのカードを削除</button>
+    </div>
+    <p class="hint btn-group-label">印だけ変える(カードは消えません)</p>
+    <div class="row">
+      <button type="button" id="word-reset-exported">出力済みの印を外す(もう一度出力できるようにする)</button>
     </div>
   </section>
 
@@ -382,11 +401,16 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     </div>
     <div id="ai-ask-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="ai-ask-stock-list" class="stock"></ul>
+    <!-- ボタンの並べ方・名前の意図は単語タブ側のコメントを参照(2026-08-06)。 -->
+    <p class="hint btn-group-label">カードを削除する(取り消せません)</p>
     <div class="row">
-      <button type="button" id="ai-ask-delete-selected">選択項目を削除</button>
-      <button type="button" id="ai-ask-clear-stock" class="danger">すべて削除</button>
-      <button type="button" id="ai-ask-reset-exported">出力済み履歴をリセット</button>
-      <button type="button" id="ai-ask-delete-exported" class="danger">出力済みを削除(同期の容量節約)</button>
+      <button type="button" id="ai-ask-delete-selected">選択したカードを削除</button>
+      <button type="button" id="ai-ask-delete-exported" class="danger">出力済みのカードを削除</button>
+      <button type="button" id="ai-ask-clear-stock" class="danger">すべてのカードを削除</button>
+    </div>
+    <p class="hint btn-group-label">印だけ変える(カードは消えません)</p>
+    <div class="row">
+      <button type="button" id="ai-ask-reset-exported">出力済みの印を外す(もう一度出力できるようにする)</button>
     </div>
   </section>
 
@@ -396,7 +420,7 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       同じ問題(同じ質問から生成された同じ番目のカード)は既存のものが更新されるだけなので、
       学習履歴は失われません。
-      ⚙設定でTTS APIキーを設定していれば、例文の音声も自動で合成して埋め込みます。
+      ⚙設定でTTS APIキーを設定していれば、解答と例文の音声も自動で合成して埋め込みます。
       対象は②の一覧のうち<b>まだ出力していないカードだけ</b>です。
     </p>
     <button type="button" id="ai-ask-export" class="primary">.apkg をダウンロード</button>
@@ -411,23 +435,31 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
   <section class="card">
     <h2>① 候補について</h2>
     <p class="hint">
-      このタブには直接の入力欄がありません。「AIに質問」タブで質問を送信すると、
-      その質問の背景にある文法パターンを音読練習用にまとめたカードが4問目として
-      自動的にここへ追加されます。
+      このタブには直接の入力欄がありません。カードは次の2つの操作から自動的に
+      追加されます。
     </p>
+    <ul class="hint">
+      <li><b>「AIに質問」タブで質問を送信したとき</b> … その質問の背景にある
+        文法パターンを音読練習用にまとめたカードが、3問の練習問題とは別に
+        4問目として追加されます。</li>
+      <li><b>「DailyConversation」タブで英文を添削させたとき</b> … 添削で
+        見つかった誤りごとに、その背景にある文法パターンのカードが追加されます
+        (カテゴリが「誤りなし」の文は、抽出すべき誤りが無いため対象外です)。</li>
+    </ul>
   </section>
 
   <section class="card">
     <h2>② 生成結果 <span id="shuujuku-stock-count" class="count"></span></h2>
     <p class="hint">
       生成したカードはこのブラウザに保存され、再訪しても残ります。
-      同じ質問から生成した場合は重複として警告表示されます。
+      同じ質問・同じ添削行から重ねて生成した場合は、重複として警告表示されます。
     </p>
     <div id="shuujuku-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="shuujuku-stock-list" class="stock"></ul>
+    <p class="hint btn-group-label">カードを削除する(取り消せません)</p>
     <div class="row">
-      <button type="button" id="shuujuku-delete-selected">選択項目を削除</button>
-      <button type="button" id="shuujuku-clear-stock" class="danger">すべて削除</button>
+      <button type="button" id="shuujuku-delete-selected">選択したカードを削除</button>
+      <button type="button" id="shuujuku-clear-stock" class="danger">すべてのカードを削除</button>
     </div>
   </section>
 
@@ -451,8 +483,8 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
   <p class="hint login-required-hint">
     🔒 このタブは「添削結果」スプレッドシートを直接読み書きするため、Googleへの
     ログインが必要です。画面右上のヘッダーにある「Googleにログイン」から
-    ログインしてください(事前に⚙設定でクライアントID・スプレッドシートID・
-    シート名の設定も必要です)。
+    ログインしてください(スプレッドシートID・シート名などの設定は、
+    ログイン時に自動で読み込まれるため入力不要です)。
   </p>
 
   <section class="card">
@@ -461,6 +493,10 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       複数文・複数段落をまとめて入力できます(AIが文ごとに分割して添削します)。
       添削結果はシートに新規行として追記され、続けて②の一覧が更新されます。
       Googleフォーム経由で追加された行もそのまま②に出てきます。
+    </p>
+    <p class="hint">
+      続けて、誤りが見つかった文それぞれについて<b>「習熟用(音読)」タブのカードも
+      自動生成します</b>(文の数だけAIを呼ぶため、少し時間がかかります)。
     </p>
     <textarea id="daily-input" rows="6" spellcheck="false"
 placeholder="I go to the park yesterday. She don't like coffee."></textarea>
@@ -471,7 +507,7 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
   <section class="card">
     <h2>② シート上の未出力行 <span id="daily-pending-count" class="count"></span></h2>
     <p class="hint">
-      「Anki出力済み」列が空の行を表示します。ここに出ているものが③の出力対象です。
+      「Anki出力済み」列が空の行を表示します。
       重複などで出力したくない行は選んで「一覧から除外」できます(シート自体は
       変更されず、この端末でのみ非表示になります)。③で一度.apkgに含めた行には
       「✓ 出力済み」の印が付きます(③の「Anki出力済みにする」チェックをOFFに
@@ -487,10 +523,14 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     </div>
     <div id="daily-pending-empty" class="empty">まだ読み込んでいません。</div>
     <ul id="daily-pending-list" class="stock"></ul>
+    <!-- このタブの行の実体はスプレッドシート側にあるため、他タブのような
+         「カードを削除」は無く、いずれもこの端末での表示・記録だけを
+         変える操作になる(2026-08-06、他タブと語彙を揃えて整理)。 -->
+    <p class="hint btn-group-label">この端末での表示・記録だけを変える(シートは変更されません)</p>
     <div class="row">
-      <button type="button" id="daily-exclude-selected">選択項目を一覧から除外</button>
-      <button type="button" id="daily-clear-exclusions" class="danger">除外をすべて解除</button>
-      <button type="button" id="daily-reset-exported">出力済み履歴をリセット</button>
+      <button type="button" id="daily-exclude-selected">選択した行を一覧から除外</button>
+      <button type="button" id="daily-clear-exclusions">除外をすべて解除</button>
+      <button type="button" id="daily-reset-exported">出力済みの印を外す(もう一度出力できるようにする)</button>
     </div>
   </section>
 
@@ -498,9 +538,11 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <h2>③ Ankiに取り込む</h2>
     <p class="hint">
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
-      カテゴリが「誤りなし」の行と、IDが重複している行は出力対象から除かれます。
       ⚙設定でTTS APIキーを設定していれば、添削後の文と類似表現の音声も自動で
       合成して埋め込みます。
+      対象は②に読み込んだ行のうち<b>まだ出力していない行だけ</b>です
+      (表示フィルターで隠している行も、出力していなければ対象に含まれます)。
+      カテゴリが「誤りなし」の行と、IDが重複している行も出力対象から除かれます。
     </p>
     <label class="checkbox">
       <input type="checkbox" id="daily-mark-exported" checked>
@@ -527,6 +569,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260806b"></script>
+<script type="module" src="./app.js?v=20260806c"></script>
 </body>
 </html>
