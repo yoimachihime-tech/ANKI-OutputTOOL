@@ -35,8 +35,10 @@ __pycache__/
 *.pyc
 
 # Web版の互換性検証ツールの依存関係(検証時にnpm installで取得する)
+# ※ tools/package-lock.json は**除外しないこと**。GitHub Actions(.github/
+#    workflows/test.yml)が `npm ci` と npm キャッシュで参照しており、
+#    無いとテストが1本も走らないまま毎回失敗する(2026-08-06に実際に発生)。
 tools/node_modules/
-tools/package-lock.json
 
 # OAuthトークン交換用Cloudflare Workerの依存関係・ローカル状態
 # (client_secretはwrangler secretに登録するためファイルとしては存在しないが、
