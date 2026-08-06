@@ -1552,6 +1552,44 @@ if (genStatus.includes('誤り') && genStatus.includes("She don't like coffee.")
 } else {
   fail(`誤りの通知が不十分: ${genStatus}`);
 }
+
+// 誤りのあった文はDailyConversationタブの入力欄へ転記される(2026-08-06追加)。
+// 打ち直し・コピペの手間を省くため。タブの自動切り替えはしない。
+if ($('daily-input').value.includes("She don't like coffee.")
+  && !$('daily-input').value.includes("I've been working here since 2020.")) {
+  ok('誤りのあった文だけがDailyConversationタブの入力欄へ転記される');
+} else {
+  fail(`転記の内容が期待と違う: ${JSON.stringify($('daily-input').value)}`);
+}
+if (document.querySelector('.tab-btn.active').dataset.tab === 'shuujuku') {
+  ok('転記してもタブは切り替わらない(結果を読んでいる最中に画面が飛ばない)');
+} else {
+  fail('転記でタブが切り替わってしまった');
+}
+
+// 打ちかけの文を消さずに追記する。同じ文は重複させない。
+$('daily-input').value = '打ちかけの文';
+$('shuujuku-generate').click();
+for (let i = 0; i < 200; i += 1) {
+  await sleep(50);
+  if ($('shuujuku-generate-status').textContent.includes('カードにしませんでした')) break;
+}
+if ($('daily-input').value === "打ちかけの文\nShe don't like coffee.") {
+  ok('入力欄に先客があれば消さずに追記する');
+} else {
+  fail(`追記の結果が期待と違う: ${JSON.stringify($('daily-input').value)}`);
+}
+$('shuujuku-generate').click();
+for (let i = 0; i < 200; i += 1) {
+  await sleep(50);
+  if ($('shuujuku-generate-status').textContent.includes('カードにしませんでした')) break;
+}
+if ($('daily-input').value === "打ちかけの文\nShe don't like coffee.") {
+  ok('同じ文は二重に転記しない');
+} else {
+  fail(`重複して転記された: ${JSON.stringify($('daily-input').value)}`);
+}
+$('daily-input').value = '';
 if ($('shuujuku-input').value !== '') {
   ok('誤りがあった場合は入力欄を消さない(どの文が弾かれたか見比べられるように)');
 } else {

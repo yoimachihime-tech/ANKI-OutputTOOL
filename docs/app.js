@@ -1417,11 +1417,19 @@ async function onShuujukuGenerate() {
     const notes = [];
     if (items.length > 0) notes.push(`${items.length} 件のカードを生成しました。`);
     if (ngRows.length > 0) {
+      // 誤りのあった文はDailyConversationタブの入力欄へ転記しておく
+      // (2026-08-06、片桐の指示)。あちらは元々「自分の誤りを記録する場所」
+      // であり、打ち直し・コピペの手間を省くため。タブの自動切り替えまでは
+      // しない(結果を読んでいる最中に画面が飛ぶのを避ける)。
+      const transferred = transferToDailyInput(ngRows.map((c) => c.original || ''));
       notes.push(
         `文法的な誤りがあった ${ngRows.length} 件はカードにしませんでした:\n`
         + ngRows.map((c) => `・「${c.original}」 [${c.category}] ${c.explanation || ''}`).join('\n')
-        + '\n誤りのある文は、DailyConversationタブで添削するとそちらからも'
-        + '習熟用カードが作られます。',
+        + (transferred > 0
+          ? `\nこの ${transferred} 件をDailyConversationタブの入力欄に転記しました。`
+            + 'そちらで添削・記録すると、習熟用カードもあらためて作られます。'
+          : '\n誤りのある文は、DailyConversationタブで添削するとそちらからも'
+            + '習熟用カードが作られます。'),
       );
     }
     if (failed > 0) notes.push(`${failed} 件はカードの生成に失敗しました。`);
@@ -1436,6 +1444,34 @@ async function onShuujukuGenerate() {
   } finally {
     btn.disabled = false;
   }
+}
+
+/**
+ * 誤りのあった英文を DailyConversation タブの入力欄へ転記する
+ * (2026-08-06追加。習熟用タブが弾いた文をそのまま添削へ回せるようにするため)。
+ *
+ * 既に入力されている内容は**消さずに追記**する(片桐が打ちかけの文を
+ * 失わないため)。同じ文が既にあれば重複させない。ログインは不要
+ * (テキストを入れるだけで、実際の添削・シート追記は従来どおり
+ * DailyConversationタブ側の操作で行う)。
+ *
+ * @returns {number} 実際に追記した件数(すべて重複なら0)
+ */
+function transferToDailyInput(sentences) {
+  const el = $('daily-input');
+  if (!el) return 0;
+  const current = el.value.trim();
+  const existing = new Set(current.split('\n').map((line) => line.trim()).filter(Boolean));
+  const added = [];
+  for (const raw of sentences) {
+    const sentence = (raw || '').trim();
+    if (!sentence || existing.has(sentence)) continue;
+    existing.add(sentence);
+    added.push(sentence);
+  }
+  if (added.length === 0) return 0;
+  el.value = current ? `${current}\n${added.join('\n')}` : added.join('\n');
+  return added.length;
 }
 
 /** source_topic をキーに、重複している要素の index を返す(表示用)。 */
