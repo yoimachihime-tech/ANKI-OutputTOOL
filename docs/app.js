@@ -138,12 +138,21 @@ const TTS_FIELD_KEYS = {
 // (2) TTS付きの出力は数分かかることがあり、その間に別タブの出力を始められると
 //     待ち時間が重なって「固まった」ようにも見える。
 //
-// 出力中は全タブの出力ボタンを無効化し(見た目で分かるように)、
-// それでも実行された場合(スクリプト経由・無効化前の連打)に備えて
-// この変数でも弾く。
+// 出力中は全タブの出力ボタンを「押せない見た目」にしたうえで、実際に押された
+// ときは**なぜ押せないのかをその場に表示する**(2026-08-06、片桐の指示)。
+//
+// このとき `disabled` 属性は使えない。ブラウザは無効な form コントロールへの
+// クリックを**イベントとして配送しない**(祖先にも上がらない)ため、押しても
+// 本当に何も起きず、理由を伝える機会が無いまま「反応しないボタン」に見える。
+// 代わりに `aria-disabled="true"` を付け、見た目はCSS(button[aria-disabled])で
+// 無効そのものに揃え、クリックは受け取ってハンドラ側で弾く。支援技術にも
+// 「操作できない」と正しく伝わり、かつ理由を読み上げられる。
 // ---------------------------------------------------------------------------
 let apkgExportInProgress = false;
 const EXPORT_BUTTON_IDS = ['word-export', 'ai-ask-export', 'shuujuku-export', 'daily-export'];
+const EXPORT_BUSY_MESSAGE = '.apkg の出力が進行中です。完了してからもう一度実行してください。\n'
+  + '(同時にダウンロードするとブラウザ側で片方が破棄され、出力できていないのに'
+  + '「出力済み」になってしまうことがあるため、1つずつ実行します)';
 
 const $ = (id) => document.getElementById(id);
 
@@ -1354,6 +1363,7 @@ function renderShuujukuStock() {
 
 async function onExportShuujuku() {
   const status = $('shuujuku-export-status');
+  if (rejectWhileExporting(status)) return;
   if (shuujukuStock.length === 0) {
     setStatus(status, '出力するカードがありません。', true);
     return;
@@ -2509,6 +2519,7 @@ async function generateShuujukuCandidatesFromRows(rows, status) {
 
 async function onDailyExport() {
   const status = $('daily-export-status');
+  if (rejectWhileExporting(status)) return;
   if (dailyPendingRows.length === 0) {
     setStatus(status, '出力する行がありません。先に②でシートから読み込んでください。', true);
     return;
@@ -2890,6 +2901,7 @@ async function onExport(tabKey) {
   const cfg = TAB_CONFIG[tabKey];
   const statusId = tabKey === 'word' ? 'word-export-status' : 'ai-ask-export-status';
   const status = $(statusId);
+  if (rejectWhileExporting(status)) return;
 
   const pendingItems = cfg.stock.filter((item) => !item.exported_at);
   if (pendingItems.length === 0) {
@@ -2951,30 +2963,42 @@ async function onExport(tabKey) {
 }
 
 /**
- * .apkg 出力の開始を宣言する。既に別の出力が走っていれば false を返し、
- * 呼び出し側はそこで中止する(理由は上の EXPORT_BUTTON_IDS 付近を参照)。
- * true を返した場合、呼び出し側は **必ず finally で endApkgExport() を
- * 呼ぶこと**(でないと以後どのタブからも出力できなくなる)。
+ * 出力中なら理由をその場に表示して true を返す(呼び出し側はそこで中止する)。
+ *
+ * 各出力関数の**先頭**で呼ぶこと。「カードがありません」等の事前チェックより
+ * 後ろに置くと、たまたま条件を満たさないタブを押したときに出力中であることが
+ * 伝わらず、押しても無反応に見えてしまう。
+ */
+function rejectWhileExporting(statusEl) {
+  if (!apkgExportInProgress) return false;
+  setStatus(statusEl, EXPORT_BUSY_MESSAGE, true);
+  return true;
+}
+
+/**
+ * .apkg 出力の開始を宣言する。既に別の出力が走っていれば false を返す
+ * (理由は上の EXPORT_BUTTON_IDS 付近を参照)。true を返した場合、
+ * 呼び出し側は **必ず finally で endApkgExport() を呼ぶこと**
+ * (でないと以後どのタブからも出力できなくなる)。
  */
 function beginApkgExport(statusEl) {
-  if (apkgExportInProgress) {
-    setStatus(
-      statusEl,
-      '別のタブで .apkg を出力中です。そちらが終わってから実行してください。\n'
-      + '(同時にダウンロードするとブラウザ側で片方が破棄されることがあるため、'
-      + '1つずつ実行します)',
-      true,
-    );
-    return false;
-  }
+  if (rejectWhileExporting(statusEl)) return false;
   apkgExportInProgress = true;
-  EXPORT_BUTTON_IDS.forEach((id) => { const b = $(id); if (b) b.disabled = true; });
+  // disabled ではなく aria-disabled を使う理由は EXPORT_BUTTON_IDS 付近を参照
+  // (押せない見た目のまま、押されたら理由を出せるようにするため)。
+  EXPORT_BUTTON_IDS.forEach((id) => {
+    const b = $(id);
+    if (b) b.setAttribute('aria-disabled', 'true');
+  });
   return true;
 }
 
 function endApkgExport() {
   apkgExportInProgress = false;
-  EXPORT_BUTTON_IDS.forEach((id) => { const b = $(id); if (b) b.disabled = false; });
+  EXPORT_BUTTON_IDS.forEach((id) => {
+    const b = $(id);
+    if (b) b.removeAttribute('aria-disabled');
+  });
 }
 
 function downloadBlob(blob, filename) {

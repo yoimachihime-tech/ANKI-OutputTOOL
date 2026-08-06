@@ -1388,32 +1388,30 @@ if (JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]').length > 
 }
 
 // AIに質問の出力を始めた直後(await の途中)に、習熟用の出力も試みる。
-const shuujukuStatusBefore = $('shuujuku-export-status').textContent;
 downloaded = null;
 $('ai-ask-export').click();
 
-// 第1の防御: 出力中は全タブの出力ボタンが無効になる。無効なボタンは
-// click()しても何も起きない(ハンドラ自体が呼ばれない)。
-if ($('shuujuku-export').disabled && $('word-export').disabled && $('daily-export').disabled) {
-  ok('出力中は他タブの出力ボタンも無効化される(押せないことが見て分かる)');
+// 出力中は全タブの出力ボタンが「押せない見た目」になる。ただし disabled 属性は
+// 使わない——ブラウザは無効なコントロールへのクリックをイベントとして配送
+// しないため、押しても本当に何も起きず、理由を伝える機会が無くなるから
+// (2026-08-06、片桐の指示で「その場合のみメッセージを出す」ようにした)。
+const ariaDisabled = (id) => $(id).getAttribute('aria-disabled') === 'true';
+if (ariaDisabled('shuujuku-export') && ariaDisabled('word-export') && ariaDisabled('daily-export')) {
+  ok('出力中は他タブの出力ボタンも押せない見た目になる(aria-disabled)');
 } else {
-  fail('出力中に他タブの出力ボタンが無効化されていない');
+  fail('出力中に他タブの出力ボタンが押せない状態になっていない');
 }
-$('shuujuku-export').click();
-if ($('shuujuku-export-status').textContent === shuujukuStatusBefore) {
-  ok('無効化されたボタンを押しても、2つ目の出力は始まらない');
+if (!$('shuujuku-export').disabled) {
+  ok('disabled属性は使わない(押されたことを検知して理由を出すため)');
 } else {
-  fail(`無効化中に出力が始まった: ${$('shuujuku-export-status').textContent}`);
+  fail('disabled属性が付いており、押しても理由を出せない');
 }
 
-// 第2の防御: 何らかの理由でボタンが有効なまま実行された場合(連打・
-// スクリプト経由)も、コード側で弾いて理由を伝える。
-$('shuujuku-export').disabled = false;
 $('shuujuku-export').click();
-if ($('shuujuku-export-status').textContent.includes('別のタブで')) {
-  ok('ボタンの無効化をすり抜けた場合も、コード側で弾いて理由を伝える');
+if ($('shuujuku-export-status').textContent.includes('出力が進行中です')) {
+  ok('押した場合だけ、同時に出力できない理由をその場に表示する');
 } else {
-  fail(`2つ目の出力が拒否されなかった: ${$('shuujuku-export-status').textContent}`);
+  fail(`理由が表示されなかった: ${$('shuujuku-export-status').textContent}`);
 }
 if (JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]').length
   === shuujukuBefore.length) {
@@ -1426,11 +1424,11 @@ for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
 if (downloaded) ok('先に始めた「AIに質問」の出力は最後まで完了する');
 else fail('先に始めた出力が完了しなかった');
 await sleep(50);
-if (!$('ai-ask-export').disabled && !$('shuujuku-export').disabled
-  && !$('word-export').disabled && !$('daily-export').disabled) {
-  ok('出力が終わると全タブの出力ボタンが再び有効になる');
+if (!ariaDisabled('ai-ask-export') && !ariaDisabled('shuujuku-export')
+  && !ariaDisabled('word-export') && !ariaDisabled('daily-export')) {
+  ok('出力が終わると全タブの出力ボタンが再び押せるようになる');
 } else {
-  fail('出力後にボタンが無効のまま残っている');
+  fail('出力後にボタンが押せないまま残っている');
 }
 
 // 直列にやり直せば、拒否された側もそのまま出力できる。
