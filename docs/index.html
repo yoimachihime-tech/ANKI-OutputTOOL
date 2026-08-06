@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260806n">
+<link rel="stylesheet" href="./style.css?v=20260806o">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -95,6 +95,14 @@
     <h2>設定</h2>
     <button type="button" id="settings-close" class="ghost">✕ 閉じる</button>
   </div>
+  <!-- いま動いている app.js の版(2026-08-06追加)。GitHub Pages は HTML を
+       約10分キャッシュするため、直したはずの挙動が直っていないときは
+       まずここを確認する(古ければ再読み込み)。値は app.js が
+       import.meta.url から読むので、手で書き換える必要はない。 -->
+  <p class="hint version-line">
+    このページの版: <code id="app-version">-</code>
+    <span id="app-version-note"></span>
+  </p>
   <p class="hint">
     <b>新しい端末でも、ふつうは何も入力する必要はありません。</b>
     「Googleにログイン」を押すと、APIキーやスプレッドシートIDが自動で設定されます
@@ -639,6 +647,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260806n"></script>
+<script type="module" src="./app.js?v=20260806o"></script>
 </body>
 </html>

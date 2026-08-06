@@ -49,6 +49,28 @@ import {
 // 置くこと(TDZで「初期化前にアクセスされた」エラーになる)。
 const FILTER_STORAGE_PREFIX = 'anki_tool_filter_';
 
+/**
+ * いま動いている app.js の版(2026-08-06追加)。
+ *
+ * index.html の `<script src="./app.js?v=...">` の `v` を、app.js 自身が
+ * `import.meta.url` から読み取る(必ず読み込まれた実物の値になるので、
+ * 定数を二重管理する必要がない)。
+ *
+ * **なぜ必要か**: GitHub Pages は HTML を約10分キャッシュする。`?v=` を
+ * 付けていても**index.html 自体が古ければ古い `?v=` を要求する**ので、
+ * 直したはずの挙動が直っていない、という食い違いが起きる(2026-08-06に
+ * 「すべて大文字の語句が誤り扱いされる」と報告され、調べたら配信物は
+ * 新版で、ブラウザだけが旧版を読んでいた)。画面に出しておけば、
+ * 同じ報告が来たときに真っ先に版を確認できる。
+ */
+const APP_VERSION = (() => {
+  try {
+    return new URL(import.meta.url).searchParams.get('v') || '(開発版)';
+  } catch {
+    return '(不明)';
+  }
+})();
+
 // モデル選択の「直接入力…」を表す番兵(2026-08-06)。実在のモデル名と衝突しない
 // 値にしてある。**FILTER_STORAGE_PREFIX と同じ理由でここ(モジュール先頭側)に
 // 置くこと**——init()はモジュール読み込み直後に即時実行され、その中の
@@ -248,6 +270,12 @@ init().catch((e) => {
 async function init() {
   bindEvents();
   $('api-key').value = localStorage.getItem(STORAGE.apiKey) || '';
+  // いま動いている版を画面と開発者コンソールの両方に出す(2026-08-06)。
+  // ブラウザが古いapp.jsを掴んでいるかどうかを、まずここで切り分けられる。
+  const versionEl = $('app-version');
+  if (versionEl) versionEl.textContent = APP_VERSION;
+  console.info(`[ANKI出力ツール] app.js 版: ${APP_VERSION}`);
+
   renderModelOptions(loadCachedModels(), localStorage.getItem(STORAGE.model) || 'gemini-2.0-flash');
   $('tts-api-key').value = localStorage.getItem(STORAGE.ttsApiKey) || '';
   $('tts-voice').value = localStorage.getItem(STORAGE.ttsVoice) || $('tts-voice').value;

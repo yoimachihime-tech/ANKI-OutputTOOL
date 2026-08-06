@@ -1,3 +1,5 @@
+/
+
 # CLAUDE.md — anki_tts_tool
 
 このファイルは、このフォルダ(`anki_tts_tool`)でClaude Codeが作業する際の
@@ -279,8 +281,7 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
   音声にまとめる/タグをフィールド末尾に追記する方式(`analyze_targets`/
   `generate_tts_for_collection`)とは別に、専用の
   `analyze_shuujuku_sentence_targets(col, nt_name, field_idx, force_regen)` /
-  `generate_shuujuku_sentence_tts_for_collection(col, nt_name, field_idx,
-  to_process, ...)`を新設した。`to_process`は`(note_id, 例文の連番)`の
+  `generate_shuujuku_sentence_tts_for_collection(col, nt_name, field_idx, to_process, ...)`を新設した。`to_process`は`(note_id, 例文の連番)`の
   ペア(例文単位、フィールド単位ではない)。生成方式が根本的に異なる
   (Contentフィールドの`<div class="ex-en">...</div>`の内側にタグを
   `re.sub`のコールバックで直接埋め込む、`_SHUUJUKU_EX_EN_RE`を再利用)ため、
@@ -301,8 +302,7 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
   「テスト再生」機能で使用):
   - `TEST_SAMPLE_SENTENCES`: 固定の短い英語サンプル文2つ(文と文の間隔設定を
     耳で確認できるよう意図的に2文)。
-  - `synthesize_test_sample_wav(voice_name, language_code, api_key, gap_seconds,
-    volume_gain_db=0.0)`: 上記2文を現在の音声・言語・間隔・音量ゲインの設定で
+  - `synthesize_test_sample_wav(voice_name, language_code, api_key, gap_seconds, volume_gain_db=0.0)`: 上記2文を現在の音声・言語・間隔・音量ゲインの設定で
     合成し、常にWAV(LINEAR16)で返す(mp3変換を挟まないのは、そのまま
     `winsound`で再生できるようにするため)。
   - `compute_amplitude_envelope(wav_bytes, buckets=40)`: WAVの生PCMサンプルから
@@ -401,8 +401,7 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
   デフォルト候補には`Content`も追加してある(習熟用ノート用、後述)。
 - **習熟用ノートは②のフィールド選択を無視する(2026-07-27追加)**:
   `on_dry_run_clicked`/`run_generate`は、`nt_name == SHUUJUKU_NOTETYPE_NAME`
-  の場合、②で何が選択されていても常に`tts_core.analyze_shuujuku_sentence_
-  targets`/`generate_shuujuku_sentence_tts_for_collection`(Contentの
+  の場合、②で何が選択されていても常に`tts_core.analyze_shuujuku_sentence_ targets`/`generate_shuujuku_sentence_tts_for_collection`(Contentの
   例文ごとに個別MP3+インラインタグ、詳細はtts_core.pyの項を参照)を使う。
   この専用ロジックが動いていることを片桐に伝えるため、②に警告色の案内
   ラベル`self.shuujuku_tts_hint_label`を表示し、`on_notetype_selected`が
@@ -416,11 +415,9 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
   実際には無関係な「Vocab (単語 v1)」を指したまま残り、④のTTS生成が
   誤ったノートタイプ・ストックに対して走ってしまう可能性があった
   (「DailyConversationのTTS生成でストックの単語が意図せず出力済みになった」
-  という報告の一因と考えられる)。`names`が空の場合は`self.notetype_var.
-  set("")`で明示的にクリアするよう修正し、`on_dry_run_clicked`/
+  という報告の一因と考えられる)。`names`が空の場合は`self.notetype_var. set("")`で明示的にクリアするよう修正し、`on_dry_run_clicked`/
   `run_generate`側にも`nt_name`が空文字の場合の明示的なエラー
-  (「ノートタイプが選択されていません」)を追加した(以前は`col.models.
-  by_name("")`がNoneを返し、その後の`nt["flds"]`で分かりにくい
+  (「ノートタイプが選択されていません」)を追加した(以前は`col.models. by_name("")`がNoneを返し、その後の`nt["flds"]`で分かりにくい
   `TypeError`になっていた)。
 - 見た目には `sv-ttk`(Windows 11 Fluent風の丸みのあるダーク/ライトテーマ)を採用。
   未インストールでも動作するようフォールバックあり(`SV_TTK_AVAILABLE`判定)。
@@ -464,12 +461,10 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
     デッキ生成」ボタン(`on_fetch_from_sheet_clicked`。`self.fetch_sheet_btn`、
     生成中は無効化+「読み込み中...」表示になる)と「エクスポート後、対応する
     行をAnki出力済みにする」チェック(`self.sheets_update_var`)だけが
-    このタブにある。スプレッドシートID・シート(タブ)名(`self.sheets_
-    spreadsheet_id_var` / `self.sheets_sheet_name_var`)自体は「一度設定したら
+    このタブにある。スプレッドシートID・シート(タブ)名(`self.sheets_ spreadsheet_id_var` / `self.sheets_sheet_name_var`)自体は「一度設定したら
     そのまま」の項目のため、2026-07-27に「⚙ 設定」ダイアログの
     「スプレッドシート」タブへ移動した(下記「設定ダイアログ」参照。このタブ
-    には案内文言だけが残っている)。ボタンを押すと`sheets_reader.
-    fetch_pending_rows`が未出力行を取得→`deck_builder`でデッキ生成→一時.apkgに
+    には案内文言だけが残っている)。ボタンを押すと`sheets_reader. fetch_pending_rows`が未出力行を取得→`deck_builder`でデッキ生成→一時.apkgに
     書き出して`self.apkg_path`に自動セットし、guid対応表を`self._current_row_map`
     にメモリ保持する(row_map.jsonファイルは経由しない)。
     続けて`_generate_shuujuku_candidates_from_rows`が、実際にデッキへ採用された
@@ -501,8 +496,7 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
       「添削結果」シートに新規行として追記する(詳細は各モジュールの項を参照)。
       複数文・複数段落をまとめて入力してよい(Gemini側が自動で文ごとに分割)。
       **2026-07-27に「Googleフォームはもう使わずこちらをメインで使う」運用へ
-      切り替えたのに合わせ、追記成功後は自動的に②の`on_fetch_from_sheet_
-      clicked`(シートから未出力行を読み込んでデッキ生成)まで連鎖実行する
+      切り替えたのに合わせ、追記成功後は自動的に②の`on_fetch_from_sheet_ clicked`(シートから未出力行を読み込んでデッキ生成)まで連鎖実行する
       よう変更した**(以前は「Sheets APIの反映タイミングとの競合を避ける」
       理由で自動連鎖させず、片桐が改めてボタンを押す設計だったが、
       「確認導線が上下バラバラになる」との指摘を受けての変更。Sheets APIの
@@ -524,23 +518,18 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
       再起動しても自然に一覧へ復元される(ローカルの状態は一切持たない)。
       **選択項目を削除(2026-07-27追加)**: Googleフォーム経由・直接入力経由で
       同内容が重複してシートに追加されてしまった場合などに、一覧から選択して
-      「削除」できるようにした(`on_delete_selected_daily_pending_item_
-      clicked`)。ただし「添削結果」シート自体は`sheets_reader.py`(読み取り
+      「削除」できるようにした(`on_delete_selected_daily_pending_item_ clicked`)。ただし「添削結果」シート自体は`sheets_reader.py`(読み取り
       専用)・`sheets_writer.py`(「Anki出力済み」列書き込みと新規行追記のみが
       責務)のどちらからも直接削除できないため、実体はシートの削除ではなく
       **`daily_pending_exclusions.py`(新設)による行IDのローカル除外登録**。
-      `refresh_daily_pending_view`のシート再取得時、および`on_fetch_from_
-      sheet_clicked`(②のデッキ生成)の両方で`daily_pending_exclusions.
-      filter_out_excluded()`を通すため、削除した行は一覧表示からもデッキ
+      `refresh_daily_pending_view`のシート再取得時、および`on_fetch_from_ sheet_clicked`(②のデッキ生成)の両方で`daily_pending_exclusions. filter_out_excluded()`を通すため、削除した行は一覧表示からもデッキ
       生成対象からも外れる(シート上のデータそのものは一切変更されない)。
   - **AIに質問タブ**(実装済み・仮実装、**2026-07-27に出力先変更**): 質問を
-    入力して「AIに生成させる(3問セットを生成)」を押すと、`gemini_client.
-    generate_grammar_multi_items_from_question`がGemini APIで独立ノート3件分
+    入力して「AIに生成させる(3問セットを生成)」を押すと、`gemini_client. generate_grammar_multi_items_from_question`がGemini APIで独立ノート3件分
     (出題形式を分散: 選択問題/誤り訂正問題/記述式・書き換え問題が基本)を生成し、
     その場でapkgは作らず**grammar_multi_stock(独立ストック)に追加するだけ**
     (`on_ai_ask_clicked`)。実際のTTS→Anki出力は、このタブ自身の
-    「まとめてGrammar Multiとして出力」(`on_export_grammar_multi_stock_
-    clicked`)で行う(単語/習熟用タブの「まとめて出力」と同じ2段階設計:
+    「まとめてGrammar Multiとして出力」(`on_export_grammar_multi_stock_ clicked`)で行う(単語/習熟用タブの「まとめて出力」と同じ2段階設計:
     ④のapkg出力が実際に成功するまで`mark_exported`を呼ばない)。
     **以前はshuujuku_stock.json(習熟用/ATSU方式、音読練習用)に追加していたが、
     「習熟用タブに飛ぶ内容と同じでダブっている」との指摘を受けて変更した**。
@@ -578,8 +567,7 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
     (`self.apkg_path`自体はconfig.jsonに保存されず再起動で消えるが、それでも
     候補はストック側に残っているため、改めて「まとめて出力」からやり直せる)。
     **安全策(2026-07-27追加)**: 「DailyConversationのTTS生成でストックの
-    単語が意図せず出力済みになった」という報告を受け、`self._pending_
-    shuujuku_stock_items`(および`self._pending_word_stock_items`)の値を
+    単語が意図せず出力済みになった」という報告を受け、`self._pending_ shuujuku_stock_items`(および`self._pending_word_stock_items`)の値を
     `(その時点のapkg_path, items)`のタプルに変更した。`run_generate`は、
     今回処理したapkg_path(実行開始時に`generated_apkg_path`としてローカル
     変数に固定)がこの記録と完全一致する場合だけ`mark_exported`を呼ぶ。
@@ -627,12 +615,9 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
     追加する仕様に変更**した(`add_pending_items`の項は`shuujuku_stock.py`の
     項を参照。単語タブでも「選択項目を削除」ボタン
     (`on_delete_selected_word_item_clicked`→`word_stock.remove_pending_at`)で
-    ⚠表示された重複を手動で間引ける)。「まとめて単語カードとして出力」(`on_export_word_stock_
-    clicked`)は`card_defs.get_def("word")` + `card_def_builder.build_deck_
-    from_def()`で一時.apkgを生成し`self.apkg_path`にセット(下記「単語カード
+    ⚠表示された重複を手動で間引ける)。「まとめて単語カードとして出力」(`on_export_word_stock_ clicked`)は`card_defs.get_def("word")` + `card_def_builder.build_deck_ from_def()`で一時.apkgを生成し`self.apkg_path`にセット(下記「単語カード
     生成との関係」のcard_defs移行の項を参照)。**`word_stock.mark_exported`は
-    ここでは呼ばない(2026-07-27変更)**。習熟用タブの`on_export_shuujuku_
-    stock_clicked`と全く同じ理由・同じ設計で、`self._pending_word_stock_items`
+    ここでは呼ばない(2026-07-27変更)**。習熟用タブの`on_export_shuujuku_ stock_clicked`と全く同じ理由・同じ設計で、`self._pending_word_stock_items`
     に候補を保持しておき、`run_generate`が④のapkg出力まで成功した時点で
     初めてmark_exportedを呼ぶ(詳細は習熟用タブの項を参照)。タブボタンの
     バッジ表示・ストック一覧選択時の
@@ -707,8 +692,7 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
 - **再生方式は`winsound`(標準ライブラリ、Windows専用)**。他のプレビュー機能
   (🔊試聴・🔍カードをプレビュー)が使っている`os.startfile`(既定の外部
   プレイヤーを起動するだけ)ではアプリ側が再生開始タイミングを把握できず、
-  波形を再生に同期させられないため、この機能に限って`winsound.PlaySound(path,
-  SND_FILENAME | SND_ASYNC)`による内部再生に切り替えている。未インストール
+  波形を再生に同期させられないため、この機能に限って`winsound.PlaySound(path, SND_FILENAME | SND_ASYNC)`による内部再生に切り替えている。未インストール
   環境向けのフォールバックと同じパターンで`WINSOUND_AVAILABLE`判定を持ち、
   非Windows環境ではボタンを無効化するだけでアプリ自体は起動できる。
 - **波形は事前計算+経過時間アニメーション方式**(録音デバイスからのリアルタイム
@@ -720,6 +704,7 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
   (`_draw_test_waveform`)。再生時間は`tts_core.wav_duration_seconds()`から
   求める(既知の固定値なので、実際の音声デバイス側の遅延・ドリフトは
   考慮していない)。
+
   - **波形はbipolar表示**(2026-07-27変更。以前はRMSベースの棒グラフ
     だったが、Audacity等の一般的な音声波形ビューアと同じ、中心(0点)を
     挟んで上下に振れる表示に変更した。`compute_waveform_minmax`は
@@ -747,12 +732,10 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
   `audioConfig.volumeGainDb`に渡す合成時点のゲイン(上記tts_core.pyの項参照)。
   この設定はテスト再生だけでなく、🔊試聴・本番生成(`run_generate`)にも
   そのまま使われる。
-- 再生中に再度「テスト再生」を押した場合は、`winsound.PlaySound(None,
-  SND_PURGE)`で前の再生を止めてからやり直す。アプリ終了時(`_on_close`)にも
+- 再生中に再度「テスト再生」を押した場合は、`winsound.PlaySound(None, SND_PURGE)`で前の再生を止めてからやり直す。アプリ終了時(`_on_close`)にも
   同様にpurgeし、進行中の波形アニメーションループ(`self.after`)も
   `_stop_test_waveform_animation`でキャンセルする(ウィジェット破棄後に
   `after`コールバックが発火してエラーになるのを防ぐため)。
-
 - **起動時に1回だけ構築し、`withdraw()`で隠しておくだけ**(閉じるボタン・
   ウィンドウの✕も`destroy`ではなく`withdraw`にしてある)。毎回作り直す設計に
   すると、ダイアログを閉じている間は`self.voice_combo`等のウィジェット参照が
@@ -768,8 +751,7 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
 ### sheets_reader.py
 
 「添削結果」シートから、**「Anki出力済み」列が空の行だけ**を読み取り専用で
-取得するモジュール(`sheets_writer.py`の対)。`fetch_pending_rows(spreadsheet_id,
-sheet_name, credentials_path, ...)`が、`build_grammar_dailyconv_v1_final.build_deck()`
+取得するモジュール(`sheets_writer.py`の対)。`fetch_pending_rows(spreadsheet_id, sheet_name, credentials_path, ...)`が、`build_grammar_dailyconv_v1_final.build_deck()`
 がそのまま受け取れる形式(`id`, `original`, `corrected`, `similar_en_list`など)の
 dictのリストを返す。書き込みは一切行わない。
 
@@ -893,8 +875,7 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
   達しました」という分かりやすいメッセージの`GeminiClientError`にして
   打ち切る(生のJSONエラーをそのまま見せない)。
 - **503(一時的な過負荷)時のリトライ**(2026-07-28追加): 片桐の環境で
-  `"This model is currently experiencing high demand. Spikes in demand are
-  usually temporary. Please try again later."`(503 UNAVAILABLE)が発生した際、
+  `"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."`(503 UNAVAILABLE)が発生した際、
   それまで429しかリトライしておらず生のJSONエラーがそのまま表示されていた
   ことへの対応。`_post_gemini_request()`(`gemini_client.py`)・
   `callGemini()`(`docs/lib/gemini.js`)の両方に、429と同じ`_MAX_RETRIES`回数
@@ -918,8 +899,7 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
   `CORRECTION_RESPONSE_SCHEMA`は廃止し、パス定数
   `CORRECTION_SYSTEM_INSTRUCTION_PATH`/`CORRECTION_RESPONSE_SCHEMA_PATH`に
   置き換えてある)。他の関数と違い、プロンプトでJSON出力を
-  「指示」するのではなく、Geminiの`generationConfig.responseMimeType=
-  "application/json"` + `responseSchema`(構造化出力/JSON Mode)を使っており、
+  「指示」するのではなく、Geminiの`generationConfig.responseMimeType= "application/json"` + `responseSchema`(構造化出力/JSON Mode)を使っており、
   `_extract_json`によるフェンス除去は不要(`json.loads`に直接渡せる)。
   `responseSchema`が`ARRAY`なので、複数文・複数段落をまとめて渡しても
   Gemini側が文ごとに自動分割して配列で返す。**採点基準がApps Script側と
@@ -953,8 +933,7 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
   代わりに`find_duplicate_pending_indices()`が重複しているインデックスの
   集合を返し、`tts_gui.py`の`refresh_shuujuku_stock_view`が該当行を
   `⚠ [重複]`表示+琥珀色ハイライト(`DUPLICATE_HIGHLIGHT_BG`)にする。
-  不要な重複は「選択項目を削除」ボタン(`on_delete_selected_shuujuku_item_
-  clicked`→`remove_pending_at(index)`)で1件ずつ手動削除できる
+  不要な重複は「選択項目を削除」ボタン(`on_delete_selected_shuujuku_item_ clicked`→`remove_pending_at(index)`)で1件ずつ手動削除できる
   (出力済みにはせず、単純にpendingから取り除くだけ)。
 - **patternの類似度による重複検出(2026-07-27追加)**: 「AIに質問」タブで
   似た内容の質問を言い回しを変えて複数回試した場合など、`source_key`
@@ -985,8 +964,7 @@ Gemini API(Generative Language API)への呼び出しをまとめたモジュー
 
 `sheets_reader.py`/`deck_builder.py`が実装される前は、カード生成が別の
 claude.aiチャット(`build_grammar_dailyconv_v1_final.py`の`build_deck()`を
-手動実行)でしか行えず、genankiのguidが`genanki.guid_for('dailyconv', シートの
-ID列の値)`という一方向ハッシュのため、`.apkg`だけからはノート→スプレッドシート
+手動実行)でしか行えず、genankiのguidが`genanki.guid_for('dailyconv', シートの ID列の値)`という一方向ハッシュのため、`.apkg`だけからはノート→スプレッドシート
 行の対応を復元できないという問題があった。この対応表を`row_map.json`という
 サイドカーファイルとして受け渡す設計にしていた(ノートタイプにフィールドを
 追加する案は、genankiのmodel_id不整合で既存の学習履歴に影響するリスクが
@@ -1130,8 +1108,7 @@ index/reading/pos/meaning/example/example_ja/example_blank/noteの8キーを持�
 採用しているが、重複判定キーは単語テキスト(前後空白除去・小文字化)のみを
 使う。`card_def_builder.build_guid()`も同じキー生成ロジック
 (`genanki.guid_for(card_def["key"], 正規化した値)`。「単語」の場合
-`card_def["dedup_key"] == "word"`なので実質`genanki.guid_for('word', 正規化した
-単語)`となり、`build_word_v1.build_guid()`と完全に同じ結果になる)を使っており、
+`card_def["dedup_key"] == "word"`なので実質`genanki.guid_for('word', 正規化した 単語)`となり、`build_word_v1.build_guid()`と完全に同じ結果になる)を使っており、
 同じ単語を複数回生成して出力しても既存ノートの学習履歴を壊さない(重複を
 ストックに残す方式に変更しても、guidが同じなのでAnki側では上書き更新される
 だけであり問題ない)。
@@ -1152,8 +1129,7 @@ index/reading/pos/meaning/example/example_ja/example_blank/noteの8キーを持�
   テンプレート2〜4「セルフチェック/理由想起/例文穴埋め」を削除済みのため。
   以後、正典ファイルもテンプレート1つのみを定義する)
 - 正典ファイル: `build_grammar_multi_v1_updated.py`(claude.aiプロジェクト
-  「●ANKI出力」側からの2026-07-27時点のコピー。`build_grammar_dailyconv_v1_
-  final.py`/`build_shuujuku_v1.py`と同じ「正典は別環境」パターン)。
+  「●ANKI出力」側からの2026-07-27時点のコピー。`build_grammar_dailyconv_v1_ final.py`/`build_shuujuku_v1.py`と同じ「正典は別環境」パターン)。
   CSS・カードテンプレートHTML・`choice()`/`whynot_item()`/`core()`/
   `example_en()`/`example_ja()`ヘルパー関数は記憶から再構築せずこのファイルの
   定義をそのままインポートして使うこと。
@@ -1178,15 +1154,13 @@ index/reading/pos/meaning/example/example_ja/example_blank/noteの8キーを持�
 
 ### 実装
 
-- `gemini_client.generate_grammar_multi_items_from_question(question, api_key,
-  model)`: 1回のGemini呼び出しで、上記ルールに従った3ノート分のJSON配列を
+- `gemini_client.generate_grammar_multi_items_from_question(question, api_key, model)`: 1回のGemini呼び出しで、上記ルールに従った3ノート分のJSON配列を
   生成させ(`_GRAMMAR_MULTI_PROMPT`、構造化出力ではなく他のgemini_client
   関数と同じ「プロンプトでJSON指示+```json フェンス除去」方式)、
   `choices`/`whynot`/`examples`は`build_grammar_multi_v1_updated`の
   `choice()`/`whynot_item()`/`example_en()`/`example_ja()`でHTML化してから
   item dictに詰める。各itemは`topic_key`(質問文を正規化したもの)・
-  `note_index`(0始まりの通し番号)・`source_key`(`("chat_grammar",
-  f"{topic_key}::{note_index}")`)を持ち、同じ質問を再度送信すると3件とも
+  `note_index`(0始まりの通し番号)・`source_key`(`("chat_grammar", f"{topic_key}::{note_index}")`)を持ち、同じ質問を再度送信すると3件とも
   同じキーになるため重複検出にかかる(`Pattern`フィールドは出題形式ラベルに
   過ぎず内容の識別に使えないため、`shuujuku_stock.py`のようなpattern類似度に
   よる重複検出はここでは行わない。詳細は`grammar_multi_stock.py`の項を参照)。
@@ -1288,8 +1262,7 @@ index/reading/pos/meaning/example/example_ja/example_blank/noteの8キーを持�
 - **テンプレート編集**: 1つのノートタイプが複数カードテンプレートを持てる
   (「単語」は2つ)ため、`self.carddef_template_combo`で選択中のテンプレートだけ
   を`self.carddef_template_name_var`/`carddef_qfmt_text`/`carddef_afmt_text`に
-  表示する方式。テンプレート切り替え時は必ず`_save_current_template_widgets_
-  to_memory()`で編集中の内容を`self._carddef_templates`(メモリ上のリスト)へ
+  表示する方式。テンプレート切り替え時は必ず`_save_current_template_widgets_ to_memory()`で編集中の内容を`self._carddef_templates`(メモリ上のリスト)へ
   退避してから次のテンプレートを読み込む(でないと切り替えた瞬間に編集内容が
   失われる)。「保存」を押すまでは`card_defs.json`には書き込まれない。
 - **「apkgから読み込む...」**(`on_carddef_import_apkg_clicked`): 片桐が
@@ -1419,6 +1392,7 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
   (「起動時の自動読み込み」「バックアップ(書き出し/読み込み)」
   「tombstoneの刈り込み」「GitHub ActionsでのCI」、および
   `_old_anki_tts_gui.py`の削除)。提案した6件はこれで全て決着した(5件実装・1件見送り)。
+
   - **デスクトップ版とWeb版のストック統合は「見送り」で確定(2026-08-05)**。
     片桐から「**Web版をメインに使う**ので見送ってほしい」との回答を得た。
     以下は、将来必要になった場合のための調査記録。
@@ -1433,12 +1407,12 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
       削除処理にもtombstone記録を足す必要がある。
     - 認証は問題にならない: デスクトップのサービスアカウントは同じ
       スプレッドシートに編集者権限を持つので`_AppSync`を読み書きできる。
-
 - **【完了】Googleログインを長持ちさせる対応(2026-08-05)**:
   「ログインが1時間で切れるのを改善したい」との要望を受け、Cloudflare Worker
   経由の認可コードフロー+リフレッシュトークン方式を実装した。実装・デプロイ・
   設定・**片桐の実機での動作確認まですべて完了**(2026-08-05、
   「ログインは問題なく保持されていた」との報告を得た)。
+
   - Worker URL: `https://anki-tool-oauth.anki-tool-oauth-worker.workers.dev`
     (Web版の⚙設定 →「ログイン維持用 Worker の URL」に設定済み)
   - 同意画面は片桐の選択で「テスト」ステータスのままのため、
@@ -1458,6 +1432,7 @@ apkg出力→Anki出力済みマークすべて完了済み**(2026-07-29)。一�
   類似問題がATSU式カードタイプになって習熟用に入ることが前提となっている
   ならば、それで問題無い」との回答を得た。**様式は現状維持のままでよい**、
   という結論。
+
   - **現行フォーマットの実データ確認(2026-07-29)**: 片桐が実機の習熟用デッキを
     エクスポートしたapkg(`【TemporaryFile】\02.単語・MindTips__習熟用.apkg`、
     Google Drive同期フォルダ内・リポジトリ外)を`tts_core.load_collection`で
@@ -1497,11 +1472,11 @@ DailyConversationいずれの
   - 習熟用(音読) … **例文ごとに個別のMP3・タグ**
     (`synthesizeExampleAudioTags`)。音読練習で1文ずつ再生したいため、この
     タブだけ細かく分ける。
-  この変更に伴い、`tts_core.split_into_sentences()`の移植だった
-  `splitIntoSentences`はどの経路からも使われなくなったため`tts.js`から削除
-  した(将来「文と文の間に無音を挟んで1つの音声にする」機能を足す場合は
-  再度移植が必要。「Ex1.」等の見出しラベルを次の文へ結合する処理を含むため
-  単純な句点分割では代用できない点に注意)。
+    この変更に伴い、`tts_core.split_into_sentences()`の移植だった
+    `splitIntoSentences`はどの経路からも使われなくなったため`tts.js`から削除
+    した(将来「文と文の間に無音を挟んで1つの音声にする」機能を足す場合は
+    再度移植が必要。「Ex1.」等の見出しラベルを次の文へ結合する処理を含むため
+    単純な句点分割では代用できない点に注意)。
 - **デスクトップ版との方式の違い**: デスクトップ版が持つ「複数文を無音で
   結合し1つの音声にする」方式(`synthesize_with_gaps`)は、WAVで受け取って
   結合しlameencでMP3へ再エンコードする実装で、ブラウザに同等のエンコーダが
@@ -1678,8 +1653,7 @@ DailyConversationいずれの
   `docs/shared/shuujuku_dailyconv_prompt.txt`へ切り出した。Python側は
   `gemini_client.ROW_TO_ITEM_PROMPT_PATH`(旧`_ROW_TO_ITEM_PROMPT`定数を
   置き換え)経由で`_load_shared_prompt()`+`_fill_placeholders()`で読み、
-  Web側の`docs/lib/gemini.js`の`generateShuujukuItemsFromRows({rows, apiKey,
-  model, promptTemplate})`が同じファイルを読む。既存の
+  Web側の`docs/lib/gemini.js`の`generateShuujukuItemsFromRows({rows, apiKey, model, promptTemplate})`が同じファイルを読む。既存の
   `shuujuku_prompt.txt`(「AIに質問」タブの4問目用、質問文ベース)とは
   プレースホルダが異なる別ファイル(`{{original}}`/`{{corrected}}`/
   `{{explanation}}`、行ベース)であり、混同しないこと。
@@ -1986,8 +1960,7 @@ PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られ�
   「すべて出力済みです。」という専用の空表示メッセージを出す(でないと
   理由不明の空リストになる)。
 - **「出力済み履歴をリセット」ボタン**(`onResetExported(tabKey)`): 確認の後
-  ストック内全項目の`exported_at`を消す(分割代入`const {exported_at,
-  ...rest} = item`)。カードは削除しない。
+  ストック内全項目の`exported_at`を消す(分割代入`const {exported_at, ...rest} = item`)。カードは削除しない。
 - **DailyConversationの3つ目のフィルター**: シート側の「Anki出力済み」列
   マーク(④のチェックボックス、`markRowsAsExported`)とは独立に、
   「このブラウザで少なくとも一度は`.apkg`に含めて出力した」ことを
@@ -2117,10 +2090,12 @@ PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られ�
   まで書いて指示してある。
 - **入力件数に応じて「組み合わせ例文」を増やす**(2026-08-06、片桐の選択)。
   1枚あたりの例文は「その表現だけを使った3つ(`BASE_PHRASE_EXAMPLES`)
+
   + 入力した**他の**表現も一緒に使った例文」で、後者の数は
-  `comboExampleCount(入力件数)` = `min(件数 - 1, 2)`。
-  結果として 1件→3つ / 2件→4つ / 3件以上→5つ になる(片桐の指示どおり)。
-  狙いは「複数の新しい表現を1文でまとめて音読できる」こと。
+    `comboExampleCount(入力件数)` = `min(件数 - 1, 2)`。
+    結果として 1件→3つ / 2件→4つ / 3件以上→5つ になる(片桐の指示どおり)。
+    狙いは「複数の新しい表現を1文でまとめて音読できる」こと。
+
   - **上限`MAX_PHRASE_EXAMPLES = 5`は必須**。無制限にすると10件入力で
     12例文になり、応答が出力トークン上限で切れて**そのバッチが丸ごと失敗
     する**(`chunkForBatch`と同じ理由)。
@@ -2135,13 +2110,13 @@ PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られ�
     モックが返す配列の長さを見てもモック自身の値でしかなく、「何個作れと
     指示したか」がこちら側で保証できる唯一の契約のため。
 - `source_kind`に4つ目の値`'phrase'`が増えた(既存は`'chat'`/`'dailyconv'`/
-  `'sentence'`)。guidは`compound(prefix='shuujuku', keys=[source_kind,
-  source_topic])`なので**カード定義もapkg側も無変更**で、重複検出・同期も
+  `'sentence'`)。guidは`compound(prefix='shuujuku', keys=[source_kind, source_topic])`なので**カード定義もapkg側も無変更**で、重複検出・同期も
   そのまま効く(`'sentence'`を足したときと同じ)。
 - **区切りは改行のみ**(2026-08-06、片桐の選択)。カンマ・スラッシュを区切りと
   して扱う案もあったが、`ready, willing, and able` のようにカンマを含んで
   正しく1つである成句が壊れるため採らなかった(単語タブが既に「1行1件」で
   統一されていることとも揃う)。
+
   - ただし`give up, look forward to, put off`のように1行へ並べてしまうことは
     起こりうる。**この例外を入れないと語数が6を超えて「文」と判定され、
     添削で「誤り」になってDailyConversationタブへ転記され、カードが1枚も
@@ -2257,8 +2232,7 @@ AIに質問の方がちゃんと出力されないのに『出力済み』にな
   抜けていた。②の重複説明も同様に片側だけだった。
 - DailyConversationタブ①に、添削後に習熟用候補も自動生成する(=行数ぶん
   Geminiを呼ぶので時間がかかる)ことが書かれていなかった。
-- AIに質問タブ③「例文の音声」→ `TTS_FIELD_KEYS.ai_ask`は`['answer',
-  'example']`で解答も読み上げる。
+- AIに質問タブ③「例文の音声」→ `TTS_FIELD_KEYS.ai_ask`は`['answer', 'example']`で解答も読み上げる。
 - TTSの「自動調整」→「引き上げます」と書いてあったが、
   `findSafeVolumeGainDb`は`20*log10(target/baseline)`なので既に大きい
   音声では下げる。
@@ -2278,12 +2252,12 @@ AIに質問の方がちゃんと出力されないのに『出力済み』にな
 「クリア」と語彙が揺れていたこと。役割ごとに行を分け(`.btn-group-label`)、
 名前を動作そのままにした:
 
-| 旧 | 新 |
-| --- | --- |
-| 選択項目を削除 | 選択したカードを削除 |
-| すべて削除 | すべてのカードを削除 |
-| 出力済みを削除(同期の容量節約) | 出力済みのカードを削除 |
-| 出力済み履歴をリセット | 出力済みの印を外す(もう一度出力できるようにする) |
+| 旧                             | 新                                               |
+| ------------------------------ | ------------------------------------------------ |
+| 選択項目を削除                 | 選択したカードを削除                             |
+| すべて削除                     | すべてのカードを削除                             |
+| 出力済みを削除(同期の容量節約) | 出力済みのカードを削除                           |
+| 出力済み履歴をリセット         | 出力済みの印を外す(もう一度出力できるようにする) |
 
 - **「出力済み」の記録の持ち方がタブで違う**点は、この機会に明記しておく:
   単語/AIに質問は**カード1件ずつが持つ`exported_at`フィールド**なので、
@@ -2425,16 +2399,16 @@ AIに質問の方がちゃんと出力されないのに『出力済み』にな
 検査し、見つかった8件を優先度順に修正した。**詳細は各機能の項に書いてあり、
 ここは索引**(同じ内容を二重にメンテしないため)。
 
-| # | 内容 | 詳細の場所 |
-| --- | --- | --- |
-| A | 永続化JSONの書き込みが非アトミックでデータ消失リスク(Python 6モジュール) | 「永続化JSONの安全な読み書き」 |
-| G | Worker方式なのに401で手動再操作を求めていた → 自動リトライ | 「認証方式」 |
-| B | 同期のセル上限(50,000文字)に事前ガードが無かった | 「セル容量%の表示と上限の事前ガード」 |
-| C | `readSyncState`が行の位置だけで読みストック取り違えの危険 | 「実装(複数端末間の同期)」 |
-| D | apkg生成成功後の失敗を「.apkgの生成に失敗」と誤表示 | 「注意点(Web版DailyConversation)」 |
-| E | 同期エラー時に空でない入力欄へフォーカスしていた | `firstEmptySheetsSettingField()` |
-| F | テスト再生で無音WAVのBlob URLをsrc差し替え前にrevoke | `onTestPlay`/`playTestWaveform` |
-| H | `isSignedIn()`が古いリフレッシュトークンでログイン済みと表示 | 「認証方式」 |
+| # | 内容                                                                     | 詳細の場所                            |
+| - | ------------------------------------------------------------------------ | ------------------------------------- |
+| A | 永続化JSONの書き込みが非アトミックでデータ消失リスク(Python 6モジュール) | 「永続化JSONの安全な読み書き」        |
+| G | Worker方式なのに401で手動再操作を求めていた → 自動リトライ              | 「認証方式」                          |
+| B | 同期のセル上限(50,000文字)に事前ガードが無かった                         | 「セル容量%の表示と上限の事前ガード」 |
+| C | `readSyncState`が行の位置だけで読みストック取り違えの危険              | 「実装(複数端末間の同期)」            |
+| D | apkg生成成功後の失敗を「.apkgの生成に失敗」と誤表示                      | 「注意点(Web版DailyConversation)」    |
+| E | 同期エラー時に空でない入力欄へフォーカスしていた                         | `firstEmptySheetsSettingField()`    |
+| F | テスト再生で無音WAVのBlob URLをsrc差し替え前にrevoke                     | `onTestPlay`/`playTestWaveform`   |
+| H | `isSignedIn()`が古いリフレッシュトークンでログイン済みと表示           | 「認証方式」                          |
 
 - **F について**: 実機で未解決の「波形は出るが音が鳴らない」に対する
   切り分けの一手であり、**原因の特定ではない**。本命は依然として
@@ -2460,8 +2434,7 @@ AIに質問の方がちゃんと出力されないのに『出力済み』にな
 以下は本物の前払いクレジット切れ(`"Your prepayment credits are depleted."`)
 の場合の対処。
 
-`"Your prepayment credits are depleted. Please go to AI Studio ... to manage
-your project and billing."`(429 RESOURCE_EXHAUSTED)というエラーが出ることが
+`"Your prepayment credits are depleted. Please go to AI Studio ... to manage your project and billing."`(429 RESOURCE_EXHAUSTED)というエラーが出ることが
 ある。文面は課金を促す内容だが、**課金は必須ではない**。
 
 **対処: `https://aistudio.google.com/apikey`で「APIキーを作成」する際、
@@ -2505,8 +2478,7 @@ Web版公開用のキーには次を設定する:
 ただしAI Studioが自動的にキーを紐づけるプロジェクトは、Cloud Console側で
 普段使っているプロジェクトとは別(例: "Default Gemini Project"のような
 自動生成プロジェクト)になっていることがあり、Cloud Console側で見当たらない
-場合は`https://console.cloud.google.com/apis/credentials?project=<AI Studio
-のプロジェクト一覧に表示されているID>`のように**プロジェクトIDを直接URLに
+場合は`https://console.cloud.google.com/apis/credentials?project=<AI Studio のプロジェクト一覧に表示されているID>`のように**プロジェクトIDを直接URLに
 指定してアクセスする**と確実(Cloud Console右上のアカウントが、AI Studioで
 使っているGoogleアカウントと一致しているかも合わせて確認すること)。
 
@@ -2701,8 +2673,7 @@ worker/                             Googleログインを長持ちさせるた�
   相当のロジックでHTMLに合成した結果であり、しかもNum/dueは出力時点で
   払い出す続き番号(Ankiのソートフィールド衝突を避けるため)に依存する。
   そのためWeb側は生のitem(ストックに貯める形)をそのまま`buildApkg()`に
-  渡すのではなく、`docs/lib/shuujuku.js`の`buildFieldsReadyItems(items,
-  startNum)`で先にNum/Contentを確定させてから渡す
+  渡すのではなく、`docs/lib/shuujuku.js`の`buildFieldsReadyItems(items, startNum)`で先にNum/Contentを確定させてから渡す
   (`docs/app.js`の`onExportShuujuku()`を参照)。続き番号は
   `getNextNum()`/`advanceNextNum()`がlocalStorageで管理し、apkg生成が
   実際に成功した時点で初めて進める(デスクトップ版の
@@ -2728,7 +2699,7 @@ worker/                             Googleログインを長持ちさせるた�
     (2026-08-05追加)。CIだけでなく、新しい開発環境でも同じ理由で必要。
   - CIに必要なPythonパッケージは`genanki`のみ(anki本体・tkinter・sv-ttk
     などGUI側の依存は、ここで動かすテストには要らない)。
-  内訳:
+    内訳:
   - `npm run verify`(`verify_web_parity.mjs`): 同じ入力からデスクトップ版
     (genanki)とWeb版それぞれでapkgを生成し(word・grammar_multi・shuujuku・
     dailyの4種別)、guid・フィールド・タグ・カード構成・ノートタイプ定義を
@@ -3075,6 +3046,16 @@ worker/                             Googleログインを長持ちさせるた�
       全体が使えなくなることはもう無い。
     - `index.html`の`style.css`/`app.js`の参照に`?v=YYYYMMDD<連番>`を
       付けた。**`docs/`配下を変更したらこの値も必ず更新すること**
+    - **`?v=`だけでは足りない(2026-08-06に再発)**。GitHub Pagesは
+      **HTML自体を約10分キャッシュする**ため、`index.html`が古いと
+      **古い`?v=`のapp.jsを要求する**——つまり両方が揃って古いままになる。
+      「すべて大文字の語句が誤り扱いされる」と報告を受けて調べたところ、
+      配信物は新版(`curl`で`?v=`と新関数の存在を確認)で、ブラウザだけが
+      旧版を読んでいた。**この失敗は挙動からは区別が付かない**ので、
+      ⚙設定の先頭に**いま動いているapp.jsの版**を表示するようにした
+      (`APP_VERSION`。`import.meta.url`のクエリから読むので二重管理不要。
+      `console.info`にも出す)。同種の報告を受けたら、まずこの値を
+      確認してもらうこと。回帰テストは`test_web_ui.mjs`の[1]。
       (更新し忘れると同じ食い違いが再発しうる。`app.js`が`import`する
       `lib/*.js`を変更した場合は、そちらにも同じ考え方が要る点に注意)。
     - 回帰テスト: `test_web_ui.mjs`の[1]に「Worker URLの既定値が入って
