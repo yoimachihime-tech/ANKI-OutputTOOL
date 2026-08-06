@@ -443,6 +443,44 @@ export async function generateShuujukuItemFromRow({ row, apiKey, model, promptTe
 }
 
 // ---------------------------------------------------------------------------
+// 習熟用(音読) — 入力した英文からの生成(2026-08-06追加、Web版のみ)
+//
+// 習熟用タブに初めて直接の入力欄を設けたもの。**正しさの判定はこの関数では
+// 行わない**——呼び出し側(app.jsのonShuujukuGenerate)が先に
+// correctEnglishText()で判定し、「誤りなし」の文だけをここへ渡す。
+// 判定を独自に持たせると、DailyConversation(=Googleフォーム経路と同じ
+// system_instruction)とは別の3つ目の採点基準が生まれ、同じ文でも入口に
+// よって評価が食い違うため(CLAUDE.md参照)。
+// ---------------------------------------------------------------------------
+
+/**
+ * 文法的に正しい英文1文から、習熟用(音読)ストックに追加する item を1件生成する。
+ *
+ * examples は「入力された英文そのもの + 生成された別の例文2つ」の3つになる
+ * (片桐の指示で、元の文脈もカードに残す)。**入力文はAIの出力から取らず、
+ * 渡された文字列をそのまま先頭に置く**——AIに「入力文もそのまま返して」と
+ * 頼むと、勝手に言い換えたり大文字小文字を変えたりする余地が残るため。
+ * 日本語訳(sentence_ja)だけをAIから受け取って組み合わせる。
+ */
+export async function generateShuujukuItemFromSentence({
+  sentence, apiKey, model, promptTemplate,
+}) {
+  const prompt = fillPlaceholders(promptTemplate, { sentence });
+  const text = await callGemini(prompt, apiKey, model);
+  const parsed = extractJson(text);
+  const generated = Array.isArray(parsed.examples) ? parsed.examples : [];
+  return {
+    pattern: parsed.pattern || '',
+    meaning: parsed.meaning || null,
+    examples: [[sentence, parsed.sentence_ja || ''], ...generated],
+    expl: parsed.expl || null,
+    source_kind: 'sentence',
+    source_topic: sentence.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' '),
+    source_label: '由来: 入力した英文',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 英文添削 — 「DailyConversation」タブ
 // gemini_client.correct_english_text() / consolidate_no_error_corrections()
 // と処理内容を一致させてある。

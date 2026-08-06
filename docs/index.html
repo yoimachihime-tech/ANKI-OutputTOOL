@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260806e">
+<link rel="stylesheet" href="./style.css?v=20260806f">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -433,10 +433,30 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
 <div id="tab-shuujuku" class="tab-panel" hidden role="tabpanel">
 
   <section class="card">
-    <h2>① 候補について</h2>
+    <h2>① 英文を入力してカードを作る</h2>
     <p class="hint">
-      このタブには直接の入力欄がありません。カードは次の2つの操作から自動的に
-      追加されます。
+      入力した英文の文法パターンを抽象化し、<b>同じパターンを使った別の英文を2つ</b>
+      作って音読練習用のカードにします。カードには入力した英文もそのまま残るので、
+      元の文脈と並べて音読できます。
+      複数の文をまとめて入力してもかまいません(文ごとに1枚ずつ作ります)。
+    </p>
+    <textarea id="shuujuku-input" rows="4" spellcheck="false"
+placeholder="I've been working here since 2020."></textarea>
+    <button type="button" id="shuujuku-generate" class="primary">カードを生成する</button>
+    <!-- 「正しい場合のみ生成する」ことは、押す前に分かっていないと
+         「入力したのにカードが増えない」と誤解される。ボタンの直下に
+         警告色で常設する(2026-08-06、片桐の指示)。 -->
+    <p class="caution">
+      ⚠ 入力した英文が<b>文法的に正しい場合のみ</b>カードを生成します。
+      誤りが見つかった文はカードにせず、その理由を表示します。
+    </p>
+    <p id="shuujuku-generate-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card">
+    <h2>① -2 他のタブから自動で追加されるカード</h2>
+    <p class="hint">
+      上の入力欄のほかに、次の2つの操作からも自動的に追加されます。
     </p>
     <ul class="hint">
       <li><b>「AIに質問」タブで質問を送信したとき</b> … その質問の背景にある
@@ -569,6 +589,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260806e"></script>
+<script type="module" src="./app.js?v=20260806f"></script>
 </body>
 </html>

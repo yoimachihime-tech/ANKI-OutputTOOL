@@ -34,6 +34,7 @@ docs/
     grammar_multi_prompt.txt  Grammar Multi(3問)生成プロンプト
     shuujuku_prompt.txt        習熟用(音読・「AIに質問」の4問目)生成プロンプト
     shuujuku_dailyconv_prompt.txt  習熟用(音読・DailyConversation由来)生成プロンプト
+    shuujuku_sentence_prompt.txt   習熟用(音読・入力した英文由来)生成プロンプト
     correction_system_instruction.txt  英文添削の system_instruction
     correction_response_schema.json    英文添削の responseSchema(構造化出力)
     card_defs.json             ノートタイプ定義(自動生成)

@@ -340,6 +340,16 @@ button.danger { color: var(--danger); border-color: var(--danger); }
    「印だけ変える」ボタンが1行に混在していて見分けられない、という指摘への
    対応で、役割ごとに行を分けてこのラベルを付けた。通常の.hintより余白を
    詰めて、直後のボタン行との結び付きを見た目でも示す。 */
+/* ボタンの直下に常設する注意書き(2026-08-06追加、習熟用タブの
+   「正しい場合のみ生成する」)。押す前に条件が分かっていないと
+   「入力したのにカードが増えない」と誤解されるため、.hint(地味なグレー)では
+   なく赤字で目に入るようにする。 */
+.caution {
+  margin: 8px 0 0;
+  font-size: .85rem;
+  color: var(--danger);
+}
+
 .btn-group-label {
   margin: 12px 0 4px;
   font-size: .8rem;

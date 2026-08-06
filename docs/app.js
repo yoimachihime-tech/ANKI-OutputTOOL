@@ -18,6 +18,7 @@
 
 import {
   generateVocabCard, generateGrammarMultiItems, generateShuujukuItem, generateShuujukuItemFromRow,
+  generateShuujukuItemFromSentence,
   correctEnglishText, consolidateNoErrorCorrections, listModels, GeminiError,
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
@@ -161,6 +162,7 @@ const shared = {
   wordPrompt: null,
   grammarMultiPrompt: null,
   shuujukuPrompt: null,
+  shuujukuSentencePrompt: null,
   shuujukuDailyconvPrompt: null,
   correctionSystemInstruction: null,
   correctionResponseSchema: null,
@@ -255,13 +257,14 @@ async function init() {
   updateGoogleAuthStatus();
 
   const [
-    wordPrompt, grammarMultiPrompt, shuujukuPrompt, shuujukuDailyconvPrompt,
+    wordPrompt, grammarMultiPrompt, shuujukuPrompt, shuujukuDailyconvPrompt, shuujukuSentencePrompt,
     correctionSystemInstruction, correctionResponseSchema, cardDefsJson, ankiSchema,
   ] = await Promise.all([
     fetchText('./shared/word_card_prompt.txt'),
     fetchText('./shared/grammar_multi_prompt.txt'),
     fetchText('./shared/shuujuku_prompt.txt'),
     fetchText('./shared/shuujuku_dailyconv_prompt.txt'),
+    fetchText('./shared/shuujuku_sentence_prompt.txt'),
     fetchText('./shared/correction_system_instruction.txt'),
     fetchJson('./shared/correction_response_schema.json'),
     fetchJson('./shared/card_defs.json'),
@@ -271,6 +274,7 @@ async function init() {
   shared.grammarMultiPrompt = grammarMultiPrompt;
   shared.shuujukuPrompt = shuujukuPrompt;
   shared.shuujukuDailyconvPrompt = shuujukuDailyconvPrompt;
+  shared.shuujukuSentencePrompt = shuujukuSentencePrompt;
   shared.correctionSystemInstruction = correctionSystemInstruction;
   shared.correctionResponseSchema = correctionResponseSchema;
   shared.cardDefs = cardDefsJson.defs;
@@ -493,6 +497,7 @@ function bindEvents() {
   on('ai-ask-export', 'click', () => onExport('ai_ask'));
 
   // 習熟用(音読)タブ(入力欄は無く、AIに質問からの4問目でのみ増える)
+  on('shuujuku-generate', 'click', onShuujukuGenerate);
   on('shuujuku-delete-selected', 'click', () => onDeleteSelected('shuujuku'));
   on('shuujuku-clear-stock', 'click', () => onClearStock('shuujuku'));
   on('shuujuku-export', 'click', onExportShuujuku);
@@ -1318,9 +1323,120 @@ async function onAiAskGenerate() {
 
 // ---------------------------------------------------------------------------
 // 習熟用(音読)タブ
-// このタブには直接の入力欄が無く、onAiAskGenerate()の4問目としてのみ増える
-// (CLAUDE.mdの「習熟用の populate source」を参照)。
+//
+// カードの供給元は3つ:
+//   1. このタブの入力欄(onShuujukuGenerate、2026-08-06追加)
+//   2. 「AIに質問」タブの4問目(onAiAskGenerate)
+//   3. DailyConversationタブの添削(generateShuujukuCandidatesFromRows)
 // ---------------------------------------------------------------------------
+
+/**
+ * 習熟用タブの「カードを生成する」(2026-08-06追加、Web版のみ)。
+ *
+ * 入力された英文のうち**文法的に正しいものだけ**をカードにする。判定は
+ * DailyConversationと同じ`correctEnglishText()`(=Googleフォーム経路の
+ * Apps Scriptと同じsystem_instruction)を使い回す——ここに独自の正誤判定を
+ * 作ると3つ目の採点基準が生まれ、同じ文でも入口によって評価が食い違うため。
+ *
+ * 判定は1回のAI呼び出しで複数文をまとめて処理できる(構造化出力が文ごとに
+ * 分割して返す)が、カード生成は文ごとに1回ずつ呼ぶ。誤りのある文では
+ * 生成を呼ばないので、無駄なAPI消費にはならない。
+ */
+async function onShuujukuGenerate() {
+  const status = $('shuujuku-generate-status');
+  const apiKey = $('api-key').value.trim();
+  if (!apiKey) {
+    setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
+    $('settings').hidden = false;
+    return;
+  }
+  if (!shared.correctionSystemInstruction || !shared.correctionResponseSchema
+    || !shared.shuujukuSentencePrompt) {
+    setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
+    return;
+  }
+  const text = $('shuujuku-input').value.trim();
+  if (!text) {
+    setStatus(status, '英文を入力してください。', true);
+    return;
+  }
+
+  const btn = $('shuujuku-generate');
+  btn.disabled = true;
+  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  try {
+    showLoading(status, '英文が正しいか確認中...(数十秒かかることがあります)');
+    // **consolidateNoErrorCorrections() は通さないこと。** あれは「誤りなし」の
+    // 複数文を1行にまとめる(originalを改行で連結する)関数で、シートに
+    // 1送信=1行として書き込むためのもの。ここで通すと、正しい文を3つ
+    // 入力しても「3文が連結された1枚」のカードになってしまう。
+    const corrections = await correctEnglishText({
+      text,
+      apiKey,
+      model,
+      systemInstruction: shared.correctionSystemInstruction,
+      responseSchema: shared.correctionResponseSchema,
+    });
+
+    const okRows = corrections.filter((c) => c.category === '誤りなし');
+    const ngRows = corrections.filter((c) => c.category !== '誤りなし');
+
+    const items = [];
+    let failed = 0;
+    for (let i = 0; i < okRows.length; i += 1) {
+      showLoading(status, `カードを生成中... (${i + 1}/${okRows.length})`);
+      try {
+        const item = await generateShuujukuItemFromSentence({
+          // 添削が「誤りなし」と判断した文をそのまま使う(correctedは
+          // 誤りなしの場合、原文と同じか整形しただけのもの)。
+          sentence: (okRows[i].original || '').trim(),
+          apiKey,
+          model,
+          promptTemplate: shared.shuujukuSentencePrompt,
+        });
+        const generatedAt = new Date().toISOString();
+        items.push({
+          ...item, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt,
+        });
+      } catch {
+        failed += 1;
+      }
+    }
+
+    if (items.length > 0) {
+      shuujukuStock = shuujukuStock.concat(items);
+      localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
+      renderShuujukuStock();
+    }
+
+    hideLoading(status);
+    // 全文が正しくカード化できたときだけ入力欄を消す。誤りがあった場合は、
+    // どの文が弾かれたのか片桐が見比べられるよう残す(単語タブと同じ方針)。
+    if (items.length > 0 && ngRows.length === 0 && failed === 0) $('shuujuku-input').value = '';
+
+    const notes = [];
+    if (items.length > 0) notes.push(`${items.length} 件のカードを生成しました。`);
+    if (ngRows.length > 0) {
+      notes.push(
+        `文法的な誤りがあった ${ngRows.length} 件はカードにしませんでした:\n`
+        + ngRows.map((c) => `・「${c.original}」 [${c.category}] ${c.explanation || ''}`).join('\n')
+        + '\n誤りのある文は、DailyConversationタブで添削するとそちらからも'
+        + '習熟用カードが作られます。',
+      );
+    }
+    if (failed > 0) notes.push(`${failed} 件はカードの生成に失敗しました。`);
+    setStatus(
+      status,
+      notes.join('\n') || 'カードを生成できませんでした。',
+      items.length === 0,
+    );
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 /** source_topic をキーに、重複している要素の index を返す(表示用)。 */
 function shuujukuDuplicateIndices() {

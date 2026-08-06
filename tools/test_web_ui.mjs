@@ -89,6 +89,47 @@ const FAKE_SHUUJUKU_FROM_ROW = {
   expl: '主語が三人称単数のときは動詞にsを付ける。',
 };
 
+// 習熟用タブの入力欄(2026-08-06追加)で、正しい英文から生成される想定の応答。
+// 入力文そのものは app.js 側が examples の先頭に置くので、Geminiからは
+// その日本語訳(sentence_ja)と「別の例文2つ」だけを受け取る。
+const FAKE_SHUUJUKU_FROM_SENTENCE = {
+  pattern: 'have been 動詞ing since 時点',
+  sentence_ja: '私は2020年からここで働いています。',
+  meaning: '過去のある時点から現在まで続いている動作',
+  examples: [
+    ["She has been studying French since April.", '彼女は4月からフランス語を勉強しています。'],
+    ['They have been waiting since noon.', '彼らは正午から待っています。'],
+  ],
+  expl: 'since の後には「時点」、for の後には「期間」が来る。',
+};
+
+// 習熟用タブの入力欄に「正しい文1つ + 誤りのある文1つ」を入れたときの
+// 添削応答(正しい方だけがカードになることを確認するため)。
+const FAKE_MIXED_CORRECTIONS = [
+  {
+    original: "I've been working here since 2020.",
+    corrected: "I've been working here since 2020.",
+    explanation: '誤りはありません。',
+    category: '誤りなし',
+    similar_expressions: [],
+    grammar_score: 100,
+    naturalness_score: 95,
+    comprehensibility_score: 100,
+    score_comment: '問題ありません。',
+  },
+  {
+    original: 'She don\'t like coffee.',
+    corrected: "She doesn't like coffee.",
+    explanation: '三人称単数の否定は doesn\'t を使います。',
+    category: '文法',
+    similar_expressions: [],
+    grammar_score: 50,
+    naturalness_score: 60,
+    comprehensibility_score: 90,
+    score_comment: '時制と人称に注意。',
+  },
+];
+
 // DailyConversationタブの添削で Gemini が返す想定の応答(構造化出力なので
 // 生のJSON配列がそのまま text に入る。```json フェンスは付かない)。
 const FAKE_CORRECTIONS = [{
@@ -270,6 +311,12 @@ globalThis.fetch = async (url, init = {}) => {
       // system_instructionが付くので、それで判別する(呼び出し順のカウントに
       // 依存しない。連続する2呼び出しが同一tick内で起こりレースするため)。
       text = isCorrectionRequest ? JSON.stringify(FAKE_CORRECTIONS) : JSON.stringify(FAKE_SHUUJUKU_FROM_ROW);
+    } else if (geminiMode === 'shuujuku_sentence') {
+      // 習熟用タブの入力欄(2026-08-06)。まず添削(構造化出力)で正誤を判定し、
+      // 「誤りなし」の文だけカード生成を呼ぶ、という2段構えを再現する。
+      text = isCorrectionRequest
+        ? JSON.stringify(FAKE_MIXED_CORRECTIONS)
+        : JSON.stringify(FAKE_SHUUJUKU_FROM_SENTENCE);
     } else {
       text = JSON.stringify(FAKE_WORD_CARD);
     }
@@ -1439,6 +1486,76 @@ if (downloaded && JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') ||
   ok('終わってから実行すれば、拒否された側も問題なく出力できる');
 } else {
   fail(`やり直しの出力に失敗: downloaded=${Boolean(downloaded)}`);
+}
+
+// ---------------------------------------------------------------------------
+// [28] 習熟用タブの入力欄(2026-08-06追加、Web版のみ)
+//
+// 入力した英文のうち**文法的に正しいものだけ**をカードにする。判定は
+// DailyConversationと同じ correctEnglishText()(Googleフォーム経路の
+// Apps Script と同じ system_instruction)を使い回しており、ここに独自の
+// 判定を作らないこと自体が設計上の要点(採点基準を1箇所に保つため)。
+// ---------------------------------------------------------------------------
+console.log('\n[28] 習熟用タブ: 入力した英文からカードを作る');
+
+document.querySelector('[data-tab="shuujuku"]').click();
+$('shuujuku-clear-stock').click();
+await sleep(20);
+geminiMode = 'shuujuku_sentence';
+correctionCalls = 0;
+
+$('shuujuku-input').value = "I've been working here since 2020.\nShe don't like coffee.";
+$('shuujuku-generate').click();
+for (let i = 0; i < 200; i += 1) {
+  await sleep(50);
+  if ($('shuujuku-generate-status').textContent.includes('生成しました')) break;
+}
+
+const fromSentence = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (fromSentence.length === 1) {
+  ok('正しい文だけがカードになる(誤りのある文は作らない)');
+} else {
+  fail(`生成されたカード数: ${fromSentence.length}(期待:1) / ${$('shuujuku-generate-status').textContent}`);
+}
+if (correctionCalls === 1) {
+  ok('正誤判定は複数文まとめて1回のAI呼び出しで済ませる');
+} else {
+  fail(`添削の呼び出し回数: ${correctionCalls}(期待:1)`);
+}
+
+const sentenceItem = fromSentence[0] || {};
+if (sentenceItem.examples?.length === 3
+  && sentenceItem.examples[0][0] === "I've been working here since 2020."
+  && sentenceItem.examples[0][1] === FAKE_SHUUJUKU_FROM_SENTENCE.sentence_ja) {
+  ok('入力した英文が1つ目の例文として、日本語訳付きでそのまま残る');
+} else {
+  fail(`examples: ${JSON.stringify(sentenceItem.examples)}`);
+}
+if (sentenceItem.examples?.[1][0] === FAKE_SHUUJUKU_FROM_SENTENCE.examples[0][0]
+  && sentenceItem.examples?.[2][0] === FAKE_SHUUJUKU_FROM_SENTENCE.examples[1][0]) {
+  ok('同じ文法パターンの別の例文が2つ続く(合計3例文)');
+} else {
+  fail(`生成された例文が期待と違う: ${JSON.stringify(sentenceItem.examples)}`);
+}
+if (sentenceItem.source_kind === 'sentence'
+  && sentenceItem.source_topic === "i've been working here since 2020."
+  && sentenceItem.source_label === '由来: 入力した英文') {
+  ok('由来(source_kind/source_topic)が入力文として記録される(guid・重複検出に使う)');
+} else {
+  fail(`由来: ${JSON.stringify([sentenceItem.source_kind, sentenceItem.source_topic])}`);
+}
+
+const genStatus = $('shuujuku-generate-status').textContent;
+if (genStatus.includes('誤り') && genStatus.includes("She don't like coffee.")
+  && genStatus.includes('DailyConversation')) {
+  ok('カードにしなかった文は、理由とDailyConversationタブへの案内を添えて伝える');
+} else {
+  fail(`誤りの通知が不十分: ${genStatus}`);
+}
+if ($('shuujuku-input').value !== '') {
+  ok('誤りがあった場合は入力欄を消さない(どの文が弾かれたか見比べられるように)');
+} else {
+  fail('誤りがあったのに入力欄が消えている');
 }
 
 console.log(failures
