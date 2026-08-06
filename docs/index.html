@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260806h">
+<link rel="stylesheet" href="./style.css?v=20260806n">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -117,14 +117,43 @@
   </div>
 
   <label for="model">モデル</label>
+  <!-- 2026-08-06: <input list> + <datalist> から <select> に変更した。
+       datalist はブラウザの仕様として**入力欄の文字に前方一致するものしか
+       候補に出さない**ため、「gemini-3.6-flash」と入っていると候補が
+       その1件だけになり、他のモデルへ切り替えるにはまず文字を消す必要が
+       あった(片桐から「何を入力していても一覧を全部出したい」との指摘)。
+       select なら常に全件が出る。一覧に無いモデル名は「直接入力…」から
+       追加できる。 -->
   <div class="row">
-    <input type="text" id="model" list="model-list" spellcheck="false" value="gemini-2.0-flash">
-    <datalist id="model-list"></datalist>
+    <select id="model"></select>
     <button type="button" id="fetch-models" class="ghost">一覧を取得</button>
   </div>
+  <p class="hint">
+    「一覧を取得」を押すと、そのAPIキーで使えるモデルを取得してここに並べます
+    (取得した一覧はこのブラウザに保存され、次回以降も出ます)。
+    一覧に無いモデル名を使いたいときは「直接入力…」を選んでください。
+  </p>
 
   <div class="row">
     <button type="button" id="clear-key" class="danger">キーを消去</button>
+  </div>
+
+  <h3>Gemini APIの使用状況</h3>
+  <p class="hint">
+    このブラウザから今日呼び出した回数です。分母(上限)は、上限に一度ぶつかったときに
+    Googleが応答で教えてくれた値をそのまま覚えたもので、アプリ側に固定の数字は
+    持っていません。上限が変わっても、次に一度ぶつかった時点で自動で入れ替わります。
+    まだ一度もぶつかっていないモデルは分母を表示しません。
+  </p>
+  <div id="quota-usage" class="quota-usage"></div>
+  <p class="hint">
+    無料枠の1日あたりの上限は<b>太平洋時間</b>の深夜にリセットされます(日本時間では
+    おおよそ午後4〜5時)。Googleはプロジェクト単位で数えるため、他の端末やブラウザから
+    同じキーを使っている場合、ここの回数は実際より少なく出ます。
+  </p>
+  <div class="row">
+    <button type="button" id="quota-clear-counts" class="ghost">今日の回数を0に戻す</button>
+    <button type="button" id="quota-clear-limits" class="ghost">覚えた上限を忘れる</button>
   </div>
 
   <hr>
@@ -433,23 +462,43 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
 <div id="tab-shuujuku" class="tab-panel" hidden role="tabpanel">
 
   <section class="card">
-    <h2>① 英文を入力してカードを作る</h2>
+    <h2>① 英文・単語を入力してカードを作る</h2>
     <p class="hint">
-      入力した英文の文法パターンを抽象化し、<b>同じパターンを使った別の英文を2つ</b>
-      作って音読練習用のカードにします。カードには入力した英文もそのまま残るので、
-      元の文脈と並べて音読できます。
-      複数の文をまとめて入力してもかまいません(文ごとに1枚ずつ作ります)。
+      <b>1行に1件</b>ずつ、複数まとめて入力できます(区切りは<b>改行のみ</b>です。
+      カンマやスラッシュで1行に並べると、まとめて1枚のカードになってしまいます)。
+      入力の種類によって作り方が変わります。
     </p>
+    <ul class="hint">
+      <li>
+        <b>英文</b>(例: <code>I've been working here since 2020.</code>) …
+        その文法パターンを抽象化し、<b>同じパターンを使った別の英文を2つ</b>作ります。
+        入力した英文もカードにそのまま残るので、元の文脈と並べて音読できます。
+      </li>
+      <li>
+        <b>単語・句動詞など、それ自体は文ではないもの</b>(例: <code>give up</code>) …
+        その表現が使われる文法構成を示し、<b>その表現を含む例文を3つ</b>作ります。
+        3つは同じ文法構成でも、内容(主語・場面・話題)はそれぞれ別のものになります。<br>
+        さらに、<b>複数の単語・句動詞をまとめて入力すると、他の表現も一緒に使った
+        例文が加わります</b>(2件なら計4つ、3件以上なら計5つ。1文で複数の新しい
+        表現を音読できます)。
+      </li>
+    </ul>
     <textarea id="shuujuku-input" rows="4" spellcheck="false"
-placeholder="I've been working here since 2020."></textarea>
+placeholder="I've been working here since 2020.&#10;give up"></textarea>
     <button type="button" id="shuujuku-generate" class="primary">カードを生成する</button>
     <!-- 「正しい場合のみ生成する」ことは、押す前に分かっていないと
          「入力したのにカードが増えない」と誤解される。ボタンの直下に
          警告色で常設する(2026-08-06、片桐の指示)。 -->
     <p class="caution">
-      ⚠ 入力した英文が<b>文法的に正しい場合のみ</b>カードを生成します。
+      ⚠ <b>英文</b>として入力したものは、<b>文法的に正しい場合のみ</b>カードを生成します。
       誤りが見つかった文はカードにせず、その理由を表示したうえで、
-      DailyConversationタブの入力欄に転記します。
+      DailyConversationタブの入力欄に転記します。<br>
+      単語・句動詞として扱われるのは<b>文末に「.」「!」「?」が無く、5語以内</b>のものです
+      (それ以外は英文として添削します)。短い英文を確実に添削させたいときは、
+      文末に「.」を付けてください。<br>
+      すべて大文字で入力された行は、<b>カードを作るときに通常の表記へ自動で直します</b>
+      (直さないと大文字が理由で「誤り」になってしまうため)。固有名詞の大文字までは
+      復元できないので、直した結果は生成後のメッセージで確認してください。
     </p>
     <p id="shuujuku-generate-status" class="status" role="status" aria-live="polite"></p>
   </section>
@@ -590,6 +639,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260806h"></script>
+<script type="module" src="./app.js?v=20260806n"></script>
 </body>
 </html>

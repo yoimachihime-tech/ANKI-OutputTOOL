@@ -222,6 +222,35 @@ h3 { font-size: .95rem; margin: 0 0 4px; }
   border-radius: var(--radius);
   padding: 10px 12px;
 }
+/* ⚙設定「Gemini APIの使用状況」(2026-08-06追加)。
+   上限を観測済みのモデルは使用率のバーを併記する。 */
+.quota-usage { margin: 8px 0 12px; }
+.quota-usage .empty { padding: 0; }
+.quota-row { margin-bottom: 10px; }
+.quota-row .quota-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: .85rem;
+}
+.quota-row .quota-model { font-weight: 600; word-break: break-all; }
+.quota-row .quota-count { flex: none; font-variant-numeric: tabular-nums; }
+.quota-bar {
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+.quota-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.quota-row.near-limit .quota-bar > span { background: var(--danger); }
+.quota-row.near-limit .quota-count { color: var(--danger); font-weight: 600; }
+.quota-row .quota-meta { color: var(--sub); font-size: .75rem; margin-top: 2px; }
+
 .hint code {
   padding: 1px 4px;
   font-size: .95em;

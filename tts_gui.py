@@ -2752,16 +2752,34 @@ class AnkiTTSApp(_BaseTk):
             )
             return
 
-        self.log(f"習熟用候補をAIで生成中(対象 {len(target_rows)} 件)...")
+        # 2026-08-06、1行ずつN回呼ぶ方式からまとめて呼ぶ方式に変更した
+        # (無料枠の上限はリクエスト数で数えられるため。gemini_client.pyの
+        #  「まとめて生成(バッチ)」の項を参照)。
+        self.log(f"習熟用候補をAIで生成中(対象 {len(target_rows)} 件、まとめて生成)...")
         items = []
         failed = 0
-        for i, row in enumerate(target_rows, start=1):
-            try:
-                item = gemini_client.generate_shuujuku_item_from_row(row, api_key, model)
-                items.append(item)
-            except gemini_client.GeminiClientError as e:
+        try:
+            generated = gemini_client.generate_shuujuku_items_from_rows(
+                target_rows, api_key, model
+            )
+        except gemini_client.GeminiClientError as e:
+            # バッチ全体が失敗した場合(APIキー不正・上限到達・応答が壊れている等)。
+            # 個別の行に切り分けられないので、まとめて失敗として扱う。
+            self.log(f"習熟用候補の生成に失敗しました: {e}")
+            messagebox.showwarning(
+                "習熟用候補の生成", f"習熟用候補の生成に失敗しました。\n\n{e}"
+            )
+            return
+
+        for i, (row, item) in enumerate(zip(target_rows, generated), start=1):
+            if item is None:
                 failed += 1
-                self.log(f"  行{i}/{len(target_rows)}(id={row.get('id')}): 生成失敗 - {e}")
+                self.log(
+                    f"  行{i}/{len(target_rows)}(id={row.get('id')}): "
+                    "AIの応答にこの行が含まれていませんでした"
+                )
+                continue
+            items.append(item)
 
         added = shuujuku_stock.add_pending_items(items)
         self.log(f"習熟用ストックに {added} 件追加しました(生成成功 {len(items)}/{len(target_rows)} 件)。")
@@ -3421,16 +3439,42 @@ class AnkiTTSApp(_BaseTk):
         def worker():
             items = []
             failed = 0
-            self.log(f"単語カードをAIで生成中(対象 {len(pairs)} 件)...")
-            for i, (word, context_sentence) in enumerate(pairs, start=1):
-                try:
-                    item = gemini_client.generate_vocab_card_from_word(
-                        word, context_sentence, api_key, model
+            # 2026-08-06、1件ずつN回呼ぶ方式からまとめて呼ぶ方式に変更した
+            # (無料枠の上限はリクエスト数で数えられるため。gemini_client.pyの
+            #  「まとめて生成(バッチ)」の項を参照)。
+            self.log(f"単語カードをAIで生成中(対象 {len(pairs)} 件、まとめて生成)...")
+            try:
+                generated = gemini_client.generate_vocab_cards_from_words(
+                    pairs, api_key, model
+                )
+            except gemini_client.GeminiClientError as e:
+                # バッチ全体が失敗した場合(APIキー不正・上限到達・応答が壊れて
+                # いる等)。個別の単語に切り分けられないので、まとめて失敗と
+                # して扱う(入力欄は残すので、そのまま再実行できる)。
+                # `e`はexceptブロックを抜けると削除されるため、afterで後から
+                # 実行されるlambdaに渡すにはここで文字列に取り出しておくこと。
+                detail = str(e)
+                self.log(f"単語カードの生成に失敗しました: {detail}")
+
+                def fail():
+                    self.word_generate_btn.configure(state="normal")
+                    messagebox.showwarning(
+                        "単語カードの生成に失敗",
+                        f"単語カードの生成に失敗しました。\n\n{detail}",
                     )
-                    items.append(item)
-                except gemini_client.GeminiClientError as e:
+
+                self.after(0, fail)
+                return
+
+            for i, ((word, _context), item) in enumerate(zip(pairs, generated), start=1):
+                if item is None:
                     failed += 1
-                    self.log(f"  {i}/{len(pairs)}(単語={word}): 生成失敗 - {e}")
+                    self.log(
+                        f"  {i}/{len(pairs)}(単語={word}): "
+                        "AIの応答にこの単語が含まれていませんでした"
+                    )
+                    continue
+                items.append(item)
 
             added = word_stock.add_pending_items(items)
             self.log(f"単語ストックに {added} 件追加しました(生成成功 {len(items)}/{len(pairs)} 件)。")

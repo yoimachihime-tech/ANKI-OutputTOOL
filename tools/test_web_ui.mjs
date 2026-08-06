@@ -103,6 +103,20 @@ const FAKE_SHUUJUKU_FROM_SENTENCE = {
   expl: 'since の後には「時点」、for の後には「期間」が来る。',
 };
 
+// 単語・句動詞など「完全な文ではないもの」を入力したときの応答(2026-08-06追加)。
+// 文と違い sentence_ja は無く、examples は3つ(入力そのものは文ではないので
+// 例文に流用できないため、すべて生成された文になる)。
+const FAKE_SHUUJUKU_FROM_PHRASE = {
+  pattern: '主語 give up 動名詞',
+  meaning: '(習慣・行為)をやめる、断念する',
+  examples: [
+    ['He gave up smoking after his doctor warned him.', '彼は医師に注意されてタバコをやめた。'],
+    ['The team never gave up defending their title.', 'そのチームは王座の防衛を決して諦めなかった。'],
+    ['I gave up trying to fix the printer myself.', '自分でプリンターを直そうとするのはやめた。'],
+  ],
+  expl: 'give up の後ろに動詞を続けるときは to 不定詞ではなく動名詞になる。',
+};
+
 // 習熟用タブの入力欄に「正しい文1つ + 誤りのある文1つ」を入れたときの
 // 添削応答(正しい方だけがカードになることを確認するため)。
 // 誤りのある文はテストから差し替えられるようにしてある——DailyConversationへの
@@ -281,6 +295,26 @@ dlg.close = () => { dialogOpened = false; };
 // カードの応答を返す(呼び出し元のプロンプトを見て判別するのではなく、
 // 単語タブ/AIに質問タブでそれぞれ別のテスト区間から呼ぶため、フラグで
 // 切り替える方が単純で確実)。
+/**
+ * バッチ生成(2026-08-06)の応答をでっち上げる。
+ *
+ * 単語カード・習熟用(DailyConversation由来)は「N件をまとめて1回で投げ、
+ * index 付きのJSON配列で受け取る」形になったため、モックも要求された件数に
+ * 合わせた配列を返す必要がある。件数はプロンプト内の `[1] ` `[2] ` … という
+ * 通し番号から数える(app.js側が組み立てる書式に依存するので、書式を変えたら
+ * ここも追従すること)。
+ */
+function fakeBatchArray(requestBody, template) {
+  const prompt = typeof requestBody === 'string' ? requestBody : '';
+  const count = Math.max(1, (prompt.match(/\\n\[\d+\]/g) || []).length);
+  return Array.from({ length: count }, (_, i) => ({ index: i + 1, ...template }));
+}
+
+/** 直近の「単語・句動詞からのカード生成」リクエスト本文(例文数の検証に使う)。 */
+let lastPhrasePrompt = '';
+/** 直近の添削リクエスト本文(全部大文字の自動修正の検証に使う)。 */
+let lastCorrectionPrompt = '';
+
 let geminiMode = 'word';
 let geminiCalls = 0;
 // 添削(correctEnglishText)呼び出しだけを数える別カウンタ(2026-07-29追加)。
@@ -302,7 +336,10 @@ globalThis.fetch = async (url, init = {}) => {
   if (u.includes('generativelanguage.googleapis.com')) {
     geminiCalls += 1;
     const isCorrectionRequest = typeof init.body === 'string' && init.body.includes('system_instruction');
-    if (isCorrectionRequest) correctionCalls += 1;
+    if (isCorrectionRequest) {
+      correctionCalls += 1;
+      lastCorrectionPrompt = init.body;
+    }
     // grammar_multi モードでは、onAiAskGenerate()が「3問生成」の後に続けて
     // 「習熟用4問目」も生成するため、1回目と2回目で別の応答を返す必要がある
     // (呼び出し順は実装上always 3問→4問目の順で固定)。
@@ -311,18 +348,32 @@ globalThis.fetch = async (url, init = {}) => {
       text = geminiCalls === 1 ? JSON.stringify(FAKE_GRAMMAR_MULTI_NOTES) : JSON.stringify(FAKE_SHUUJUKU_ITEM);
     } else if (geminiMode === 'correction') {
       // onDailyCorrect()は添削の後、続けて追記した行(「誤りなし」を除く)
-      // ごとに習熟用(音読)候補も生成する。添削リクエストにだけ
+      // をまとめて習熟用(音読)候補としても生成する。添削リクエストにだけ
       // system_instructionが付くので、それで判別する(呼び出し順のカウントに
       // 依存しない。連続する2呼び出しが同一tick内で起こりレースするため)。
-      text = isCorrectionRequest ? JSON.stringify(FAKE_CORRECTIONS) : JSON.stringify(FAKE_SHUUJUKU_FROM_ROW);
+      text = isCorrectionRequest
+        ? JSON.stringify(FAKE_CORRECTIONS)
+        : JSON.stringify(fakeBatchArray(init.body, FAKE_SHUUJUKU_FROM_ROW));
     } else if (geminiMode === 'shuujuku_sentence') {
       // 習熟用タブの入力欄(2026-08-06)。まず添削(構造化出力)で正誤を判定し、
       // 「誤りなし」の文だけカード生成を呼ぶ、という2段構えを再現する。
-      text = isCorrectionRequest
-        ? JSON.stringify(fakeMixedCorrections())
-        : JSON.stringify(FAKE_SHUUJUKU_FROM_SENTENCE);
+      // 単語・句動詞(完全な文でないもの)は添削を通さず別のプロンプトへ回るので、
+      // どちらのカード生成かはプロンプト本文で見分ける。
+      if (isCorrectionRequest) {
+        text = JSON.stringify(fakeMixedCorrections());
+      } else {
+        const isPhrase = typeof init.body === 'string' && init.body.includes('完全な文ではないもの');
+        // 例文の本数はプロンプトで指示する契約なので、送られた本文を控えておき
+        // 「何個作れと指示したか」をテスト側で検証できるようにする(モックが
+        // 返す配列の長さを見ても、それはモック自身の値でしかない)。
+        if (isPhrase) lastPhrasePrompt = init.body;
+        text = JSON.stringify(fakeBatchArray(
+          init.body,
+          isPhrase ? FAKE_SHUUJUKU_FROM_PHRASE : FAKE_SHUUJUKU_FROM_SENTENCE,
+        ));
+      }
     } else {
-      text = JSON.stringify(FAKE_WORD_CARD);
+      text = JSON.stringify(fakeBatchArray(init.body, FAKE_WORD_CARD));
     }
     return {
       ok: true,
@@ -374,6 +425,31 @@ if ($('settings').hidden === true && $('main-content').hidden === false) {
   ok('起動直後は設定が隠れ、通常画面(タブ)が表示されている');
 } else {
   fail('起動直後の設定/通常画面の表示状態がおかしい');
+}
+
+// モデル欄(2026-08-06に <input list>+<datalist> から <select> へ変更)。
+// datalist は入力欄の文字に一致する候補しか出さないため、一度モデル名が
+// 入っていると他のモデルへ切り替えられなかった(片桐からの指摘)。
+{
+  const sel = $('model');
+  if (sel.tagName === 'SELECT') {
+    ok('モデル欄は<select>(入力文字で候補が絞り込まれない)');
+  } else {
+    fail(`モデル欄が<select>でない: ${sel.tagName}`);
+  }
+  // 一覧を取得していない状態でも、保存済み/既定のモデルは選択できていること
+  // (<select>は options に無い値を代入しても空になるため、ここが空だと
+  //  APIに空のモデル名を送ってしまう)。
+  if (sel.value === 'gemini-2.0-flash') {
+    ok('一覧未取得でも既定のモデルが選択されている');
+  } else {
+    fail(`起動直後のモデル: ${JSON.stringify(sel.value)}`);
+  }
+  if ([...sel.options].some((o) => o.value === '__custom__')) {
+    ok('一覧に無いモデル名を入れるための「直接入力…」がある');
+  } else {
+    fail('「直接入力…」の選択肢が無い');
+  }
 }
 
 // --- 設定の開閉(2026-07-28追加: 開いている間は通常画面を隠す) ---
@@ -446,11 +522,14 @@ if ($('word-generate-status').classList.contains('loading')) {
   fail('生成中にローディング表示が出ていない');
 }
 
-for (let i = 0; i < 100 && geminiCalls < 2; i += 1) await sleep(50);
+for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
 await sleep(200);
 
-if (geminiCalls === 2) ok('2行の入力に対して Gemini を 2 回呼んだ(1件ずつ直列)');
-else fail(`Gemini 呼び出し回数: ${geminiCalls}(期待:2)`);
+// 2026-08-06、1件ずつN回呼ぶ方式からまとめて1回で呼ぶ方式に変更した
+// (無料枠の上限がリクエスト数で数えられるため)。ここが2に戻っていたら、
+// 上限に当たりやすい元の方式へ退行している。
+if (geminiCalls === 1) ok('2行の入力でも Gemini の呼び出しは 1 回だけ(まとめて生成)');
+else fail(`Gemini 呼び出し回数: ${geminiCalls}(期待:1)`);
 
 if (!$('word-generate-status').classList.contains('loading')) {
   ok('生成完了後はローディング表示が消える');
@@ -1641,6 +1720,268 @@ if ($('daily-input').value === '待ち時間中に転記された文。') {
   fail(`待ち時間中の追記が保持されていない: ${JSON.stringify($('daily-input').value)}`);
 }
 $('daily-input').value = '';
+
+// ---------------------------------------------------------------------------
+// [29] 習熟用タブ: 単語・句動詞など「完全な文ではないもの」(2026-08-06追加)
+//
+// 単語・句動詞をそのまま添削(correctEnglishText)にかけると、文ではないので
+// 必ず「誤り」と判定され、カードにならずDailyConversationタブへ転記されて
+// しまう。**添削を通さない別経路へ振り分けられること**がこの機能の要点。
+// ---------------------------------------------------------------------------
+console.log('\n[29] 習熟用タブ: 単語・句動詞からカードを作る');
+
+document.querySelector('[data-tab="shuujuku"]').click();
+$('shuujuku-clear-stock').click();
+await sleep(20);
+geminiMode = 'shuujuku_sentence';
+geminiCalls = 0;
+correctionCalls = 0;
+
+$('shuujuku-input').value = 'give up';
+$('shuujuku-generate').click();
+for (let i = 0; i < 200; i += 1) {
+  await sleep(50);
+  if ($('shuujuku-generate-status').textContent.includes('生成しました')) break;
+}
+
+const fromPhrase = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (fromPhrase.length === 1) {
+  ok('単語・句動詞でもカードになる(添削で弾かれない)');
+} else {
+  fail(`生成されたカード数: ${fromPhrase.length}(期待:1) / ${$('shuujuku-generate-status').textContent}`);
+}
+if (correctionCalls === 0) {
+  ok('文ではないので、正誤の添削は呼ばない(必ず「誤り」になってしまうため)');
+} else {
+  fail(`添削の呼び出し回数: ${correctionCalls}(期待:0)`);
+}
+if (geminiCalls === 1) {
+  ok('AI呼び出しはカード生成の1回だけ');
+} else {
+  fail(`Gemini呼び出し回数: ${geminiCalls}(期待:1)`);
+}
+
+const phraseItem = fromPhrase[0] || {};
+if (phraseItem.examples?.length === 3) {
+  ok('その表現を使った例文が3つ作られる');
+} else {
+  fail(`examples: ${JSON.stringify(phraseItem.examples)}`);
+}
+// 入力そのものは文ではないので、英文の経路と違い1つ目の例文に流用しない。
+if (phraseItem.examples?.[0][0] !== 'give up') {
+  ok('入力した表現そのものは例文に流用しない(文ではないため)');
+} else {
+  fail('入力表現がそのまま例文になっている');
+}
+if (phraseItem.pattern === FAKE_SHUUJUKU_FROM_PHRASE.pattern) {
+  ok('その表現が使われる文法構成(pattern)が入る');
+} else {
+  fail(`pattern: ${JSON.stringify(phraseItem.pattern)}`);
+}
+// 1件だけのときは組み合わせ相手がいないので、例文は3つのまま。
+if (lastPhrasePrompt.includes('ちょうど3個') && lastPhrasePrompt.includes('残りの0個')) {
+  ok('1件だけなら例文3つ(組み合わせ例文は作らない)');
+} else {
+  fail('1件のときの例文数の指示が想定と違う');
+}
+if (phraseItem.source_kind === 'phrase'
+  && phraseItem.source_topic === 'give up'
+  && phraseItem.source_label === '由来: 入力した単語・表現') {
+  ok('由来がphraseとして記録される(guid・重複検出に使う)');
+} else {
+  fail(`由来: ${JSON.stringify([phraseItem.source_kind, phraseItem.source_topic])}`);
+}
+
+const phraseStatus = $('shuujuku-generate-status').textContent;
+if (phraseStatus.includes('単語・表現') && phraseStatus.includes('give up')) {
+  ok('どちらとして扱ったかを結果に出す(取り違えに気づけるように)');
+} else {
+  fail(`結果メッセージ: ${phraseStatus}`);
+}
+if (!phraseStatus.includes('誤り')) {
+  ok('DailyConversationタブへの転記もしない');
+} else {
+  fail(`誤り扱いされている: ${phraseStatus}`);
+}
+
+// 文末に「.」があれば、短くても英文として添削される(取り違えたときの逃げ道)。
+$('shuujuku-clear-stock').click();
+await sleep(20);
+correctionCalls = 0;
+$('shuujuku-input').value = 'She likes coffee.';
+$('shuujuku-generate').click();
+for (let i = 0; i < 200 && correctionCalls < 1; i += 1) await sleep(50);
+await sleep(200);
+if (correctionCalls === 1) {
+  ok('文末に「.」を付ければ、5語以内でも英文として添削される');
+} else {
+  fail(`添削の呼び出し回数: ${correctionCalls}(期待:1)`);
+}
+
+// 英文と単語を混ぜて入力したときに、両方が1回ずつにまとまること。
+$('shuujuku-clear-stock').click();
+$('shuujuku-input').value = '';
+await sleep(20);
+geminiCalls = 0;
+correctionCalls = 0;
+$('shuujuku-input').value = "I've been working here since 2020.\ngive up\nlook forward to";
+$('shuujuku-generate').click();
+for (let i = 0; i < 200; i += 1) {
+  await sleep(50);
+  if ($('shuujuku-generate-status').textContent.includes('生成しました')) break;
+}
+await sleep(200);
+// 添削1回 + 英文のカード生成1回 + 表現のカード生成1回 = 3回
+// (表現が2件でも1回にまとまることの確認を兼ねる)
+if (geminiCalls === 3) {
+  ok('英文と表現が混ざっていても、AI呼び出しは合計3回にまとまる');
+} else {
+  fail(`Gemini呼び出し回数: ${geminiCalls}(期待:3)`);
+}
+const mixed = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (mixed.filter((i) => i.source_kind === 'phrase').length === 2
+  && mixed.filter((i) => i.source_kind === 'sentence').length === 1) {
+  ok('英文・表現それぞれの経路でカードが作られる');
+} else {
+  fail(`内訳: ${JSON.stringify(mixed.map((i) => i.source_kind))}`);
+}
+// 入力した語句の数に応じて、他の表現も一緒に使った「組み合わせ例文」を増やす
+// (2026-08-06、片桐の選択)。2件→計4つ、3件→計5つ、それ以上も5つで頭打ち
+// (無制限だと応答が出力トークン上限で切れてバッチごと失敗するため)。
+// 例文の本数は**プロンプトで指示する**契約なので、送ったプロンプトを検証する
+// (モックの返す配列の長さを見てもモック自身の値でしかない)。
+const phraseExampleCases = [
+  { input: ['give up', 'look forward to'], total: 4, combo: 1 },
+  { input: ['give up', 'look forward to', 'put off'], total: 5, combo: 2 },
+  { input: ['a', 'b', 'c', 'd', 'e', 'f'], total: 5, combo: 2 },
+];
+for (const c of phraseExampleCases) {
+  $('shuujuku-clear-stock').click();
+  $('shuujuku-input').value = '';
+  await sleep(20);
+  lastPhrasePrompt = '';
+  $('shuujuku-input').value = c.input.join('\n');
+  $('shuujuku-generate').click();
+  for (let i = 0; i < 200 && !lastPhrasePrompt; i += 1) await sleep(50);
+  await sleep(150);
+
+  if (lastPhrasePrompt.includes(`ちょうど${c.total}個`)
+    && lastPhrasePrompt.includes(`残りの${c.combo}個`)) {
+    ok(`${c.input.length}件の入力 → 例文${c.total}つ(うち組み合わせ${c.combo}つ)を指示する`);
+  } else {
+    fail(`${c.input.length}件のときの例文数の指示が想定と違う`);
+  }
+  // 組み合わせ相手を選べるよう、入力した表現の一覧をプロンプトに渡していること。
+  if (c.input.every((p) => lastPhrasePrompt.includes(`- ${p}`))) {
+    ok(`  組み合わせ相手として入力${c.input.length}件すべてをAIに渡している`);
+  } else {
+    fail('  入力した表現の一覧がプロンプトに含まれていない');
+  }
+}
+
+// 区切りは改行のみ(2026-08-06、片桐の選択)。カンマ等で1行に並べてしまった
+// 場合、以前は語数が6を超えて「英文」と判定され、添削で「誤り」になって
+// DailyConversationへ転記され**カードが1枚もできない**という一番分かりにくい
+// 失敗になっていた。少なくとも1枚は作ったうえで案内する。
+$('shuujuku-clear-stock').click();
+$('shuujuku-input').value = '';
+await sleep(20);
+geminiCalls = 0;
+correctionCalls = 0;
+$('shuujuku-input').value = 'give up, look forward to, put off';
+$('shuujuku-generate').click();
+for (let i = 0; i < 200; i += 1) {
+  await sleep(50);
+  if ($('shuujuku-generate-status').textContent.includes('生成しました')) break;
+}
+await sleep(200);
+
+const crowdedStock = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+const crowdedStatus = $('shuujuku-generate-status').textContent;
+if (crowdedStock.length === 1 && crowdedStock[0].source_kind === 'phrase') {
+  ok('カンマで1行に並べても、表現として扱われカードは作られる(添削で消えない)');
+} else {
+  fail(`カード: ${JSON.stringify(crowdedStock.map((i) => i.source_kind))} / ${crowdedStatus}`);
+}
+if (correctionCalls === 0) {
+  ok('カンマ区切りの行を英文として添削に回さない(「誤り」でDailyConversationへ飛ばさない)');
+} else {
+  fail(`添削の呼び出し回数: ${correctionCalls}(期待:0)`);
+}
+if (crowdedStatus.includes('1行に複数') && crowdedStatus.includes('改行のみ')) {
+  ok('1行に複数件が並んでいることを警告し、改行で分けるよう案内する');
+} else {
+  fail(`警告が出ていない: ${crowdedStatus}`);
+}
+
+// すべて大文字の入力は、カード生成の前に通常の表記へ直す(2026-08-06、片桐の
+// 要望)。直さないと添削が大文字を理由に「誤り」と判定し、カードにならずに
+// DailyConversationタブへ転記されてしまう。添削のカテゴリは
+// 「文法/語彙/自然さ/誤りなし」の4つだけで大文字用の分類が無く、
+// system_instructionはApps Scriptと揃える決まりなので、**送る前に直す**しかない。
+$('shuujuku-clear-stock').click();
+$('shuujuku-input').value = '';
+await sleep(20);
+geminiCalls = 0;
+correctionCalls = 0;
+lastPhrasePrompt = '';
+lastCorrectionPrompt = '';
+$('shuujuku-input').value = 'GIVE UP\nI HAVE BEEN WORKING HERE SINCE 2020.';
+$('shuujuku-generate').click();
+for (let i = 0; i < 200; i += 1) {
+  await sleep(50);
+  if ($('shuujuku-generate-status').textContent.includes('生成しました')) break;
+}
+await sleep(200);
+
+if (lastPhrasePrompt.includes('[1] give up') && !lastPhrasePrompt.includes('GIVE UP')) {
+  ok('全部大文字の単語は小文字に直してからカードを作る');
+} else {
+  fail('単語の大文字が直っていない');
+}
+// 文は素直に小文字化すると "i have been..." になって別の誤りを作ってしまう。
+// 文頭と一人称の I は大文字に戻すこと。
+if (lastCorrectionPrompt.includes("I have been working here since 2020.")) {
+  ok('全部大文字の英文は、文頭と一人称のIを大文字に戻した表記で添削へ送る');
+} else {
+  fail(`添削へ送った本文が想定と違う: ${lastCorrectionPrompt.slice(0, 200)}`);
+}
+const recasedStatus = $('shuujuku-generate-status').textContent;
+if (recasedStatus.includes('すべて大文字') && recasedStatus.includes('GIVE UP → give up')) {
+  ok('どう直したかを結果に出す(固有名詞は復元できないため確認できるように)');
+} else {
+  fail(`自動修正の通知が無い: ${recasedStatus}`);
+}
+const recasedStock = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+if (recasedStock.some((i) => i.source_kind === 'phrase' && i.source_topic === 'give up')) {
+  ok('カード側にも直した表記が使われる(guidが大文字版と分かれない)');
+} else {
+  fail(`カード: ${JSON.stringify(recasedStock.map((i) => [i.source_kind, i.source_topic]))}`);
+}
+
+// 大文字小文字が混ざっている入力には触らないこと(勝手に書き換えない)。
+$('shuujuku-clear-stock').click();
+$('shuujuku-input').value = '';
+await sleep(20);
+lastPhrasePrompt = '';
+$('shuujuku-input').value = 'Give UP';
+$('shuujuku-generate').click();
+for (let i = 0; i < 200 && !lastPhrasePrompt; i += 1) await sleep(50);
+await sleep(150);
+if (lastPhrasePrompt.includes('[1] Give UP')) {
+  ok('小文字が混ざっている入力はそのまま扱う(勝手に書き換えない)');
+} else {
+  fail('大文字小文字が混ざった入力を書き換えてしまっている');
+}
+if (!$('shuujuku-generate-status').textContent.includes('すべて大文字')) {
+  ok('直していないときは自動修正の通知を出さない');
+} else {
+  fail('直していないのに通知が出ている');
+}
+
+$('shuujuku-clear-stock').click();
+$('shuujuku-input').value = '';
+await sleep(20);
 
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`

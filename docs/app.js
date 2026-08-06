@@ -17,9 +17,10 @@
 // TAB_CONFIG/onExport/onDeleteSelected の枠組みには載せていない。
 
 import {
-  generateVocabCard, generateGrammarMultiItems, generateShuujukuItem, generateShuujukuItemFromRow,
-  generateShuujukuItemFromSentence,
-  correctEnglishText, consolidateNoErrorCorrections, listModels, GeminiError,
+  generateVocabCards, generateGrammarMultiItems, generateShuujukuItem, generateShuujukuItemsFromRows,
+  generateShuujukuItemsFromSentences, generateShuujukuItemsFromPhrases,
+  comboExampleCount, BASE_PHRASE_EXAMPLES,
+  correctEnglishText, consolidateNoErrorCorrections, listModels,
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
 import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
@@ -35,6 +36,9 @@ import {
 } from './lib/sheets.js';
 import * as dailyconv from './lib/dailyconv.js';
 import {
+  getAllUsage, usageSummary, clearCounts, clearLearnedLimits,
+} from './lib/quota.js';
+import {
   newSyncId, ensureItemIds, mergeStock, capacityPercent, parseIdArray,
   exceedsSyncLimit, SYNC_VALUE_LIMIT, CAPACITY_WARN_PERCENT, pruneTombstoneIds,
 } from './lib/sync.js';
@@ -44,6 +48,14 @@ import {
 // 呼び出されるため、この定数は必ずその呼び出しより前(モジュール先頭側)に
 // 置くこと(TDZで「初期化前にアクセスされた」エラーになる)。
 const FILTER_STORAGE_PREFIX = 'anki_tool_filter_';
+
+// モデル選択の「直接入力…」を表す番兵(2026-08-06)。実在のモデル名と衝突しない
+// 値にしてある。**FILTER_STORAGE_PREFIX と同じ理由でここ(モジュール先頭側)に
+// 置くこと**——init()はモジュール読み込み直後に即時実行され、その中の
+// renderModelOptions()がこの値を参照する。定義が後ろにあると const の TDZ で
+// 「初期化前にアクセスされた」となり、init()がそこで止まって
+// **アプリ全体が中途半端な状態になる**(実際にこの順序を誤って一度踏んだ)。
+const MODEL_CUSTOM_VALUE = '__custom__';
 
 // 状態表示の自動非表示(2026-07-30追加)用の定数。init()がモジュール読み込み
 // 直後に即時呼び出され、その中の同期処理(updateGoogleAuthStatus→setStatus)
@@ -77,6 +89,10 @@ const APP_LOG_MAX = 50;
 const STORAGE = {
   apiKey: 'anki_tool_gemini_api_key',
   model: 'anki_tool_gemini_model',
+  // 「一覧を取得」で得たモデル名の一覧(2026-08-06追加)。以前はdatalistへ
+  // 直接流し込むだけで保存しておらず、ページを開き直すたびに候補が空に
+  // 戻っていた(毎回「一覧を取得」を押し直す必要があった)。
+  modelList: 'anki_tool_gemini_model_list',
   wordStock: 'anki_tool_word_stock',
   aiAskStock: 'anki_tool_ai_ask_stock',
   shuujukuStock: 'anki_tool_shuujuku_stock',
@@ -163,6 +179,7 @@ const shared = {
   grammarMultiPrompt: null,
   shuujukuPrompt: null,
   shuujukuSentencePrompt: null,
+  shuujukuPhrasePrompt: null,
   shuujukuDailyconvPrompt: null,
   correctionSystemInstruction: null,
   correctionResponseSchema: null,
@@ -231,7 +248,7 @@ init().catch((e) => {
 async function init() {
   bindEvents();
   $('api-key').value = localStorage.getItem(STORAGE.apiKey) || '';
-  $('model').value = localStorage.getItem(STORAGE.model) || 'gemini-2.0-flash';
+  renderModelOptions(loadCachedModels(), localStorage.getItem(STORAGE.model) || 'gemini-2.0-flash');
   $('tts-api-key').value = localStorage.getItem(STORAGE.ttsApiKey) || '';
   $('tts-voice').value = localStorage.getItem(STORAGE.ttsVoice) || $('tts-voice').value;
   $('tts-lang').value = localStorage.getItem(STORAGE.ttsLang) || $('tts-lang').value;
@@ -258,6 +275,7 @@ async function init() {
 
   const [
     wordPrompt, grammarMultiPrompt, shuujukuPrompt, shuujukuDailyconvPrompt, shuujukuSentencePrompt,
+    shuujukuPhrasePrompt,
     correctionSystemInstruction, correctionResponseSchema, cardDefsJson, ankiSchema,
   ] = await Promise.all([
     fetchText('./shared/word_card_prompt.txt'),
@@ -265,6 +283,7 @@ async function init() {
     fetchText('./shared/shuujuku_prompt.txt'),
     fetchText('./shared/shuujuku_dailyconv_prompt.txt'),
     fetchText('./shared/shuujuku_sentence_prompt.txt'),
+    fetchText('./shared/shuujuku_phrase_prompt.txt'),
     fetchText('./shared/correction_system_instruction.txt'),
     fetchJson('./shared/correction_response_schema.json'),
     fetchJson('./shared/card_defs.json'),
@@ -275,6 +294,7 @@ async function init() {
   shared.shuujukuPrompt = shuujukuPrompt;
   shared.shuujukuDailyconvPrompt = shuujukuDailyconvPrompt;
   shared.shuujukuSentencePrompt = shuujukuSentencePrompt;
+  shared.shuujukuPhrasePrompt = shuujukuPhrasePrompt;
   shared.correctionSystemInstruction = correctionSystemInstruction;
   shared.correctionResponseSchema = correctionResponseSchema;
   shared.cardDefs = cardDefsJson.defs;
@@ -401,6 +421,8 @@ function bindEvents() {
   // 設定パネル自身の閉じるボタン(2026-07-30追加)。設定は縦に長いため、
   // 下までスクロールした位置からでも閉じられるようにするためのもの。
   on('settings-close', 'click', toggleSettings);
+  on('quota-clear-counts', 'click', onQuotaClearCounts);
+  on('quota-clear-limits', 'click', onQuotaClearLimits);
   on('toggle-key', 'click', () => {
     const el = $('api-key');
     el.type = el.type === 'password' ? 'text' : 'password';
@@ -408,10 +430,7 @@ function bindEvents() {
   on('api-key', 'change', (e) => {
     localStorage.setItem(STORAGE.apiKey, e.target.value.trim());
   });
-  on('model', 'change', (e) => {
-    localStorage.setItem(STORAGE.model, e.target.value.trim());
-    markSettingsChanged();
-  });
+  on('model', 'change', onModelChanged);
   on('clear-key', 'click', onClearKey);
   on('fetch-models', 'click', onFetchModels);
 
@@ -542,6 +561,106 @@ function toggleSettings() {
   $('settings').hidden = !willOpen;
   $('main-content').hidden = willOpen;
   $('settings-toggle').textContent = willOpen ? '✕ 設定を閉じる' : '⚙ 設定';
+  // 開くたびに描き直す。この値は設定を開いていない間にも増えるため、
+  // 一度描いたきりにすると必ず古い数字が出る。
+  if (willOpen) renderQuotaUsage();
+}
+
+// ---------------------------------------------------------------------------
+// Gemini APIの使用状況(2026-08-06追加)
+//
+// 片桐から「AIの上限はすぐに変更になることが多いので、カウンターだと無意味に
+// なる可能性が高い」との指摘を受けての設計。**上限値はソースに一切書かず**、
+// Googleが429の応答で返してくる quotaValue を lib/quota.js が学習する。
+// ここは学習済みの値があれば分母として表示し、無ければ回数だけを出す
+// (推測の分母を出すと、まさに懸念された「古い数字を信じてしまう」状態になる)。
+// ---------------------------------------------------------------------------
+
+/** 使用率が何%を超えたら警告色にするか。 */
+const QUOTA_WARN_PERCENT = 80;
+
+function renderQuotaUsage() {
+  const box = $('quota-usage');
+  if (!box) return;
+
+  const rows = getAllUsage();
+  if (!rows.length) {
+    box.innerHTML = '<p class="empty">今日はまだ呼び出していません。</p>';
+    return;
+  }
+
+  box.innerHTML = '';
+  for (const u of rows) {
+    const percent = u.limit ? Math.min(100, Math.round((u.count / u.limit) * 100)) : null;
+
+    const row = document.createElement('div');
+    row.className = 'quota-row';
+    if (percent !== null && percent >= QUOTA_WARN_PERCENT) row.classList.add('near-limit');
+
+    const head = document.createElement('div');
+    head.className = 'quota-head';
+
+    const name = document.createElement('span');
+    name.className = 'quota-model';
+    name.textContent = u.model;
+    head.appendChild(name);
+
+    const count = document.createElement('span');
+    count.className = 'quota-count';
+    count.textContent = u.limit ? `${u.count} / ${u.limit} 回 (${percent}%)` : `${u.count} 回`;
+    head.appendChild(count);
+
+    row.appendChild(head);
+
+    if (percent !== null) {
+      const bar = document.createElement('div');
+      bar.className = 'quota-bar';
+      const fill = document.createElement('span');
+      fill.style.width = `${percent}%`;
+      bar.appendChild(fill);
+      row.appendChild(bar);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'quota-meta';
+    meta.textContent = u.limit
+      ? `上限はGoogleの応答から取得(${formatObservedAt(u.observedAt)}時点 / ${u.quotaId})`
+      : 'まだ上限にぶつかっていないため、上限は不明です。';
+    row.appendChild(meta);
+
+    box.appendChild(row);
+  }
+}
+
+function formatObservedAt(iso) {
+  if (!iso) return '不明';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '不明' : d.toLocaleDateString();
+}
+
+/**
+ * 生成完了時のメッセージに添える「今日 N/M回」。
+ * 上限に近づいていることに、上限へぶつかる前に気づけるようにするためのもの。
+ */
+function quotaSuffix() {
+  const summary = usageSummary($('model').value.trim());
+  return summary ? `\n(Gemini呼び出し: ${summary})` : '';
+}
+
+function onQuotaClearCounts() {
+  if (!confirm('今日の呼び出し回数の記録を0に戻しますか？\n\n'
+    + 'Google側のカウンタは変わりません。他の端末と併用していて実際より'
+    + '少なく出ている、といった場合に数え直すためのものです。')) return;
+  clearCounts();
+  renderQuotaUsage();
+}
+
+function onQuotaClearLimits() {
+  if (!confirm('覚えている上限を忘れますか？\n\n'
+    + '別のプロジェクト・別のティアのAPIキーに変えたときに使います。'
+    + '次に上限へぶつかった時点で、新しい値を覚え直します。')) return;
+  clearLearnedLimits();
+  renderQuotaUsage();
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +769,88 @@ function onClearKey() {
   $('api-key').value = '';
 }
 
+// ---------------------------------------------------------------------------
+// モデル選択(2026-08-06に <input list> + <datalist> から <select> へ変更)
+//
+// datalist はブラウザの仕様として**入力欄の文字に一致する候補しか出さない**
+// ため、「gemini-3.6-flash」と入っている状態では候補がその1件だけになり、
+// 別のモデルへ切り替えるにはまず文字を消す必要があった(片桐から
+// 「何を入力していても一覧を全部出したい」との指摘)。select なら常に全件出る。
+//
+// select にしたことで、**options に無い値を .value に代入しても入らない**
+// (空文字になる)という制約が生まれた。設定の同期・起動時の復元は保存済みの
+// モデル名をそのまま代入するので、必ず ensureModelOption() を通すこと。
+// ---------------------------------------------------------------------------
+
+/** 「一覧を取得」で得た候補(localStorageに保存してあるもの)を読む。 */
+function loadCachedModels() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE.modelList) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'string' && n) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * モデル選択の <option> を作り直す。
+ * @param {string[]} names 候補(「一覧を取得」の結果)
+ * @param {string} current 選択しておく値。**names に無くても必ず候補に含める**
+ *   (一覧を取得していない状態でも、保存済みのモデルが消えないようにするため)
+ */
+function renderModelOptions(names, current) {
+  const sel = $('model');
+  const list = [...new Set(names.filter(Boolean))];
+  const value = (current || '').trim();
+  if (value && !list.includes(value)) list.unshift(value);
+
+  sel.textContent = '';
+  for (const name of list) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+  const custom = document.createElement('option');
+  custom.value = MODEL_CUSTOM_VALUE;
+  custom.textContent = '直接入力…';
+  sel.appendChild(custom);
+
+  sel.value = value || list[0] || '';
+}
+
+/** 指定の値が候補に無ければ足す(select は options に無い値を代入できないため)。 */
+function ensureModelOption(value) {
+  const v = (value || '').trim();
+  if (!v) return;
+  const sel = $('model');
+  if (!sel || sel.tagName !== 'SELECT') return;
+  if ([...sel.options].some((o) => o.value === v)) return;
+  renderModelOptions(loadCachedModels(), v);
+}
+
+function onModelChanged() {
+  const sel = $('model');
+  const saved = localStorage.getItem(STORAGE.model) || '';
+
+  if (sel.value === MODEL_CUSTOM_VALUE) {
+    const entered = (prompt(
+      '使用するモデル名を入力してください(例: gemini-2.0-flash)。',
+      saved,
+    ) || '').trim();
+    if (!entered) {
+      // 取り消したときは元の選択に戻す。「直接入力…」が選ばれたままだと、
+      // その番兵の値がそのままAPIへ送られてしまう。
+      renderModelOptions(loadCachedModels(), saved);
+      return;
+    }
+    renderModelOptions(loadCachedModels(), entered);
+  }
+
+  localStorage.setItem(STORAGE.model, sel.value.trim());
+  markSettingsChanged();
+}
+
 async function onFetchModels() {
   const apiKey = $('api-key').value.trim();
   if (!apiKey) {
@@ -660,14 +861,9 @@ async function onFetchModels() {
   btn.disabled = true;
   try {
     const names = await listModels(apiKey);
-    const dl = $('model-list');
-    dl.textContent = '';
-    names.forEach((n) => {
-      const opt = document.createElement('option');
-      opt.value = n;
-      dl.appendChild(opt);
-    });
-    alert(`${names.length} 件のモデルを取得しました。モデル欄の候補から選べます。`);
+    localStorage.setItem(STORAGE.modelList, JSON.stringify(names));
+    renderModelOptions(names, $('model').value.trim());
+    alert(`${names.length} 件のモデルを取得しました。モデル欄から選べます。`);
   } catch (e) {
     alert(e.message);
   } finally {
@@ -1121,27 +1317,40 @@ async function onWordGenerate() {
   const failed = [];
 
   try {
-    // デスクトップ版と同じく1件ずつ直列で呼ぶ(レート制限に配慮)。
-    for (let i = 0; i < pairs.length; i += 1) {
-      const { word, context } = pairs[i];
-      showLoading(status, `生成中... (${i + 1}/${pairs.length}) ${word}`);
-      try {
-        const card = await generateVocabCard({
-          word,
-          contextSentence: context,
-          apiKey,
-          model,
-          promptTemplate: shared.wordPrompt,
-        });
-        const generatedAt = new Date().toISOString();
-        generated.push({
-          ...card, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt,
-        });
-      } catch (e) {
-        failed.push(`${word}: ${e.message}`);
-        if (e instanceof GeminiError && (e.message.includes('1日あたり') || e.message.includes('前払いクレジット'))) break;
-      }
+    // 2026-08-06、1件ずつN回呼ぶ方式からまとめて呼ぶ方式に変更した
+    // (無料枠の上限はリクエスト数で数えられるため。lib/gemini.js の
+    //  「まとめて生成(バッチ)」の項を参照)。
+    showLoading(status, `生成中... (${pairs.length} 件)`);
+    let cards;
+    try {
+      cards = await generateVocabCards({
+        pairs,
+        apiKey,
+        model,
+        promptTemplate: shared.wordPrompt,
+        onProgress: (done, total) => {
+          if (total > done) showLoading(status, `生成中... (${done}/${total} 件)`);
+        },
+      });
+    } catch (e) {
+      // バッチ全体が失敗した場合(APIキー不正・上限到達・応答が壊れている等)。
+      // 個別の件に切り分けられないので、まとめて1件の失敗として扱う。
+      hideLoading(status);
+      setStatus(status, `生成に失敗しました: ${e.message}${quotaSuffix()}`, true);
+      return;
     }
+
+    cards.forEach((card, i) => {
+      if (!card) {
+        // AIの応答にこの件だけ含まれていなかった場合。他の件は活かす。
+        failed.push(`${pairs[i].word}: AIの応答にこの単語が含まれていませんでした`);
+        return;
+      }
+      const generatedAt = new Date().toISOString();
+      generated.push({
+        ...card, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt,
+      });
+    });
 
     if (generated.length > 0) {
       wordStock = wordStock.concat(generated);
@@ -1153,11 +1362,11 @@ async function onWordGenerate() {
     // 全件成功したときだけ入力欄を空にする(失敗した行を片桐が確認できるように)。
     if (failed.length === 0) {
       $('word-input').value = '';
-      setStatus(status, `${generated.length} 件のカードを生成しました。`);
+      setStatus(status, `${generated.length} 件のカードを生成しました。${quotaSuffix()}`);
     } else {
       setStatus(
         status,
-        `${generated.length} 件成功 / ${failed.length} 件失敗\n${failed.join('\n')}`,
+        `${generated.length} 件成功 / ${failed.length} 件失敗\n${failed.join('\n')}${quotaSuffix()}`,
         generated.length === 0,
       );
     }
@@ -1312,7 +1521,7 @@ async function onAiAskGenerate() {
 
     hideLoading(status);
     $('ai-ask-input').value = '';
-    setStatus(status, `${items.length} 件のカードを生成しました${shuujukuNote}`);
+    setStatus(status, `${items.length} 件のカードを生成しました${shuujukuNote}${quotaSuffix()}`);
   } catch (e) {
     hideLoading(status);
     setStatus(status, e.message, true);
@@ -1331,16 +1540,121 @@ async function onAiAskGenerate() {
 // ---------------------------------------------------------------------------
 
 /**
+ * 入力された1行が「単語・句動詞などの表現」か「文」かを判定する
+ * (2026-08-06追加)。
+ *
+ * **なぜローカルで判定するのか**: 単語・句動詞をそのまま`correctEnglishText()`
+ * にかけると、文ではないので必ず「誤り」と判定され、カードにならずに
+ * DailyConversationタブへ転記されてしまう(この機能を入れる前の挙動)。
+ * 添削へ送る前に振り分ける必要があり、そのためにはAI呼び出しの前に
+ * 決める必要がある。AIに分類させると1回呼び出しが増えるうえ、
+ * 呼び出し回数を減らしてきた方針(「まとめて生成(バッチ)」参照)と逆行する。
+ *
+ * **判定規則(利用者に説明できる単純さを優先している)**:
+ *   文末に `.` `!` `?` が付いていれば「文」。
+ *   付いていなければ、5語以下なら「表現」、6語以上なら「文」。
+ *   ただし区切り記号(`,` `、` `/` `・`)を含む場合は語数に関わらず「表現」。
+ * 語数の条件を入れているのは、句読点を打たずに文を書く癖があっても
+ * 長ければ文として扱われるようにするため。取り違えた場合は結果メッセージに
+ * どちらとして扱ったかが出るので、**文末に「.」を付ければ確実に文として
+ * 扱わせられる**(この逃げ道を画面の説明文にも書いてある)。
+ *
+ * **区切り記号の例外について(2026-08-06追加)**: 区切りは改行のみという方針
+ * (片桐の選択)だが、`give up, look forward to, put off` のようにカンマで
+ * 1行に並べてしまうことは起こりうる。この例外が無いと語数が6を超えて「文」と
+ * 判定され、添削で「誤り」になってDailyConversationタブへ転記され、
+ * **カードが1枚もできない**という一番分かりにくい失敗になる。表現として
+ * 扱っておけば、少なくとも1枚は作られたうえで「1行1件にしてください」と
+ * 案内できる(`looksLikeMultipleEntries`)。`ready, willing, and able` のように
+ * カンマを含んで正しく1つの成句である場合も、この扱いなら壊れない。
+ */
+const PHRASE_MAX_WORDS = 5;
+
+/** 1行に複数件を並べてしまったときによく使われる区切り記号。 */
+const ENTRY_SEPARATOR_RE = /[,、/・]/;
+
+function looksLikePhrase(line) {
+  const s = (line || '').trim();
+  if (!s) return false;
+  if (/[.!?]$/.test(s)) return false;
+  if (ENTRY_SEPARATOR_RE.test(s)) return true;
+  return s.split(/\s+/).filter(Boolean).length <= PHRASE_MAX_WORDS;
+}
+
+/**
+ * 1行に複数の語句を並べてしまっている可能性が高い行かを判定する
+ * (結果メッセージでの案内にのみ使う。処理の振り分けは変えない)。
+ */
+function looksLikeMultipleEntries(line) {
+  const s = (line || '').trim();
+  if (!s || /[.!?]$/.test(s)) return false;
+  return ENTRY_SEPARATOR_RE.test(s);
+}
+
+// ---------------------------------------------------------------------------
+// 全部大文字の入力の自動修正(2026-08-06追加、習熟用タブのみ)
+//
+// 片桐から「習熟用タブですべて大文字だと誤り扱いになる。スペルが合っている
+// なら小文字に自動修正してカード生成を進めたい」との要望。
+//
+// **なぜ添削の前にこちら側で直すのか**: 添削(correctEnglishText)のカテゴリは
+// 「文法 / 語彙 / 自然さ / 誤りなし」の4つだけで(docs/shared/
+// correction_response_schema.json)、大文字small文字の表記だけを表す
+// カテゴリが無い。そのため「大文字が理由の誤りだけを見逃す」という
+// 選び方ができない。また**system_instructionはApps Script(Googleフォーム
+// 経路)と意味的に同一に保つルール**があるので、添削側に手を入れる選択肢も
+// 無い。送る前に表記を直せば、スペルが正しければ素直に「誤りなし」になる。
+//
+// 直した結果はカードの内容にも使われる(片桐の補足「小文字に自動修正と
+// いうのはカード生成時の話」)。**入力欄そのものは書き換えない**
+// ——打った内容が勝手に変わるのは驚きが大きいため、結果メッセージで
+// 「こう直して作りました」と伝えるに留める。
+// ---------------------------------------------------------------------------
+
+/** 英字がすべて大文字か(英字が1文字以下の行は対象外)。 */
+function isAllUpperCase(text) {
+  const s = text || '';
+  const letters = s.match(/[A-Za-z]/g);
+  if (!letters || letters.length < 2) return false;
+  return !/[a-z]/.test(s);
+}
+
+/**
+ * 全部大文字の入力を、カードに載せられる通常の表記へ直す。
+ *
+ * @param {boolean} asSentence 文として扱う行なら true(文頭を大文字に戻す)。
+ *   単語・句動詞は小文字のままでよいので false。
+ *
+ * **固有名詞は元に戻せない**(`TOKYO` → `tokyo`)。ローカルの規則だけでは
+ * 判別できないため、直した内容は必ず結果メッセージに出して片桐が確認できる
+ * ようにしてある(添削側が拾えば「誤り」として理由付きで表示もされる)。
+ */
+function normalizeAllCaps(text, { asSentence }) {
+  let s = (text || '').toLowerCase();
+  if (asSentence) {
+    // 文頭、および . ! ? の後の最初の英字を大文字に戻す。
+    s = s.replace(/(^|[.!?]\s+)([a-z])/g, (m, head, ch) => head + ch.toUpperCase());
+  }
+  // 一人称の I は常に大文字。`\b` は `'` を語境界とみなすので、
+  // i'm / i've / i'll / i'd もこの1行で直る。
+  return s.replace(/\bi\b/g, 'I');
+}
+
+/**
  * 習熟用タブの「カードを生成する」(2026-08-06追加、Web版のみ)。
  *
- * 入力された英文のうち**文法的に正しいものだけ**をカードにする。判定は
- * DailyConversationと同じ`correctEnglishText()`(=Googleフォーム経路の
- * Apps Scriptと同じsystem_instruction)を使い回す——ここに独自の正誤判定を
- * 作ると3つ目の採点基準が生まれ、同じ文でも入口によって評価が食い違うため。
+ * 入力を行ごとに「文」と「単語・句動詞などの表現」に振り分ける
+ * (`looksLikePhrase`)。
  *
- * 判定は1回のAI呼び出しで複数文をまとめて処理できる(構造化出力が文ごとに
- * 分割して返す)が、カード生成は文ごとに1回ずつ呼ぶ。誤りのある文では
- * 生成を呼ばないので、無駄なAPI消費にはならない。
+ * - 文 … **文法的に正しいものだけ**をカードにする。判定は
+ *   DailyConversationと同じ`correctEnglishText()`(=Googleフォーム経路の
+ *   Apps Scriptと同じsystem_instruction)を使い回す——ここに独自の正誤判定を
+ *   作ると3つ目の採点基準が生まれ、同じ文でも入口によって評価が食い違うため。
+ * - 表現 … 正誤判定にかけず、その表現が使われる文法構成と、内容がそれぞれ
+ *   別の例文3つを生成する(2026-08-06、片桐の要望で追加)。
+ *
+ * AI呼び出しは入力が何行あっても**最大3回**(正誤判定1回 + 文のカード生成1回
+ * + 表現のカード生成1回。10件を超える場合はBATCH_SIZEごとに分かれる)。
  */
 async function onShuujukuGenerate() {
   const status = $('shuujuku-generate-status');
@@ -1351,56 +1665,100 @@ async function onShuujukuGenerate() {
     return;
   }
   if (!shared.correctionSystemInstruction || !shared.correctionResponseSchema
-    || !shared.shuujukuSentencePrompt) {
+    || !shared.shuujukuSentencePrompt || !shared.shuujukuPhrasePrompt) {
     setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
     return;
   }
   const text = $('shuujuku-input').value.trim();
   if (!text) {
-    setStatus(status, '英文を入力してください。', true);
+    setStatus(status, '英文または単語・表現を入力してください。', true);
     return;
   }
+
+  // 入力を行ごとに「表現(単語・句動詞など)」と「文」へ振り分ける。
+  // 表現は正誤判定にかけない(文ではないので必ず「誤り」になってしまうため)。
+  //
+  // 振り分けの前に、全部大文字の行は通常の表記へ直しておく(2026-08-06)。
+  // 添削へ送る前に直すことで、スペルが正しければ素直に「誤りなし」になる。
+  // 振り分けの規則(looksLikePhrase)は大文字小文字に依存しないので、
+  // 直す前後どちらで判定しても結果は同じ。
+  const recased = [];
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
+    if (!isAllUpperCase(line)) return line;
+    const fixed = normalizeAllCaps(line, { asSentence: !looksLikePhrase(line) });
+    recased.push({ from: line, to: fixed });
+    return fixed;
+  });
+  const phrases = lines.filter(looksLikePhrase);
+  const sentenceText = lines.filter((l) => !looksLikePhrase(l)).join('\n');
 
   const btn = $('shuujuku-generate');
   btn.disabled = true;
   const model = $('model').value.trim() || 'gemini-2.0-flash';
+  const items = [];
+  let failed = 0;
+  let ngRows = [];
+
+  /** バッチの戻り値(生成できなかった件はnull)をストック用の形にして積む。 */
+  const pushItems = (generated) => {
+    for (const item of generated) {
+      if (!item) {
+        failed += 1;
+        continue;
+      }
+      const generatedAt = new Date().toISOString();
+      items.push({
+        ...item, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt,
+      });
+    }
+  };
+
   try {
-    showLoading(status, '英文が正しいか確認中...(数十秒かかることがあります)');
-    // **consolidateNoErrorCorrections() は通さないこと。** あれは「誤りなし」の
-    // 複数文を1行にまとめる(originalを改行で連結する)関数で、シートに
-    // 1送信=1行として書き込むためのもの。ここで通すと、正しい文を3つ
-    // 入力しても「3文が連結された1枚」のカードになってしまう。
-    const corrections = await correctEnglishText({
-      text,
-      apiKey,
-      model,
-      systemInstruction: shared.correctionSystemInstruction,
-      responseSchema: shared.correctionResponseSchema,
-    });
+    if (sentenceText) {
+      showLoading(status, '英文が正しいか確認中...(数十秒かかることがあります)');
+      // **consolidateNoErrorCorrections() は通さないこと。** あれは「誤りなし」の
+      // 複数文を1行にまとめる(originalを改行で連結する)関数で、シートに
+      // 1送信=1行として書き込むためのもの。ここで通すと、正しい文を3つ
+      // 入力しても「3文が連結された1枚」のカードになってしまう。
+      const corrections = await correctEnglishText({
+        text: sentenceText,
+        apiKey,
+        model,
+        systemInstruction: shared.correctionSystemInstruction,
+        responseSchema: shared.correctionResponseSchema,
+      });
 
-    const okRows = corrections.filter((c) => c.category === '誤りなし');
-    const ngRows = corrections.filter((c) => c.category !== '誤りなし');
+      const okRows = corrections.filter((c) => c.category === '誤りなし');
+      ngRows = corrections.filter((c) => c.category !== '誤りなし');
 
-    const items = [];
-    let failed = 0;
-    for (let i = 0; i < okRows.length; i += 1) {
-      showLoading(status, `カードを生成中... (${i + 1}/${okRows.length})`);
-      try {
-        const item = await generateShuujukuItemFromSentence({
-          // 添削が「誤りなし」と判断した文をそのまま使う(correctedは
-          // 誤りなしの場合、原文と同じか整形しただけのもの)。
-          sentence: (okRows[i].original || '').trim(),
+      if (okRows.length > 0) {
+        showLoading(status, `カードを生成中... (英文 ${okRows.length} 件)`);
+        // 添削が「誤りなし」と判断した文をそのまま使う(correctedは
+        // 誤りなしの場合、原文と同じか整形しただけのもの)。
+        const sentences = okRows.map((c) => (c.original || '').trim());
+        pushItems(await generateShuujukuItemsFromSentences({
+          sentences,
           apiKey,
           model,
           promptTemplate: shared.shuujukuSentencePrompt,
-        });
-        const generatedAt = new Date().toISOString();
-        items.push({
-          ...item, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt,
-        });
-      } catch {
-        failed += 1;
+          onProgress: (done, total) => {
+            if (total > done) showLoading(status, `カードを生成中... (英文 ${done}/${total} 件)`);
+          },
+        }));
       }
+    }
+
+    if (phrases.length > 0) {
+      showLoading(status, `カードを生成中... (単語・表現 ${phrases.length} 件)`);
+      pushItems(await generateShuujukuItemsFromPhrases({
+        phrases,
+        apiKey,
+        model,
+        promptTemplate: shared.shuujukuPhrasePrompt,
+        onProgress: (done, total) => {
+          if (total > done) showLoading(status, `カードを生成中... (単語・表現 ${done}/${total} 件)`);
+        },
+      }));
     }
 
     if (items.length > 0) {
@@ -1415,7 +1773,55 @@ async function onShuujukuGenerate() {
     if (items.length > 0 && ngRows.length === 0 && failed === 0) $('shuujuku-input').value = '';
 
     const notes = [];
-    if (items.length > 0) notes.push(`${items.length} 件のカードを生成しました。`);
+    if (items.length > 0) {
+      // 「文」と「表現」のどちらとして扱ったかを必ず出す(2026-08-06)。
+      // 振り分けはローカルの単純な規則(looksLikePhrase)なので取り違えは
+      // 起こりうる。結果に出しておけば、意図と違えば片桐が気づいて
+      // 文末に「.」を付けて出し直せる。
+      const breakdown = [];
+      if (phrases.length > 0) breakdown.push(`単語・表現 ${phrases.length} 件`);
+      const sentenceCount = lines.length - phrases.length;
+      if (sentenceCount > 0) breakdown.push(`英文 ${sentenceCount} 件`);
+      notes.push(
+        `${items.length} 件のカードを生成しました。`
+        + (breakdown.length > 1 ? `(入力の内訳: ${breakdown.join(' / ')})` : ''),
+      );
+    }
+    if (phrases.length > 0) {
+      const combo = comboExampleCount(phrases.length);
+      notes.push(
+        `次の ${phrases.length} 件は「単語・表現」として扱い、正誤の添削はせずに`
+        + `その表現を使った例文${BASE_PHRASE_EXAMPLES + combo}つを作りました`
+        + (combo > 0 ? `(うち${combo}つは他の表現も一緒に使った例文)` : '')
+        + ':\n'
+        + phrases.map((p) => `・${p}`).join('\n')
+        + '\n(文として添削してほしいものが混ざっていた場合は、文末に「.」を付けて'
+        + 'もう一度実行してください)',
+      );
+    }
+    // 全部大文字だった行を、何をどう直したか分かる形で知らせる(2026-08-06)。
+    // 固有名詞(TOKYO → tokyo)まではローカルの規則で戻せないので、
+    // 直した結果を必ず見せて片桐が気づけるようにしておく。
+    if (recased.length > 0) {
+      notes.push(
+        `次の ${recased.length} 件はすべて大文字だったため、表記を直してから`
+        + 'カードを作りました:\n'
+        + recased.map((r) => `・${r.from} → ${r.to}`).join('\n')
+        + '\n(固有名詞の大文字までは復元できません。上の表記で正しいか確認してください)',
+      );
+    }
+    // 1行に複数件を並べてしまった可能性がある行を知らせる(2026-08-06)。
+    // 区切りは改行のみという方針なので、カンマ等で並べると本人の意図と違って
+    // 1枚のカードにまとまってしまう。黙って作ると気づけないため必ず出す。
+    const crowded = lines.filter(looksLikeMultipleEntries);
+    if (crowded.length > 0) {
+      notes.push(
+        `⚠ 次の ${crowded.length} 行は、1行に複数の語句が並んでいるように見えます:\n`
+        + crowded.map((l) => `・${l}`).join('\n')
+        + '\n区切りは改行のみです。1行に1件ずつ改行して入力し直すと、'
+        + 'それぞれ別のカードになります(いまは1件分としてまとめて作られています)。',
+      );
+    }
     if (ngRows.length > 0) {
       // 誤りのあった文はDailyConversationタブの入力欄へ転記しておく
       // (2026-08-06、片桐の指示)。あちらは元々「自分の誤りを記録する場所」
@@ -1435,7 +1841,7 @@ async function onShuujukuGenerate() {
     if (failed > 0) notes.push(`${failed} 件はカードの生成に失敗しました。`);
     setStatus(
       status,
-      notes.join('\n') || 'カードを生成できませんでした。',
+      (notes.join('\n') || 'カードを生成できませんでした。') + quotaSuffix(),
       items.length === 0,
     );
   } catch (e) {
@@ -1953,6 +2359,9 @@ function mergeRemoteSettings(remoteJson) {
     } else {
       const s = String(v ?? '').trim();
       if (!s) continue; // 空で上書きしない
+      // モデル欄は <select> なので、候補に無い値はそのまま代入しても入らない
+      // (空文字になる)。先に候補へ足しておくこと(2026-08-06)。
+      ensureModelOption(f.el === 'model' ? s : '');
       $(f.el).value = s;
       localStorage.setItem(f.key, s);
     }
@@ -2676,18 +3085,34 @@ async function generateShuujukuCandidatesFromRows(rows, status) {
   const model = $('model').value.trim() || 'gemini-2.0-flash';
   const items = [];
   let failed = 0;
-  for (let i = 0; i < rows.length; i += 1) {
-    showLoading(status, `習熟用(音読)候補を生成中... (${i + 1}/${rows.length})`);
-    try {
-      const item = await generateShuujukuItemFromRow({
-        row: rows[i], apiKey, model, promptTemplate: shared.shuujukuDailyconvPrompt,
-      });
-      const generatedAt = new Date().toISOString();
-      items.push({ ...item, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt });
-    } catch {
-      failed += 1;
-    }
+
+  // 2026-08-06、1行ずつN回呼ぶ方式からまとめて呼ぶ方式に変更した
+  // (無料枠の上限はリクエスト数で数えられるため)。
+  showLoading(status, `習熟用(音読)候補を生成中... (${rows.length} 件)`);
+  let generated;
+  try {
+    generated = await generateShuujukuItemsFromRows({
+      rows,
+      apiKey,
+      model,
+      promptTemplate: shared.shuujukuDailyconvPrompt,
+      onProgress: (done, total) => {
+        if (total > done) showLoading(status, `習熟用(音読)候補を生成中... (${done}/${total} 件)`);
+      },
+    });
+  } catch (e) {
+    // 非ブロッキング: ここでの失敗はシート追記自体を無効にしない。
+    return `\n習熟用(音読)候補の生成に失敗しました: ${e.message}`;
   }
+
+  generated.forEach((item) => {
+    if (!item) {
+      failed += 1;
+      return;
+    }
+    const generatedAt = new Date().toISOString();
+    items.push({ ...item, id: newSyncId(), generated_at: generatedAt, updated_at: generatedAt });
+  });
 
   if (items.length > 0) {
     shuujukuStock = shuujukuStock.concat(items);

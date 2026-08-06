@@ -101,5 +101,44 @@ console.log('\n[2] 429の既存の挙動(回帰確認)');
   }
 }
 
+console.log('\n[3] 無料枠の上限超過を「前払いクレジット切れ」と取り違えないこと');
+
+{
+  // 2026-08-06: Googleが**ただの無料枠超過**で返す標準の文面には
+  // "please check your plan and billing details" が含まれる。
+  // isBillingError が単なる "billing" で判定していたため、片桐の環境で
+  // 20回/日の無料枠にぶつかっただけなのに「前払いクレジットが尽きている、
+  // 新しいプロジェクトでキーを作り直せ」という**そのとおりに操作しても
+  // 解決しない案内**が表示されていた。
+  const realBody = JSON.stringify({
+    error: {
+      code: 429,
+      message: 'You exceeded your current quota, please check your plan and billing details.',
+      status: 'RESOURCE_EXHAUSTED',
+      details: [{
+        '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+        violations: [{
+          quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+          quotaDimensions: { model: 'gemini-3.5-flash' },
+          quotaValue: '20',
+        }],
+      }],
+    },
+  });
+  globalThis.fetch = async () => ({ ok: false, status: 429, text: async () => realBody });
+  try {
+    await callGemini('hello', 'k', 'gemini-3.5-flash');
+    fail('無料枠の上限超過は例外を投げるべき');
+  } catch (e) {
+    if (e.message.includes('前払いクレジット')) {
+      fail('ただの無料枠超過を「前払いクレジット切れ」と誤判定している');
+    } else if (e.message.includes('1日あたりのリクエスト数上限')) {
+      ok('本文に "billing" を含んでいても、無料枠の1日あたり上限として正しく案内する');
+    } else {
+      fail(`想定外のメッセージ: ${e.message.slice(0, 120)}`);
+    }
+  }
+}
+
 console.log(`\n${failures === 0 ? '✅ 全テスト成功' : `❌ ${failures} 件失敗`}`);
 process.exit(failures === 0 ? 0 : 1);
