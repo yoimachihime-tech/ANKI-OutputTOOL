@@ -562,6 +562,26 @@ export function colLetter(index) {
   return letters;
 }
 
+/**
+ * 403 のうち「トークンにスプレッドシートのスコープが付いていない」ものか。
+ *
+ * シートの共有設定の問題(=別アカウントでログインした等)とは**原因も対処も
+ * 別物**なので、必ず区別すること。Googleの同意画面は権限ごとにチェックボックスが
+ * 分かれており、スプレッドシートの項目をオフのまま「続行」すると、
+ * `openid email` だけのトークンが発行されてこの状態になる。
+ *
+ * **厄介なのは、そのとき発行されるリフレッシュトークンも同じ(足りない)スコープを
+ * 持つこと**。以後どれだけ無言で取り直しても足りないままで、しかも 403 は
+ * `sheetsFetch()` の 401 自動リトライにも掛からないため、放っておくと
+ * 永久に直らない。呼び出し側で保存済みトークンごと捨てる必要がある。
+ */
+function isScopeInsufficient(status, detail) {
+  if (status !== 403) return false;
+  const n = (detail || '').replace(/[\s_-]/g, '').toLowerCase();
+  return n.includes('accesstokenscopeinsufficient')
+    || n.includes('insufficientauthenticationscopes');
+}
+
 /** 失敗理由を、利用者が対処できる日本語の説明にする(判定できなければ null)。 */
 function describeSheetsError(status, detail) {
   const n = (detail || '').replace(/[\s_-]/g, '').toLowerCase();
@@ -577,6 +597,16 @@ function describeSheetsError(status, detail) {
     if (n.includes('servicedisabled') || n.includes('hasnotbeenused')) {
       return 'このプロジェクトで Google Sheets API が有効化されていません。\n'
         + 'Google Cloud Console の「APIとサービス → ライブラリ」で有効にしてください。';
+    }
+    if (isScopeInsufficient(status, detail)) {
+      // ここに来た時点で sheetsFetch() が signOut() 済み(未ログイン状態に
+      // 戻してある)なので、案内も「ログインし直すだけ」でよい。
+      return 'ログイン時に「スプレッドシート」への許可が与えられていません'
+        + '(シートの共有設定の問題ではありません)。\n'
+        + 'ヘッダーの「Googleにログイン」からログインし直し、同意画面で出る'
+        + 'チェックボックスをすべてオンにしてから「続行」を押してください。\n'
+        + '※ Googleの同意画面は権限ごとにチェックボックスが分かれており、'
+        + 'スプレッドシートの項目をオフのまま進めるとこの状態になります。';
     }
     if (n.includes('insufficient') || n.includes('permission')) {
       return 'このGoogleアカウントには、対象のスプレッドシートを編集する権限がありません。\n'
@@ -663,6 +693,14 @@ async function sheetsFetch(url, accessTokenValue, init = {}) {
     const message = described
       ? `${described}\n\n詳細: ${detail}`
       : `スプレッドシートの操作に失敗しました(HTTP ${res.status}): ${detail}`;
+
+    if (isScopeInsufficient(res.status, detail)) {
+      // 保存済みリフレッシュトークンも同じ(足りない)スコープなので、残しておくと
+      // 無言の取り直しが延々と同じ 403 を返し続ける。捨てて未ログイン状態に戻し、
+      // 次のログインで同意画面を通し直させる(失うのはログイン状態だけ)。
+      signOut();
+      throw new SheetsAuthError(message);
+    }
     throw res.status === 401 ? new SheetsAuthError(message) : new SheetsError(message);
   }
   return res.json();

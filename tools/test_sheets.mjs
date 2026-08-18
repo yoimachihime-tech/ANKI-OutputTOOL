@@ -39,7 +39,7 @@ console.log('lib/sheets.js / lib/dailyconv.js の単体テスト\n');
 
 const {
   fetchPendingRows, appendCorrectionRows, markRowsAsExported, colLetter,
-  SheetsError, SheetsAuthError,
+  SheetsError, SheetsAuthError, getStoredRefreshToken,
 } = await import(new URL('../docs/lib/sheets.js', import.meta.url));
 const dailyconv = await import(new URL('../docs/lib/dailyconv.js', import.meta.url));
 
@@ -185,6 +185,45 @@ console.log('\n[2] fetchPendingRows');
     } else {
       fail(`403 の扱いが想定と違う: ${e.constructor.name} / ${e.message}`);
     }
+  }
+}
+
+{
+  // 同じ 403 でも「トークンにスプレッドシートのスコープが無い」場合は原因も対処も別。
+  // 同意画面のチェックボックスをオフのまま進めると起きる(2026-08-13に実際に発生)。
+  // 保存済みリフレッシュトークンも同じ足りないスコープを持つため、捨てないと
+  // 無言の取り直しが同じ 403 を返し続けて永久に直らない。
+  localStorage.setItem('anki_tool_google_refresh_token', '1//dummy-refresh-token');
+  mockFetch(async () => ({
+    __error: 403,
+    detail: JSON.stringify({
+      error: {
+        code: 403,
+        message: 'Request had insufficient authentication scopes.',
+        status: 'PERMISSION_DENIED',
+        details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }],
+      },
+    }),
+  }));
+  try {
+    await fetchPendingRows(SHEET);
+    fail('403(スコープ不足)は SheetsAuthError を投げるべき');
+  } catch (e) {
+    if (e instanceof SheetsAuthError && e.message.includes('チェックボックス')) {
+      ok('403(スコープ不足)は SheetsAuthError + 同意画面のやり直しを案内する');
+    } else {
+      fail(`403(スコープ不足)の扱いが想定と違う: ${e.constructor.name} / ${e.message}`);
+    }
+    if (e.message.includes('共有設定の問題ではありません')) {
+      ok('403(スコープ不足)をシートの共有設定の問題と誤って案内しない');
+    } else {
+      fail('403(スコープ不足)で共有設定を疑わせる案内のままになっている');
+    }
+  }
+  if (getStoredRefreshToken() === null) {
+    ok('403(スコープ不足)では保存済みリフレッシュトークンを捨てる');
+  } else {
+    fail('403(スコープ不足)なのにリフレッシュトークンが残っている(同じ403を繰り返す)');
   }
 }
 

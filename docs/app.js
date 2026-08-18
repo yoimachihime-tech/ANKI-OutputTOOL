@@ -33,7 +33,11 @@ import {
   beginAuthCodeFlow, completeAuthCodeFlowIfReturning,
   fetchPendingRows, appendCorrectionRows, markRowsAsExported, SheetsAuthError,
   readSyncState, writeSyncState, fetchAppConfig,
-} from './lib/sheets.js';
+// `?v=` は lib 側にも要る(2026-08-13)。index.html の `?v=` は app.js しか
+// 更新しないため、これが無いとブラウザが古い lib/sheets.js を使い続ける。
+// **他から import されていないモジュールにだけ付けること**——同じモジュールを
+// 別々のURLで読むと実体が2つでき、ここでは accessToken などの状態が二重になる。
+} from './lib/sheets.js?v=20260813a';
 import * as dailyconv from './lib/dailyconv.js';
 import {
   getAllUsage, usageSummary, clearCounts, clearLearnedLimits,
