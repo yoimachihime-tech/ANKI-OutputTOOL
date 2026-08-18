@@ -79,6 +79,21 @@ console.log('[1] CORS(許可オリジンの絞り込み)');
   } else {
     fail(`プリフライトの応答が想定と違う: ${preflight.status}`);
   }
+
+  // **これが無いと GET /appconfig はブラウザから一度も成功しない**(2026-08-19
+  // 追加)。`Authorization` 付きの要求は単純リクエストにならないため、ブラウザは
+  // 先に OPTIONS で許可を尋ね、許可リストに authorization が無ければ本リクエスト
+  // 自体を送らない。アプリ側には「Failed to fetch」としか見えず、原因が
+  // CORS だと分からないまま長く残っていた(2026-08-05〜2026-08-19)。
+  //
+  // このテストは Node から worker.fetch() を直接呼ぶだけで CORS の強制は
+  // 働かないので、**ヘッダーの中身そのものを見る**しかない。
+  const allowHeaders = (preflight.headers.get('Access-Control-Allow-Headers') || '').toLowerCase();
+  if (allowHeaders.includes('authorization') && allowHeaders.includes('content-type')) {
+    ok('プリフライトが Authorization を許可する(/appconfig がブラウザから呼べる)');
+  } else {
+    fail(`Allow-Headers に Authorization が無い: ${allowHeaders}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

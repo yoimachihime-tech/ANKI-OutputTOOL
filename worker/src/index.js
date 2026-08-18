@@ -56,8 +56,24 @@ function corsHeaders(request, env) {
   const origin = request.headers.get('Origin') || '';
   const headers = {
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Max-Age': '86400',
+    // **Authorization を落とさないこと(2026-08-19修正)。** GET /appconfig は
+    // `Authorization: Bearer ...` を付けるため単純リクエストにならず、ブラウザは
+    // 先に OPTIONS でプリフライトを投げて `Access-Control-Request-Headers:
+    // authorization` の許可を求める。ここが Content-Type だけだと**ブラウザが
+    // 本リクエストを送る前に握り潰す**ため、アプリ側には「Workerへ接続できません
+    // でした: Failed to fetch」としか見えない。
+    //
+    // この取りこぼしで /appconfig は追加(2026-08-05)以来ブラウザからは一度も
+    // 成功しておらず、それでも気づけなかったのは、PCには既に手入力済みの値が
+    // localStorage にあって困らなかったから。新しいスマホが初めてこの経路に
+    // 依存して発覚した。curl は CORS を無視するので疎通確認では見えない
+    // ——検証するなら必ず OPTIONS を投げること(test_worker.mjs の[6])。
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    // 24時間(86400)にしていたが、上のような取り違えを直しても、その間は
+    // ブラウザが古い許可リストを使い続けてしまう。実際 Chrome は最大2時間に
+    // 丸めるとはいえ、待たされる理由が分かりにくいので短くしておく
+    // (このアプリの呼び出し回数ならプリフライトが増えても無視できる)。
+    'Access-Control-Max-Age': '600',
     Vary: 'Origin',
   };
   if (origin && allowedOrigins(env).includes(origin)) {

@@ -1900,6 +1900,32 @@ PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られ�
     出る版で切り分ける)。
   - UI操作・実機依存のため自動テストは追加していない(2026-08-05のD/E/F/Hと
     同じ扱い)。Worker側の本人確認は`test_worker.mjs`の[5]で既に固定済み。
+- **`/appconfig`がブラウザから一度も成功していなかった(2026-08-19、真の原因)**:
+  上の「黙って握り潰さない」修正で理由が画面に出るようになり、正体が分かった。
+  **Workerの`corsHeaders()`の`Access-Control-Allow-Headers`が`Content-Type`
+  だけで、`Authorization`が抜けていた**。
+  - `GET /appconfig`は`Authorization: Bearer ...`を付けるため単純リクエストに
+    ならず、ブラウザは先に`OPTIONS`でプリフライトを投げて
+    `Access-Control-Request-Headers: authorization`の許可を求める。許可リストに
+    無いので**ブラウザが本リクエストを送る前に握り潰す**。アプリ側には
+    `fetch`の失敗(「Workerへ接続できませんでした: Failed to fetch」)としか
+    見えず、CORSが原因だと分からなかった。
+  - つまり**追加(2026-08-05)から2026-08-19まで、この経路は一度も動いていない**。
+    気づけなかったのは、PCには既に手入力済みの値がlocalStorageにあって
+    困らなかったから。新しいスマホが初めてこの経路に依存して発覚した。
+  - **curlでの疎通確認では絶対に見つからない**(curlはCORSを無視するので
+    `/appconfig`は普通に401/200を返す)。実際、調査の最初にcurlで叩いて
+    「Worker側は正常」と判断しかけた。**検証するときは必ず`OPTIONS`を、
+    `Origin`と`Access-Control-Request-Headers: authorization`を付けて
+    投げること。**
+  - 回帰テストは`test_worker.mjs`の[1]。Nodeから`worker.fetch()`を直接呼ぶ
+    だけではCORSの強制が働かないため、**返ってくるヘッダーの中身そのものを
+    見る**しかない(このテストがヘッダー文字列を検査しているのはそのため。
+    実際に元のコードへ戻すと落ちることを確認済み)。
+  - 併せて`Access-Control-Max-Age`を86400→600へ下げた。同種の取り違えを
+    直しても、その間ブラウザが古い許可リストを使い続けて「直したのに直らない」
+    ことになるため(Chromeは最大2時間に丸めるとはいえ、待たされる理由が
+    分かりにくい)。このアプリの呼び出し回数ならプリフライトが増えても無視できる。
 
 #### 実装(Web版DailyConversation)
 
