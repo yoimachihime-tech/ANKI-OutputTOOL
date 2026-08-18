@@ -2090,10 +2090,22 @@ function sheetsConfig() {
 // ---------------------------------------------------------------------------
 
 /**
- * このページを開いてから /appconfig を取りに行ったか。
- * 毎回の操作のたびに問い合わせると無駄なので、1回だけにする。
+ * このページを開いてから /appconfig を取りに行って**成功**したか。
+ * 毎回の操作のたびに問い合わせると無駄なので、成功したら以後は問い合わせない。
  */
 let appConfigLoaded = false;
+
+/**
+ * 直近の /appconfig が失敗したか(2026-08-19追加)。
+ *
+ * **失敗しても`appConfigLoaded`は立てないこと。** 以前は失敗時にも立てて
+ * いたため、起動直後の1回が失敗すると、そのページを開いている間は
+ * 「🔄 同期」を押しても DailyConversation を使っても**二度と取りに
+ * 行かなくなっていた**(=再ログインしても設定が入ってこない)。
+ * 自動実行(起動時の読み込み)だけがこのフラグを見て遠慮し、片桐が自分で
+ * 押した操作からは何度でも試せるようにする。
+ */
+let appConfigFailed = false;
 
 /** Workerから受け取った設定を入力欄とlocalStorageへ反映する。 */
 function applyRemoteAppConfig(config) {
@@ -2117,31 +2129,64 @@ function applyRemoteAppConfig(config) {
 }
 
 /**
- * Workerから設定を受け取って反映する(ページを開いてから1回だけ)。
+ * Workerから設定を受け取って反映する(成功したらそのページでは1回だけ)。
  *
  * **失敗してもアプリは止めない**。Workerが落ちている・まだシークレットを
  * 登録していないといった場合でも、端末に手入力済みの値があればそのまま
- * 使えるべきなので、理由をログに出すだけにする(呼び出し側は戻り値を
- * 見なくてよい)。
+ * 使えるべきなので、例外にはせず戻り値を空にするだけにする。
+ *
+ * **ただし黙って諦めないこと(2026-08-19修正)。** 以前は console.warn だけで
+ * 画面には何も出さなかったため、新しい端末では「ログインしたのに設定が
+ * 入ってこない、理由も分からない」という手詰まりになっていた
+ * (実際にスマホのChromeで報告された)。原因はどれも端末側で対処できるもの
+ * ——別のGoogleアカウントでログインした / 同意画面でチェックを入れ損ねた /
+ * Workerに繋がらない——なので、必ず通知バナー(と⚙設定のログ)に出す。
  *
  * @param {string} accessTokenValue ログイン済みのアクセストークン
+ * @param {{auto?: boolean}} [options] auto=true は起動時の自動読み込みからの
+ *   呼び出し。失敗済みなら再試行しない(片桐が押した操作からは毎回試す)。
  * @returns {Promise<string[]>} 実際に反映した項目名(何も無ければ空配列)
  */
-async function ensureAppConfigLoaded(accessTokenValue) {
+async function ensureAppConfigLoaded(accessTokenValue, { auto = false } = {}) {
   if (appConfigLoaded) return [];
+  if (auto && appConfigFailed) return [];
   const { workerUrl } = sheetsConfig();
   if (!workerUrl || !accessTokenValue) return [];
   try {
     const config = await fetchAppConfig(workerUrl, accessTokenValue);
     appConfigLoaded = true;
+    appConfigFailed = false;
     return applyRemoteAppConfig(config || {});
   } catch (e) {
-    // 403 は「スコープが古い(openid email が付いていない)」ことが多い。
-    // 再ログインで解決するので、そう分かるように伝える。
-    appConfigLoaded = true; // 毎回リトライして待たされないよう、1回で諦める
+    appConfigFailed = true;
     console.warn('[appconfig] 設定を取得できませんでした:', e.message);
+    setStatus($('header-auth-status'), appConfigErrorMessage(e), true);
     return [];
   }
+}
+
+/**
+ * /appconfig の失敗を、片桐がその場で対処できる文言にする。
+ *
+ * Worker が返す文言だけだと「で、何をすればいいのか」が分からないため、
+ * この端末で確かめられることを添える。403 を特に手厚くしているのは、
+ * スマホでは**Chromeの既定アカウントがPCと違う**ことが多く、同意画面が
+ * 別アカウントのまま進んでしまうのが一番ありがちなため
+ * (Worker側は ALLOWED_EMAIL と一致しないトークンを拒否する)。
+ */
+function appConfigErrorMessage(e) {
+  const base = `設定の自動読み込みに失敗しました: ${e.message}`;
+  if (e?.status === 403) {
+    return `${base}
+
+次を確認してください:
+・同意画面で選んだGoogleアカウントが、いつも使っているものと同じか(スマホのChromeは既定のアカウントがPCと違うことがあります)。
+・同意画面のチェックボックスをすべてオンにしてから「続行」を押したか。
+ヘッダーの「ログアウト」→「Googleにログイン」でやり直せます。`;
+  }
+  return `${base}
+
+この端末に手入力済みの設定があればそのまま使えます。空のままの場合は、⚙ 設定 で直接入力するか、しばらく後に「🔄 同期」でやり直してください。`;
 }
 
 /**
@@ -2268,6 +2313,10 @@ function onHeaderSignOut() {
   // 保存済みのリフレッシュトークンごと破棄する(Google側の同意は取り消さない
   // ため、次回のログインは同意画面を通るだけで済む)。
   signOut();
+  // 設定の読み込み状態も忘れる(2026-08-19追加)。別アカウントで入り直した
+  // ときに、前のアカウントでの成功/失敗を引きずって取りに行かないのを防ぐ。
+  appConfigLoaded = false;
+  appConfigFailed = false;
   updateGoogleAuthStatus();
 }
 
@@ -2521,7 +2570,9 @@ async function autoPullOnStartup() {
     showLoading(statusEl, '他の端末の変更を確認中...');
     const accessToken = await getAccessToken(cfg);
     // 新しい端末では、ここで初めてスプレッドシートIDやAPIキーが手に入る。
-    const appliedSettings = await ensureAppConfigLoaded(accessToken);
+    // auto=true: ここで失敗しても、あとは片桐が押す「🔄 同期」に任せる
+    // (起動のたびに同じ失敗で待たされないため)。
+    const appliedSettings = await ensureAppConfigLoaded(accessToken, { auto: true });
     const spreadsheetId = sheetsConfig().spreadsheetId;
     if (!spreadsheetId) {
       hideLoading(statusEl);
