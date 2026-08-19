@@ -149,6 +149,8 @@
       <label class="opt"><input type="checkbox" id="force"> 既存の音声を作り直す</label>
       <label class="opt"><input type="checkbox" id="redo-multi">
         音声が2つ以上あるフィールドだけ作り直す</label>
+      <label class="opt"><input type="checkbox" id="strip-tts-opt">
+        Anki標準の再生ボタン({{tts}})も取り除く</label>
     </div>
     <p class="hint" style="margin:10px 0 0">
       「文ごとにタグを分ける」がONだと、2文以上あるフィールドには音声が文の数だけ付き、
@@ -253,6 +255,9 @@ $('file').addEventListener('change', async (ev) => {
     // テンプレートに {{tts}} がある場合だけ⑤を出す(無いapkgでは無関係な節なので隠す)
     $('tpl-tts-count').textContent = String(data.template_tts || 0);
     $('sec-template').hidden = !data.template_tts;
+    // {{tts}} が入っているapkgでは既定でONにする(そのまま生成すると
+    // 再生ボタンが2つになるため。不要なら外せる)
+    $('strip-tts-opt').checked = Boolean(data.template_tts);
     const total = notetypes.reduce((a, n) => a + n.note_count, 0);
     // 既に音声が入っている件数も出す。読み込み直したつもりで前の内容が
     // 残っていた場合、ここが「音声あり」だらけになるので気づける。
@@ -397,6 +402,10 @@ const options = () => ({
   exclude_japanese: $('exclude-ja').checked,
   force_regen: $('force').checked,
   redo_multi_audio: $('redo-multi').checked,
+  // テンプレートの {{tts}} を書き出し直前に取り除く。⑤を別途押す方式だと
+  // 順番を間違えたときに元のテンプレートのまま書き出されるため、
+  // 生成の一部として済ませられるようにしてある。
+  strip_template_tts: $('strip-tts-opt').checked,
   // 「文ごとにタグを分ける」は生成時の設定だが、件数を数える段階でも
   // 「再生ボタンが2つ以上になる件数」を予告するために渡す
   per_sentence_tags: $('per-sentence').checked,

@@ -389,6 +389,16 @@ def _run_generate(targets, options, settings):
     # (PC版が「キャンセル時も途中状態を保持する」設計なのと同じ考え方を、
     #  エラーで止まった場合にも広げたもの)
     try:
+        # 書き出しの直前にテンプレートを調整する。⑤の単独実行だと
+        # 「読み込む → 生成 → 書き出し」の後にもう一度押す必要があり、
+        # 順番を間違えると元のテンプレートのまま書き出されてしまう
+        # (実際に、取り除いたはずのボタンが残ったファイルが出来た)。
+        if options.get("strip_template_tts") and job["done"] > 0:
+            removed = strip_template_tts(col)
+            if removed:
+                _log("テンプレートの {{tts}} を %d 個取り除きました(%s)。"
+                     % (sum(removed.values()), " / ".join(removed)))
+
         if job["done"] > 0:
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             stem = os.path.splitext(os.path.basename(STATE.source_name))[0]
