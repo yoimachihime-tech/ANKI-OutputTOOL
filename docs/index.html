@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260819c">
+<link rel="stylesheet" href="./style.css?v=20260819d">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -79,6 +79,13 @@
            できたため、1タップで開けるよう表に戻した(⋮メニュー自体は
            中身が「設定」1つだけになっており、ワンクッション置く意味が
            無くなっていた)。 -->
+      <!-- PC上のローカルTTSツールの起動(2026-08-19追加)。当初は⚙設定の中だけに
+           置いたが、設定の下の方に埋もれて見つけられなかったため、ヘッダーへ
+           出した。ankitts: はこのPCに登録したカスタムURLスキーム(詳細は⚙設定の
+           説明とCLAUDE.mdを参照)。スマホでは動かないので、app.jsが
+           モバイル判定で hidden を外す(既定は隠す)。 -->
+      <a id="header-launch-tts" class="ghost button-like" href="ankitts://start"
+         title="PC上のTTSツール(既存apkgに音声を付ける)を起動します" hidden>🔊 TTS</a>
       <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
     </div>
   </div>
@@ -677,6 +684,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260819c"></script>
+<script type="module" src="./app.js?v=20260819d"></script>
 </body>
 </html>

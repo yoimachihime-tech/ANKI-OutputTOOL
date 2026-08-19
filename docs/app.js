@@ -199,6 +199,13 @@ const EXPORT_BUSY_MESSAGE = '.apkg の出力が進行中です。完了してか
 
 const $ = (id) => document.getElementById(id);
 
+/** スマホ・タブレットかどうか(おおまかな判定。表示の出し分けにだけ使う)。 */
+function isMobileBrowser() {
+  const data = navigator.userAgentData;
+  if (data && typeof data.mobile === 'boolean') return data.mobile;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+}
+
 /** 共有アセット(プロンプト・カード定義・スキーマ)。起動時に読み込む。 */
 const shared = {
   wordPrompt: null,
@@ -279,6 +286,13 @@ async function init() {
   const versionEl = $('app-version');
   if (versionEl) versionEl.textContent = APP_VERSION;
   console.info(`[ANKI出力ツール] app.js 版: ${APP_VERSION}`);
+
+  // ヘッダーの「🔊 TTS」(PC上のローカルTTSツールの起動)は、PCでしか動かない。
+  // スマホで押しても何も起きないボタンを見せないため、モバイルでは隠したまま
+  // にする(⚙設定の中の説明と起動ボタンは常にある)。判定は当てにならない
+  // ことがあるので、外れても困らない「表示するかどうか」だけに使っている。
+  const launchEl = $('header-launch-tts');
+  if (launchEl && !isMobileBrowser()) launchEl.hidden = false;
 
   renderModelOptions(loadCachedModels(), localStorage.getItem(STORAGE.model) || 'gemini-2.0-flash');
   $('tts-api-key').value = localStorage.getItem(STORAGE.ttsApiKey) || '';

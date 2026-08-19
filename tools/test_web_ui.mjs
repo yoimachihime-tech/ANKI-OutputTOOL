@@ -428,6 +428,22 @@ if ($('settings').hidden === true && $('main-content').hidden === false) {
   fail('起動直後の設定/通常画面の表示状態がおかしい');
 }
 
+// PC上のローカルTTSツールの起動ボタン(2026-08-19追加)。⚙設定の中だけに置いた
+// ところ「ボタンが無い」と報告されたため、ヘッダーにも出した。PCでは見えて
+// いること・リンク先がカスタムURLスキームであることを固定しておく
+// (href が http://127.0.0.1 に戻ると、ツールが起動していないときに
+//  「開けません」となるだけで起動できなくなる)。
+{
+  const launch = $('header-launch-tts');
+  if (launch && launch.hidden === false
+      && launch.getAttribute('href') === 'ankitts://start') {
+    ok('PCではヘッダーにTTSツールの起動ボタンが出ており、ankitts: で起動する');
+  } else {
+    fail(`ヘッダーのTTSツール起動ボタンがおかしい(hidden=${launch && launch.hidden}, `
+         + `href=${launch && launch.getAttribute('href')})`);
+  }
+}
+
 // いま動いているapp.jsの版を画面に出す(2026-08-06追加)。GitHub PagesはHTMLを
 // 約10分キャッシュするため、index.htmlが古いと古い`?v=`のapp.jsが読まれ、
 // 「直したはずの挙動が直っていない」という食い違いが起きる(実際に発生した)。
