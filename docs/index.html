@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260819b">
+<link rel="stylesheet" href="./style.css?v=20260819c">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -322,17 +322,26 @@
   <h3>既存のapkgにTTS音声を付ける(PCのみ)</h3>
   <p class="hint">
     Ankiから書き出した <code>.apkg</code> や、他で作った <code>.apkg</code> に、
-    後からTTS音声を付ける機能です。<strong>PCでこのツールを起動しているときだけ使えます</strong>
-    (スマホからは使えません)。PC上で
-    <code>python local_tts_server.py</code> を実行してから、下のリンクを開いてください。
+    後からTTS音声を付ける機能です。処理はPC上のツールが行うため、
+    <strong>PCからのみ使えます</strong>(スマホでは動きません)。
   </p>
   <p class="row">
+    <!-- ankitts: はこのPCに登録したカスタムURLスキーム。Webページから直接
+         プログラムを起動する手段はブラウザに存在しないため、Zoomの zoommtg:
+         などと同じこの仕組みを使う(登録は tools/register_local_tts_protocol.py
+         を1回実行するだけ。HKCUのみで管理者権限は不要)。 -->
+    <a class="ghost button-like" href="ankitts://start">🔊 PCのTTSツールを起動する</a>
     <a class="ghost button-like" href="http://127.0.0.1:8765/" target="_blank" rel="noopener">
-      🔊 ローカルのTTSツールを開く
+      起動済みの画面を開く
     </a>
   </p>
   <p class="hint">
-    リンクを開いても表示されない場合は、PC側でツールが起動していません。
+    起動すると、PC側でブラウザが自動的に開きます。初回はブラウザが
+    「このサイトは ankitts を開こうとしています」と確認するので許可してください
+    (「常に許可」にすると次回から出ません)。
+    <strong>押しても何も起きない場合は、そのPCで一度だけ
+    <code>python tools\register_local_tts_protocol.py</code> を実行してください</strong>
+    (起動ボタンの登録。実行していないPCやスマホでは反応しません)。
   </p>
 
   <hr>
@@ -668,6 +677,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260819b"></script>
+<script type="module" src="./app.js?v=20260819c"></script>
 </body>
 </html>

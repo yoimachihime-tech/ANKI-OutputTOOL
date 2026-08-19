@@ -147,7 +147,16 @@
       <label class="opt"><input type="checkbox" id="per-sentence"> 文ごとにタグを分ける</label>
       <label class="opt"><input type="checkbox" id="exclude-ja"> 日本語を含む文を除外する</label>
       <label class="opt"><input type="checkbox" id="force"> 既存の音声を作り直す</label>
+      <label class="opt"><input type="checkbox" id="redo-multi">
+        音声が2つ以上あるフィールドだけ作り直す</label>
     </div>
+    <p class="hint" style="margin:10px 0 0">
+      「文ごとにタグを分ける」がONだと、2文以上あるフィールドには音声が文の数だけ付き、
+      Ankiの再生ボタンもその数だけ並びます。1つにまとめたい場合はこれをOFFにしてください
+      (「文と文の間隔」の分だけ無音を挟んで1つの音声にします)。
+      <strong>既に作ってしまった分を直すときは、右の「音声が2つ以上あるフィールドだけ
+      作り直す」を使うと、該当分だけをやり直せます</strong>(全部作り直す必要はありません)。
+    </p>
     <p class="hint" style="margin:10px 0 0">
       APIキーは <code>config.json</code> のものを使います(この画面には出しません)。
     </p>
@@ -352,6 +361,10 @@ async function loadSettings() {
 const options = () => ({
   exclude_japanese: $('exclude-ja').checked,
   force_regen: $('force').checked,
+  redo_multi_audio: $('redo-multi').checked,
+  // 「文ごとにタグを分ける」は生成時の設定だが、件数を数える段階でも
+  // 「再生ボタンが2つ以上になる件数」を予告するために渡す
+  per_sentence_tags: $('per-sentence').checked,
 });
 
 const settings = () => ({
@@ -399,7 +412,12 @@ function renderDryRun(d) {
     </table>
     <p class="hint" style="margin-top:8px">
       音声を作るフィールドは ${d.total_items} 件。「文ごとにタグを分ける」や「文と文の間隔」を使うと、1フィールドが複数の文に分かれる分だけAPI呼び出しは増えます。
-    </p>`;
+    </p>
+    ${d.total_multi_sentence ? `<p class="caution">
+      このうち ${d.total_multi_sentence} 件は2文以上を含むため、
+      「文ごとにタグを分ける」がONのままだと<strong>再生ボタンが2つ以上並びます</strong>。
+      1つにまとめたい場合は、③でこの設定をOFFにしてから実行してください。
+    </p>` : ''}`;
   // ノートタイプ名はHTMLとして解釈させない
   $('dry-result').querySelectorAll('tbody tr').forEach((tr, i) => {
     tr.cells[0].textContent = d.rows[i].notetype;

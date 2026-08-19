@@ -167,34 +167,88 @@ def _source_transform_for(options):
     return None
 
 
+def _tts_text(raw_field, transform):
+    """TTSに実際に渡すテキストを作る(文字数の見積もり・文数の判定用)。
+
+    `tts_core.analyze_targets` の中でやっている手順と同じにしてあるので、
+    向こうを変えたらここも合わせること。
+    """
+    src = tts_core.strip_sound_tags(raw_field)
+    if transform:
+        src = transform(src)
+    return tts_core.strip_html_for_tts(src)
+
+
+def _build_plan(col, targets, options):
+    """処理対象の一覧を組み立てる(ドライランと本番で同じものを使う)。
+
+    `redo_multi_audio` は「音声が2つ以上入ってしまったフィールドだけ作り直す」
+    モード。「文ごとにタグを分ける」がONだと複数文のフィールドに音声が
+    複数付き、Anki上で再生ボタンが2つ並ぶ。これを直すのに全件を
+    force_regen すると、大半を占める1文だけのフィールドまで作り直して
+    無駄に時間と割り当てを使うため、該当分だけを選べるようにしてある。
+    """
+    transform = _source_transform_for(options)
+    redo_multi = bool(options.get("redo_multi_audio"))
+    force = True if redo_multi else bool(options.get("force_regen"))
+    per_sentence = bool(options.get("per_sentence_tags"))
+
+    rows = []
+    for t in targets:
+        name = t["notetype"]
+        fields = [int(i) for i in t.get("fields", [])]
+        if not fields:
+            continue
+
+        to_process, skip_audio, skip_empty, chars = tts_core.analyze_targets(
+            col, name, fields, force, source_transform=transform
+        )
+
+        if redo_multi:
+            kept = []
+            chars = 0
+            for nid, field_idx in to_process:
+                raw = col.get_note(nid).fields[field_idx]
+                if len(tts_core.SOUND_TAG_RE.findall(raw)) < 2:
+                    continue
+                kept.append((nid, field_idx))
+                chars += len(_tts_text(raw, transform))
+            to_process = kept
+            skip_audio = 0   # このモードでは「音声済みで飛ばす」の意味が変わるため出さない
+
+        # 「文ごとにタグを分ける」がONのとき、再生ボタンが2つ以上になる件数を予告する
+        multi_sentence = 0
+        if per_sentence:
+            for nid, field_idx in to_process:
+                text = _tts_text(col.get_note(nid).fields[field_idx], transform)
+                if len([s for s in tts_core.split_into_sentences(text) if s.strip()]) > 1:
+                    multi_sentence += 1
+
+        rows.append({"notetype": name, "items": len(to_process), "chars": chars,
+                     "skip_audio": skip_audio, "skip_empty": skip_empty,
+                     "multi_sentence": multi_sentence, "_to_process": to_process})
+    return rows, force
+
+
 def analyze(targets, options):
     """ドライラン。実際には何も生成せず、対象件数と文字数だけを数える。"""
     col = STATE.col
     if col is None:
         raise RuntimeError("apkgが読み込まれていません。")
 
-    transform = _source_transform_for(options)
-    force = bool(options.get("force_regen"))
-    rows = []
-    total_items = total_chars = total_skip_audio = total_skip_empty = 0
+    rows, _ = _build_plan(col, targets, options)
+    totals = {"total_items": 0, "total_chars": 0, "total_skip_audio": 0,
+              "total_skip_empty": 0, "total_multi_sentence": 0}
+    for r in rows:
+        totals["total_items"] += r["items"]
+        totals["total_chars"] += r["chars"]
+        totals["total_skip_audio"] += r["skip_audio"]
+        totals["total_skip_empty"] += r["skip_empty"]
+        totals["total_multi_sentence"] += r["multi_sentence"]
 
-    for t in targets:
-        name = t["notetype"]
-        fields = [int(i) for i in t.get("fields", [])]
-        if not fields:
-            continue
-        to_process, skip_audio, skip_empty, chars = tts_core.analyze_targets(
-            col, name, fields, force, source_transform=transform
-        )
-        rows.append({"notetype": name, "items": len(to_process), "chars": chars,
-                     "skip_audio": skip_audio, "skip_empty": skip_empty})
-        total_items += len(to_process)
-        total_chars += chars
-        total_skip_audio += skip_audio
-        total_skip_empty += skip_empty
-
-    return {"rows": rows, "total_items": total_items, "total_chars": total_chars,
-            "total_skip_audio": total_skip_audio, "total_skip_empty": total_skip_empty}
+    # _to_process は内部用なので画面へは返さない
+    public = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]
+    return dict(totals, rows=public)
 
 
 # ---------------------------------------------------------------------------
@@ -219,20 +273,13 @@ def _run_generate(targets, options, settings):
     error = ""
     try:
         transform = _source_transform_for(options)
-        force = bool(options.get("force_regen"))
 
-        # 先に全ノートタイプ分の対象を数えてから走る(進捗の分母を最初に確定させるため)
-        plan = []
-        total = 0
-        for t in targets:
-            fields = [int(i) for i in t.get("fields", [])]
-            if not fields:
-                continue
-            to_process, _, _, _ = tts_core.analyze_targets(
-                col, t["notetype"], fields, force, source_transform=transform
-            )
-            plan.append((t["notetype"], to_process))
-            total += len(to_process)
+        # 先に全ノートタイプ分の対象を数えてから走る(進捗の分母を最初に確定させるため)。
+        # ドライランと同じ _build_plan を使うので、「件数を数える」で見た数と
+        # 実際に処理される数が食い違うことはない。
+        rows, force = _build_plan(col, targets, options)
+        plan = [(r["notetype"], r["_to_process"]) for r in rows]
+        total = sum(len(p[1]) for p in plan)
 
         job["total"] = total
         if total == 0:
