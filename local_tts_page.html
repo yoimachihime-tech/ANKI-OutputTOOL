@@ -187,6 +187,27 @@
     </p>
   </section>
 
+  <section id="sec-template" hidden>
+    <h2>⑤ カードテンプレートの調整</h2>
+    <p class="hint">
+      このapkgのテンプレートには <code>{{tts ...}}</code> が
+      <strong id="tpl-tts-count">0</strong> 個入っています。これは
+      <strong>Anki本体が端末の音声で読み上げる</strong>ためのタグで、
+      <code>[sound:]</code> が無くても再生ボタンが表示されます。
+      このツールが埋め込むCloud TTSの音声と並ぶため、
+      <strong>再生ボタンが2つ出ます</strong>。
+      取り除くとCloud TTSの音声だけになり、ボタンは1つになります
+      (ノートの中身・音声には触りません。テンプレートだけを書き換えます)。
+    </p>
+    <div class="row">
+      <button id="strip-tts">Anki標準の再生ボタン({{tts}})を取り除いて書き出す</button>
+      <span id="strip-status" class="status"></span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <a id="strip-download" hidden href="/api/download"><button class="primary">.apkgをダウンロード</button></a>
+    </div>
+  </section>
+
   <section>
     <h2>ツールの終了</h2>
     <p class="hint">
@@ -229,6 +250,9 @@ $('file').addEventListener('change', async (ev) => {
     renderNotetypes();
     await loadSettings();
     $('sec-fields').hidden = $('sec-opts').hidden = $('sec-run').hidden = false;
+    // テンプレートに {{tts}} がある場合だけ⑤を出す(無いapkgでは無関係な節なので隠す)
+    $('tpl-tts-count').textContent = String(data.template_tts || 0);
+    $('sec-template').hidden = !data.template_tts;
     const total = notetypes.reduce((a, n) => a + n.note_count, 0);
     // 既に音声が入っている件数も出す。読み込み直したつもりで前の内容が
     // 残っていた場合、ここが「音声あり」だらけになるので気づける。
@@ -467,6 +491,29 @@ $('run').addEventListener('click', async () => {
 $('cancel').addEventListener('click', async () => {
   await fetch('/api/cancel', { method: 'POST' });
   setStatus($('run-status'), 'キャンセルを要求しました。処理中の1件が終わるまでお待ちください。');
+});
+
+$('strip-tts').addEventListener('click', async () => {
+  if (!confirm('カードテンプレートから {{tts}} を取り除きます。'
+      + '\n(ノートの中身とCloud TTSの音声はそのままです)')) return;
+  setStatus($('strip-status'), '処理中…');
+  $('strip-download').hidden = true;
+  try {
+    const res = await fetch('/api/strip-template-tts', { method: 'POST' });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    if (!Object.keys(d.removed).length) {
+      setStatus($('strip-status'), d.message || '取り除くタグはありませんでした。');
+      return;
+    }
+    const total = Object.values(d.removed).reduce((a, b) => a + b, 0);
+    setStatus($('strip-status'),
+      `${total}個を取り除いて書き出しました: ${d.output_path}`, 'ok');
+    $('strip-download').hidden = false;
+    $('tpl-tts-count').textContent = '0';
+  } catch (e) {
+    setStatus($('strip-status'), '失敗しました: ' + e.message, 'err');
+  }
 });
 
 $('shutdown').addEventListener('click', async () => {

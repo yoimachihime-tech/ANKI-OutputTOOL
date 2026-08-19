@@ -27,6 +27,7 @@
 import http.server
 import json
 import os
+import re
 import socket
 import sys
 import threading
@@ -53,6 +54,9 @@ class State:
         self.source_name = ""      # 読み込んだapkgのファイル名
         self.job = None            # 実行中/直近のジョブ(dict)
         self.cancel = False
+        # 直近に書き出したapkg。TTS生成でもテンプレート調整でも更新するので、
+        # /api/download はこれを見る(どちらの操作の後でもダウンロードできる)。
+        self.last_output = ""
 
 
 STATE = State()
@@ -157,7 +161,53 @@ def open_apkg(apkg_bytes, filename):
     with STATE.lock:
         STATE.col = col
         STATE.source_name = filename or "deck.apkg"
-    return {"filename": STATE.source_name, "notetypes": notetypes}
+    return {"filename": STATE.source_name, "notetypes": notetypes,
+            "template_tts": count_template_tts(col)}
+
+
+# カードテンプレートに書かれた Anki 標準のTTSタグ。
+# `{{tts en_US:I1BaseEN}}` は Anki 自身が端末の音声で読み上げるボタンを出すもので、
+# フィールドに `[sound:...]` が無くてもボタンが表示される。このツールが埋め込む
+# Cloud TTS の音声と並ぶと、再生ボタンが2つ出て紛らわしい(片桐から報告)。
+# 実データでは `<span class="tts-btn">{{tts ...}}</span>` の形で入っていたので、
+# 空のspanが残らないよう、その包みごと消す方を先に試す。
+_TEMPLATE_TTS_RE = re.compile(
+    r'<span class="tts-btn">\s*\{\{tts[^}]*\}\}\s*</span>|\{\{tts[^}]*\}\}')
+
+
+def count_template_tts(col):
+    """カードテンプレートに書かれた {{tts}} タグの数を数える。"""
+    total = 0
+    for nt in col.models.all():
+        for tmpl in nt["tmpls"]:
+            for side in ("qfmt", "afmt"):
+                total += len(_TEMPLATE_TTS_RE.findall(tmpl.get(side) or ""))
+    return total
+
+
+def strip_template_tts(col):
+    """カードテンプレートから {{tts}} タグを取り除く(ノートの中身は触らない)。
+
+    戻り値は {ノートタイプ名: 取り除いた数}。
+    """
+    removed = {}
+    for nt in col.models.all():
+        count = 0
+        for tmpl in nt["tmpls"]:
+            for side in ("qfmt", "afmt"):
+                before = tmpl.get(side) or ""
+                after, n = _TEMPLATE_TTS_RE.subn("", before)
+                if n:
+                    tmpl[side] = after
+                    count += n
+        if count:
+            # 新しいAnkiは update_dict、古いものは save
+            if hasattr(col.models, "update_dict"):
+                col.models.update_dict(nt)
+            else:  # pragma: no cover
+                col.models.save(nt)
+            removed[nt["name"]] = count
+    return removed
 
 
 def _source_transform_for(options):
@@ -346,6 +396,7 @@ def _run_generate(targets, options, settings):
             _log("書き出し中: %s" % out_path)
             tts_core.export_collection(col, out_path)
             job["output_path"] = out_path
+            STATE.last_output = out_path
             _log("完了しました。" if not error else
                  "ここまでの %d 件を書き出しました。" % job["done"])
     except Exception as e:  # noqa: BLE001
@@ -424,8 +475,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/progress":
             self._json(STATE.job or _reset_job())
         elif path == "/api/download":
-            job = STATE.job or {}
-            out = job.get("output_path")
+            out = STATE.last_output or (STATE.job or {}).get("output_path")
             if not out or not os.path.exists(out):
                 self._json({"error": "生成された.apkgがありません。"}, 404)
                 return
@@ -474,6 +524,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     daemon=True,
                 ).start()
                 self._json({"ok": True})
+            elif path == "/api/strip-template-tts":
+                if STATE.col is None:
+                    self._json({"error": "apkgが読み込まれていません。"}, 400)
+                    return
+                if STATE.job and STATE.job.get("running"):
+                    self._json({"error": "生成中は実行できません。"}, 409)
+                    return
+                removed = strip_template_tts(STATE.col)
+                if not removed:
+                    self._json({"removed": {}, "output_path": "",
+                                "message": "テンプレートに {{tts}} タグはありませんでした。"})
+                    return
+                os.makedirs(OUTPUT_DIR, exist_ok=True)
+                stem = os.path.splitext(os.path.basename(STATE.source_name))[0]
+                out_path = os.path.join(OUTPUT_DIR, "%s_TTS.apkg" % stem)
+                tts_core.export_collection(STATE.col, out_path)
+                STATE.last_output = out_path
+                self._json({"removed": removed, "output_path": out_path})
             elif path == "/api/cancel":
                 STATE.cancel = True
                 self._json({"ok": True})
