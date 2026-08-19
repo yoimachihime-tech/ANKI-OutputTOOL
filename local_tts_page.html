@@ -534,6 +534,16 @@ $('shutdown').addEventListener('click', async () => {
   }
   setStatus($('shutdown-status'), '終了しました。またバッチから起動できます。', 'ok');
   $('shutdown').setAttribute('aria-disabled', 'true');
+
+  // ついでにこのタブも閉じる。ブラウザは「他のページへ一度も移動していないタブ」
+  // であればスクリプトから閉じることを許す(HTML仕様の script-closable)。
+  // 途中で他のページを開いた等で閉じられない場合もあるので、そのときは
+  // 手で閉じてもらえるよう案内を残す(閉じれば案内は見えないので害はない)。
+  window.close();
+  setTimeout(() => {
+    setStatus($('shutdown-status'),
+      '終了しました。このタブは自動で閉じられなかったので、手で閉じてください。', 'ok');
+  }, 400);
 });
 
 function setBusy(busy) {
