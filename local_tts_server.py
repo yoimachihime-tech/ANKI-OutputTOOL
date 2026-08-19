@@ -283,7 +283,19 @@ def _run_generate(targets, options, settings):
 
         job["total"] = total
         if total == 0:
-            raise RuntimeError("対象が0件です。フィールドの選択を確認してください。")
+            # 「0件」だけだと原因が分からない。実際に踏んだのは
+            # 「apkgを作り直して同じ名前で上書きしたが、ブラウザが同じパスの
+            #  選び直しでchangeを発火せず、前回の生成済みコレクションが
+            #  残っていた」というケースだったので、その線を最初に案内する。
+            skipped = sum(r["skip_audio"] for r in rows)
+            hint = "フィールドの選択を確認してください。"
+            if skipped:
+                hint = ("選んだフィールドのうち %d 件は既に音声が入っているため飛ばしました。\n"
+                        "・apkgを作り直した場合: ①でファイルを選び直してください"
+                        "(読み込めていれば「既に音声があるフィールド」が0件になります)。\n"
+                        "・音声を作り直したい場合: ③の「既存の音声を作り直す」をONにしてください。"
+                        % skipped)
+            raise RuntimeError("対象が0件です。" + hint)
         _log("合計 %d 件のフィールドにTTSを生成します。" % total)
 
         base_done = 0

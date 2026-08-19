@@ -208,7 +208,12 @@ let polling = null;
 
 // --- ① 読み込み -----------------------------------------------------------
 $('file').addEventListener('change', async (ev) => {
-  const file = ev.target.files[0];
+  const input = ev.target;
+  const file = input.files[0];
+  // 同じパスのファイルを選び直すと change が発火しない(ブラウザの仕様)。
+  // apkgを作り直して同じ名前で上書きした場合に、古い内容のまま処理を続けて
+  // しまい「対象が0件です」となる(実際に踏んだ)。毎回リセットしておく。
+  input.value = '';
   if (!file) return;
   setStatus($('open-status'), '読み込み中… (大きいファイルは時間がかかります)');
   try {
@@ -225,8 +230,14 @@ $('file').addEventListener('change', async (ev) => {
     await loadSettings();
     $('sec-fields').hidden = $('sec-opts').hidden = $('sec-run').hidden = false;
     const total = notetypes.reduce((a, n) => a + n.note_count, 0);
+    // 既に音声が入っている件数も出す。読み込み直したつもりで前の内容が
+    // 残っていた場合、ここが「音声あり」だらけになるので気づける。
+    const audio = notetypes.reduce(
+      (a, n) => a + n.fields.reduce((b, f) => b + f.has_audio, 0), 0);
     setStatus($('open-status'),
-      `${data.filename} — ノートタイプ ${notetypes.length}種 / ノート ${total}件`, 'ok');
+      `${data.filename} — ノートタイプ ${notetypes.length}種 / ノート ${total}件`
+      + ` / 既に音声があるフィールド ${audio}件`
+      + `(読み込み ${new Date().toLocaleTimeString()})`, 'ok');
     preselectEnglishFields();
   } catch (e) {
     setStatus($('open-status'), '読み込みに失敗しました: ' + e.message, 'err');
