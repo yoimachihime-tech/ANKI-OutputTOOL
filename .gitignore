@@ -54,3 +54,6 @@ dist/
 
 # エディタ・ツール固有のローカル設定
 .claude/settings.local.json
+
+# ローカルTTSツールのログ(pythonw起動でコンソールが無いため、ここに出す)
+local_tts_server.log

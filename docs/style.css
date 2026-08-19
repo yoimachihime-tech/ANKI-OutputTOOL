@@ -290,7 +290,10 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 
 #settings hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 
-button {
+/* a.button-like は、ボタンに見せたいリンク(ローカルツールへの導線)用。
+   fetchではなくトップレベル遷移させる必要があるため、button ではなく a を使う。 */
+button,
+a.button-like {
   padding: 10px 16px;
   font: inherit;
   font-weight: 600;
@@ -318,7 +321,9 @@ button.primary {
   border-color: var(--accent);
 }
 
-button.ghost { padding: 8px 12px; font-weight: 500; }
+button.ghost,
+a.button-like.ghost { padding: 8px 12px; font-weight: 500; }
+a.button-like { display: inline-block; text-decoration: none; }
 button.danger { color: var(--danger); border-color: var(--danger); }
 
 .status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }

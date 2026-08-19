@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apkgにTTS音声を付ける</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #d8dce3; --fg: #1b1e23;
+    --sub: #5c6470; --accent: #2f6fd0; --accent-fg: #fff;
+    --warn-bg: #fff4e0; --warn-fg: #7a4a00; --ok: #1f7a3d; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1d21; --panel: #24272c; --line: #3a3f46; --fg: #e8eaed;
+      --sub: #a3aab5; --accent: #4c8ff0; --accent-fg: #10131a;
+      --warn-bg: #3a2f18; --warn-fg: #f0c37a; --ok: #6fd18c; --err: #f2857c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "Yu Gothic UI", system-ui, sans-serif; line-height: 1.6;
+  }
+  main { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .lead { color: var(--sub); font-size: 13px; margin: 0 0 20px; }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .hint { color: var(--sub); font-size: 12.5px; margin: 0 0 12px; }
+  button {
+    font: inherit; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--fg); cursor: pointer;
+  }
+  button:hover:not([aria-disabled]) { border-color: var(--accent); }
+  button[aria-disabled] { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .nt { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; }
+  .nt-head {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 10px 12px; border-bottom: 1px solid var(--line);
+  }
+  .nt-name { font-weight: 600; }
+  .nt-count { color: var(--sub); font-size: 12.5px; }
+  .nt-head .row { margin-left: auto; }
+  .nt-head button { padding: 4px 10px; font-size: 12.5px; }
+  .fields { padding: 6px 12px 12px; }
+  .field {
+    display: grid; grid-template-columns: 22px 1fr; gap: 8px;
+    padding: 5px 0; border-bottom: 1px dashed var(--line); align-items: start;
+  }
+  .field:last-child { border-bottom: none; }
+  .field-name { font-weight: 600; font-size: 13.5px; }
+  .field-meta { color: var(--sub); font-size: 12px; }
+  .field-sample {
+    color: var(--sub); font-size: 12px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .empty .field-name { color: var(--sub); font-weight: 400; }
+  .badge {
+    display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11.5px;
+    background: var(--warn-bg); color: var(--warn-fg); margin-left: 6px;
+  }
+  label.opt { display: flex; gap: 6px; align-items: center; font-size: 13.5px; }
+  .opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  input[type=number], input[type=text] {
+    font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); width: 100%;
+  }
+  .field-label { font-size: 12.5px; color: var(--sub); display: block; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 10px; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  .status { font-size: 13.5px; margin-top: 10px; }
+  .status.err { color: var(--err); }
+  .status.ok { color: var(--ok); }
+  progress { width: 100%; height: 14px; margin-top: 10px; }
+  #log {
+    margin-top: 10px; max-height: 220px; overflow: auto; font-size: 12px;
+    font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+  }
+  .caution { color: var(--err); font-size: 12.5px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>apkgにTTS音声を付ける</h1>
+  <p class="lead">
+    このページはお使いのPC上のツールが表示しています(<code>http://127.0.0.1:8765</code>)。
+    音声の生成・apkgの書き換えはすべてPC側で行われます。
+  </p>
+
+  <section>
+    <h2>① apkgを読み込む</h2>
+    <p class="hint">Ankiから書き出した <code>.apkg</code>、または別の場所で作った <code>.apkg</code> を選びます。</p>
+    <div class="row">
+      <input type="file" id="file" accept=".apkg">
+      <span id="open-status" class="status"></span>
+    </div>
+  </section>
+
+  <section id="sec-fields" hidden>
+    <h2>② 音声を付けるフィールドを選ぶ</h2>
+    <p class="hint">
+      フィールドごとに「中身のある件数」とサンプルを表示しています。
+      日本語のフィールドやラベル用のフィールドを選ばないよう、サンプルを見て確認してください。
+      複数のノートタイプ・複数のフィールドをまとめて指定できます。
+    </p>
+    <div class="row" style="margin-bottom:12px">
+      <button id="sel-en">英語らしいフィールドを選ぶ(名前がENで終わる)</button>
+      <button id="sel-none">すべて解除</button>
+    </div>
+    <div id="notetypes"></div>
+  </section>
+
+  <section id="sec-opts" hidden>
+    <h2>③ オプション</h2>
+    <div class="opts">
+      <div>
+        <span class="field-label">音声名</span>
+        <input type="text" id="voice">
+      </div>
+      <div>
+        <span class="field-label">言語コード</span>
+        <input type="text" id="lang">
+      </div>
+      <div>
+        <span class="field-label">音量ゲイン(dB)</span>
+        <input type="number" id="gain" step="0.5" min="-20" max="16">
+      </div>
+      <div>
+        <span class="field-label">文と文の間隔(秒)</span>
+        <input type="number" id="gap" step="0.1" min="0" max="3">
+      </div>
+      <div>
+        <span class="field-label">MP3ビットレート(kbps)</span>
+        <input type="number" id="bitrate" step="8" min="32" max="192">
+      </div>
+    </div>
+    <div class="opts" style="margin-top:12px">
+      <label class="opt"><input type="checkbox" id="per-sentence"> 文ごとにタグを分ける</label>
+      <label class="opt"><input type="checkbox" id="exclude-ja"> 日本語を含む文を除外する</label>
+      <label class="opt"><input type="checkbox" id="force"> 既存の音声を作り直す</label>
+    </div>
+    <p class="hint" style="margin:10px 0 0">
+      APIキーは <code>config.json</code> のものを使います(この画面には出しません)。
+    </p>
+  </section>
+
+  <section id="sec-run" hidden>
+    <h2>④ 実行</h2>
+    <p class="hint">
+      まず「件数を数える」で対象を確認してください。ここで出る件数がそのままAPI呼び出し回数になります。
+    </p>
+    <div class="row">
+      <button id="dry">件数を数える(生成しない)</button>
+      <button id="run" class="primary">TTSを生成する</button>
+      <button id="cancel" hidden>キャンセル</button>
+    </div>
+    <div id="dry-result"></div>
+    <progress id="bar" hidden value="0" max="100"></progress>
+    <div id="run-status" class="status"></div>
+    <div id="log" hidden></div>
+    <div class="row" style="margin-top:12px">
+      <a id="download" hidden href="/api/download"><button class="primary">.apkgをダウンロード</button></a>
+    </div>
+    <p class="hint" style="margin-top:12px">
+      割り当ての上限などで途中で止まった場合も、<strong>そこまでの分は書き出されます</strong>。
+      翌日などに「TTSを生成する」を押し直すと、<strong>音声が入ったフィールドは自動で飛ばして
+      続きから</strong>進みます(このツールを終了してしまった場合は、書き出した .apkg を
+      ①で読み込み直せば同じように続きから再開できます)。
+    </p>
+  </section>
+
+  <section>
+    <h2>ツールの終了</h2>
+    <p class="hint">
+      このツールは画面を閉じても裏で動き続けます(黒い画面は出しません)。
+      使い終わったら下のボタンで終了してください。終了後もこのページは残りますが、
+      操作しても反応しなくなります。
+    </p>
+    <div class="row">
+      <button id="shutdown">ツールを終了する</button>
+      <span id="shutdown-status" class="status"></span>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let notetypes = [];
+let polling = null;
+
+// --- ① 読み込み -----------------------------------------------------------
+$('file').addEventListener('change', async (ev) => {
+  const file = ev.target.files[0];
+  if (!file) return;
+  setStatus($('open-status'), '読み込み中… (大きいファイルは時間がかかります)');
+  try {
+    const res = await fetch('/api/open', {
+      method: 'POST',
+      headers: { 'X-Filename': encodeURIComponent(file.name) },
+      body: await file.arrayBuffer(),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    notetypes = data.notetypes;
+    if (!notetypes.length) throw new Error('ノートが1件も入っていません。');
+    renderNotetypes();
+    await loadSettings();
+    $('sec-fields').hidden = $('sec-opts').hidden = $('sec-run').hidden = false;
+    const total = notetypes.reduce((a, n) => a + n.note_count, 0);
+    setStatus($('open-status'),
+      `${data.filename} — ノートタイプ ${notetypes.length}種 / ノート ${total}件`, 'ok');
+    preselectEnglishFields();
+  } catch (e) {
+    setStatus($('open-status'), '読み込みに失敗しました: ' + e.message, 'err');
+  }
+});
+
+function setStatus(el, msg, kind) {
+  el.textContent = msg;
+  el.className = 'status' + (kind ? ' ' + kind : '');
+}
+
+// --- ② フィールド選択 -----------------------------------------------------
+function renderNotetypes() {
+  const box = $('notetypes');
+  box.innerHTML = '';
+  notetypes.forEach((nt, ni) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'nt';
+
+    const head = document.createElement('div');
+    head.className = 'nt-head';
+    head.innerHTML = `<span class="nt-name"></span>
+      <span class="nt-count">ノート ${nt.note_count}件 / フィールド ${nt.fields.length}個</span>
+      <span class="row">
+        <button data-act="en" data-nt="${ni}">ENで終わるもの</button>
+        <button data-act="all" data-nt="${ni}">すべて</button>
+        <button data-act="none" data-nt="${ni}">解除</button>
+      </span>`;
+    head.querySelector('.nt-name').textContent = nt.name;
+    wrap.appendChild(head);
+
+    const fields = document.createElement('div');
+    fields.className = 'fields';
+    nt.fields.forEach((f) => {
+      const row = document.createElement('label');
+      row.className = 'field' + (f.nonempty ? '' : ' empty');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.nt = ni;
+      cb.dataset.field = f.index;
+      cb.disabled = !f.nonempty;
+      row.appendChild(cb);
+
+      const info = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'field-name';
+      name.textContent = f.name;
+      if (f.has_audio) {
+        const b = document.createElement('span');
+        b.className = 'badge';
+        b.textContent = `音声あり ${f.has_audio}件`;
+        name.appendChild(b);
+      }
+      const meta = document.createElement('div');
+      meta.className = 'field-meta';
+      meta.textContent = f.nonempty ? `中身のあるノート ${f.nonempty}件` : '(全ノートで空欄)';
+      const sample = document.createElement('div');
+      sample.className = 'field-sample';
+      sample.textContent = f.sample ? '例: ' + f.sample : '';
+      info.append(name, meta, sample);
+      row.appendChild(info);
+      fields.appendChild(row);
+    });
+    wrap.appendChild(fields);
+    box.appendChild(wrap);
+  });
+
+  box.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (!btn) return;
+    ev.preventDefault();
+    const ni = Number(btn.dataset.nt);
+    selectIn(ni, btn.dataset.act);
+  });
+}
+
+function selectIn(ni, mode) {
+  document.querySelectorAll(`input[data-nt="${ni}"]`).forEach((cb) => {
+    if (cb.disabled) return;
+    const f = notetypes[ni].fields[Number(cb.dataset.field)];
+    if (mode === 'all') cb.checked = true;
+    else if (mode === 'none') cb.checked = false;
+    else if (mode === 'en') cb.checked = /EN$/.test(f.name);
+  });
+}
+
+function preselectEnglishFields() {
+  // 既定では「名前がENで終わる」または Answer / Example を選ぶ。
+  // 該当が無ければ何も選ばない(先頭フィールドを既定にすると、デッキ名などを
+  // うっかり読み上げてしまうため)。
+  let any = false;
+  document.querySelectorAll('input[data-nt]').forEach((cb) => {
+    if (cb.disabled) return;
+    const f = notetypes[Number(cb.dataset.nt)].fields[Number(cb.dataset.field)];
+    if (/EN$/.test(f.name) || f.name === 'Answer' || f.name === 'Example') {
+      cb.checked = true;
+      any = true;
+    }
+  });
+  if (!any) setStatus($('open-status'),
+    $('open-status').textContent + ' — 自動選択できるフィールドが無かったので、手動で選んでください。',
+    'ok');
+}
+
+$('sel-en').addEventListener('click', () => notetypes.forEach((_, i) => selectIn(i, 'en')));
+$('sel-none').addEventListener('click', () => notetypes.forEach((_, i) => selectIn(i, 'none')));
+
+function collectTargets() {
+  return notetypes.map((nt, ni) => ({
+    notetype: nt.name,
+    fields: [...document.querySelectorAll(`input[data-nt="${ni}"]:checked`)]
+      .map((cb) => Number(cb.dataset.field)),
+  })).filter((t) => t.fields.length);
+}
+
+// --- ③ 設定 ---------------------------------------------------------------
+async function loadSettings() {
+  const s = await (await fetch('/api/settings')).json();
+  $('voice').value = s.voice;
+  $('lang').value = s.language_code;
+  $('gain').value = s.volume_gain_db;
+  $('gap').value = s.sentence_gap;
+  $('bitrate').value = s.mp3_bitrate;
+  $('per-sentence').checked = s.per_sentence_tags;
+  $('exclude-ja').checked = s.exclude_japanese;
+  if (!s.has_api_key) {
+    setStatus($('run-status'),
+      'config.json に api_key が設定されていません。生成はできません。', 'err');
+  }
+}
+
+const options = () => ({
+  exclude_japanese: $('exclude-ja').checked,
+  force_regen: $('force').checked,
+});
+
+const settings = () => ({
+  voice: $('voice').value.trim(),
+  language_code: $('lang').value.trim(),
+  volume_gain_db: Number($('gain').value),
+  sentence_gap: Number($('gap').value),
+  mp3_bitrate: Number($('bitrate').value),
+  per_sentence_tags: $('per-sentence').checked,
+});
+
+// --- ④ 実行 ---------------------------------------------------------------
+$('dry').addEventListener('click', async () => {
+  const targets = collectTargets();
+  $('dry-result').innerHTML = '';
+  if (!targets.length) {
+    setStatus($('run-status'), 'フィールドが1つも選ばれていません。', 'err');
+    return;
+  }
+  setStatus($('run-status'), '数えています…');
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targets, options: options() }),
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    renderDryRun(d);
+    setStatus($('run-status'), '', '');
+  } catch (e) {
+    setStatus($('run-status'), '失敗しました: ' + e.message, 'err');
+  }
+});
+
+function renderDryRun(d) {
+  const rows = d.rows.map((r) => `<tr><td></td><td>${r.items}</td><td>${r.chars.toLocaleString()}</td>
+      <td>${r.skip_audio}</td><td>${r.skip_empty}</td></tr>`).join('');
+  $('dry-result').innerHTML = `
+    <table>
+      <thead><tr><th>ノートタイプ</th><th>生成する件数</th><th>文字数</th>
+        <th>音声ありで飛ばす</th><th>空欄で飛ばす</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><th>合計</th><th>${d.total_items}</th><th>${d.total_chars.toLocaleString()}</th>
+        <th>${d.total_skip_audio}</th><th>${d.total_skip_empty}</th></tr></tfoot>
+    </table>
+    <p class="hint" style="margin-top:8px">
+      音声を作るフィールドは ${d.total_items} 件。「文ごとにタグを分ける」や「文と文の間隔」を使うと、1フィールドが複数の文に分かれる分だけAPI呼び出しは増えます。
+    </p>`;
+  // ノートタイプ名はHTMLとして解釈させない
+  $('dry-result').querySelectorAll('tbody tr').forEach((tr, i) => {
+    tr.cells[0].textContent = d.rows[i].notetype;
+  });
+}
+
+$('run').addEventListener('click', async () => {
+  const targets = collectTargets();
+  if (!targets.length) {
+    setStatus($('run-status'), 'フィールドが1つも選ばれていません。', 'err');
+    return;
+  }
+  const count = targets.reduce((a, t) => a + t.fields.length, 0);
+  if (!confirm(`選択したフィールド(${count}種)にTTS音声を生成します。よろしいですか?`)) return;
+
+  $('download').hidden = true;
+  $('log').hidden = false;
+  $('log').textContent = '';
+  $('bar').hidden = false;
+  $('bar').value = 0;
+  setBusy(true);
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targets, options: options(), settings: settings() }),
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    polling = setInterval(poll, 700);
+  } catch (e) {
+    setBusy(false);
+    setStatus($('run-status'), '開始できませんでした: ' + e.message, 'err');
+  }
+});
+
+$('cancel').addEventListener('click', async () => {
+  await fetch('/api/cancel', { method: 'POST' });
+  setStatus($('run-status'), 'キャンセルを要求しました。処理中の1件が終わるまでお待ちください。');
+});
+
+$('shutdown').addEventListener('click', async () => {
+  if (!confirm('ツールを終了します。よろしいですか?')) return;
+  try {
+    await fetch('/api/shutdown', { method: 'POST' });
+  } catch (e) {
+    // 終了処理の途中で接続が切れるのは正常なので、失敗として扱わない
+  }
+  setStatus($('shutdown-status'), '終了しました。またバッチから起動できます。', 'ok');
+  $('shutdown').setAttribute('aria-disabled', 'true');
+});
+
+function setBusy(busy) {
+  $('run').toggleAttribute('aria-disabled', busy);
+  $('dry').toggleAttribute('aria-disabled', busy);
+  $('cancel').hidden = !busy;
+}
+
+async function poll() {
+  const j = await (await fetch('/api/progress')).json();
+  if (j.total) {
+    $('bar').max = j.total;
+    $('bar').value = j.done;
+    setStatus($('run-status'), `${j.done} / ${j.total} 件`);
+  }
+  $('log').textContent = j.log.join('\n');
+  $('log').scrollTop = $('log').scrollHeight;
+  if (!j.finished) return;
+
+  clearInterval(polling);
+  setBusy(false);
+  if (j.error) {
+    // 途中まで生成できていれば、それは書き出されている。失敗の文言だけを出すと
+    // 「全部やり直し」と読まれてしまうので、再開できることを必ず添える。
+    const resume = j.done
+      ? `\nここまでの ${j.done} 件は書き出してあります。`
+        + '「TTSを生成する」を押し直せば、済んだ分を飛ばして続きから再開します。'
+      : '';
+    setStatus($('run-status'), '中断しました: ' + j.error + resume, 'err');
+  } else if (j.cancelled) {
+    setStatus($('run-status'),
+      `キャンセルしました(${j.done}件まで生成)。そこまでの内容で書き出してあります。`, 'ok');
+  } else {
+    setStatus($('run-status'), `完了しました(${j.done}件)。保存先: ${j.output_path}`, 'ok');
+  }
+  if (j.output_path) $('download').hidden = false;
+}
+</script>
+</body>
+</html>

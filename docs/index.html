@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260819a">
+<link rel="stylesheet" href="./style.css?v=20260819b">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -312,6 +312,28 @@
     (同じ内容が二重に見えることがありますが、一覧の「⚠ 重複」表示から選んで削除できます)。
   </p>
   <p id="backup-status" class="status" role="status" aria-live="polite"></p>
+
+  <hr>
+
+  <!-- PC上のローカルツールへの導線(2026-08-19追加)。
+       この画面から http://127.0.0.1 を fetch する構成は Chrome の
+       Local Network Access 権限に阻まれる(実測)ため、リンクによる
+       トップレベル遷移で繋いでいる(こちらは制限を受けない)。 -->
+  <h3>既存のapkgにTTS音声を付ける(PCのみ)</h3>
+  <p class="hint">
+    Ankiから書き出した <code>.apkg</code> や、他で作った <code>.apkg</code> に、
+    後からTTS音声を付ける機能です。<strong>PCでこのツールを起動しているときだけ使えます</strong>
+    (スマホからは使えません)。PC上で
+    <code>python local_tts_server.py</code> を実行してから、下のリンクを開いてください。
+  </p>
+  <p class="row">
+    <a class="ghost button-like" href="http://127.0.0.1:8765/" target="_blank" rel="noopener">
+      🔊 ローカルのTTSツールを開く
+    </a>
+  </p>
+  <p class="hint">
+    リンクを開いても表示されない場合は、PC側でツールが起動していません。
+  </p>
 
   <hr>
 
@@ -646,6 +668,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260819a"></script>
+<script type="module" src="./app.js?v=20260819b"></script>
 </body>
 </html>
