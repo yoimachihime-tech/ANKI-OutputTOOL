@@ -439,7 +439,16 @@ def migrate(col_path: str, apply: bool, backup_dir: str, verbose=print) -> int:
             )
 
         # スキーマ変更として扱わせる(次回の同期でフルアップロードを求められる)。
-        con.execute("update col set scm=?, mod=?, usn=-1", (now_ms, now_ms))
+        #
+        # **colのusnは絶対に触らないこと(2026-08-20の不具合)**。notes/cards/
+        # revlogの usn=-1 は「ローカルで変更した、未アップロード」の印だが、
+        # colテーブルのusnは意味がまったく違い、**最後に同期が成功した時点の
+        # サーバ側USN**を覚えておく値。ここを-1にすると「この端末はUSN -1の
+        # 時点までしか同期していない」ことになり、以後の同期のたびにサーバが
+        # 「それより新しい行」=コレクションのほぼ全体を送り直してくるように
+        # なる(実際に175,166行が該当し、同期が毎回数分かかる状態になった)。
+        # 復旧は tools/repair_sync_usn.py。
+        con.execute("update col set scm=?, mod=?", (now_ms, now_ms))
         con.commit()
 
         cards_after = con.execute("select count(*) from cards").fetchone()[0]
