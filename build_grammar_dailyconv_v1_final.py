@@ -276,10 +276,19 @@ def build_score_html(grammar, naturalness, comprehensibility, comment):
     )
 
 
-def build_deck(rows):
+def build_deck(rows, start_num: int = 1):
     """rows の各要素キー: id, original, corrected, explanation, category,
     similar_en_list(list[str]), similar_ja_list(list[str]),
     grammar_score, naturalness_score, comprehensibility_score, score_comment (任意)
+
+    start_num: cards.due(Ankiの新規カードの位置)の開始番号(既定1、呼び出し元が
+    省略した場合は1始まりの通し番号)。以前は`enumerate(rows)`の0始まりの
+    インデックスをそのままdueにしていたため、出力のたびに0から振り直され、
+    別バッチのカードとAnki側で位置が衝突していた(2026-08-20修正)。呼び出し元
+    (deck_builder.py→tts_gui.py)がdue_counter.get_next_due("daily")で続き番号を
+    渡す。このファイル自体はこの引数を受け取って使うだけで、続き番号の管理は
+    しない(正典との差分を最小限にするための局所的な変更。
+    build_shuujuku_v1.build_deck()のstart_numと同じ扱い)。
     """
     deck = genanki.Deck(DECK_ID, DECK_NAME)
     for i, r in enumerate(rows):
@@ -313,7 +322,7 @@ def build_deck(rows):
             fields=[pattern, question, "", answer, example, exampleja, why, "", score_html],
             guid=genanki.guid_for('dailyconv', r['id']),
             tags=[SOURCE_TAG],
-            due=i,
+            due=start_num + i,
         )
         deck.add_note(note)
     return deck

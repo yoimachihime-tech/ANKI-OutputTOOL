@@ -38,7 +38,7 @@ def build_guid(topic_key: str, note_index: int) -> str:
     return genanki.guid_for("grammar-multi-v1", topic_key, str(note_index))
 
 
-def build_deck(items: list) -> genanki.Deck:
+def build_deck(items: list, start_num: int = 1) -> genanki.Deck:
     """grammar_multi_stock.get_pending()が返すitemのリストから、
     「Grammar Multi」デッキを1つ組み立てて返す。書き出しは呼び出し側の責務
     (deck.write_to_file())。
@@ -46,9 +46,19 @@ def build_deck(items: list) -> genanki.Deck:
     item dictのキー: pattern, question, choices, answer, example, example_ja,
     why, whynot(いずれもcanon.GRAMMAR_MODELのフィールド値として渡すHTML/
     テキスト文字列)、topic_key, note_index(guid計算用)。
+
+    start_num: cards.due(Ankiの新規カードの位置)の開始番号(既定1、呼び出し元が
+    省略した場合は1始まりの通し番号)。以前は`enumerate(items)`の0始まりの
+    インデックスをそのままdueにしていたため、出力のたびに0から振り直され、
+    別バッチのカードとAnki側で位置が衝突していた(2026-08-20、片桐からの
+    指摘: 「1つの質問から作った3問がまとまって出題されず、他の生成カードと
+    同じ出題形式でまとまって出てしまう」)。呼び出し元(tts_gui.py)が
+    due_counter.get_next_due("grammar_multi")で続き番号を渡す。
+    build_shuujuku_v1.build_deck()のstart_numと同じ設計。
     """
     deck = genanki.Deck(DECK_ID, DECK_NAME)
-    for due, item in enumerate(items):
+    for offset, item in enumerate(items):
+        due = start_num + offset
         note = genanki.Note(
             model=canon.GRAMMAR_MODEL,
             fields=[

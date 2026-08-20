@@ -40,6 +40,7 @@ import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import card_def_builder
+import due_counter
 import card_defs
 import daily_pending_exclusions
 import deck_builder
@@ -184,6 +185,10 @@ class AnkiTTSApp(_BaseTk):
 
         self.row_map_path = tk.StringVar()
         self._current_row_map = None  # スプレッドシートから直接読み込んだ場合の {guid: シートのID} (メモリ上)
+        # DailyConversationは「まとめて出力」ストックを持たないため、
+        # cards.dueの続き番号を進める件数だけを (apkg_path, 件数) で保持する
+        # (2026-08-20追加。他タブの_pending_*_stock_itemsと同じ2段階設計)。
+        self._pending_daily_due_advance = None
         # 単語/習熟用ストックから「まとめて出力」した際、その時点ではまだ
         # mark_exportedを呼ばず、④TTS生成・apkg出力が実際に成功した時点で
         # まとめて出力済みにする(2026-07-27。デッキの骨組みを作っただけの
@@ -1551,6 +1556,64 @@ class AnkiTTSApp(_BaseTk):
             row=1, column=2, padx=(4, 8), pady=5
         )
 
+        # --- 新規カードの位置タブ(2026-08-20新設) ---
+        # AnkiのカードにはNew(新規)キューでの並び順を決める「位置」(cards.due)が
+        # あり、このソフトは出力するapkgにその値を書き込んでいる。以前は出力の
+        # たびに0から振り直していたため、別々のバッチで出力したカードがAnki側で
+        # 同じ位置に居座り、「1つの質問から作った3問がまとまって出題されず、
+        # 他のカードと混ざって出てくる」状態になっていた(片桐からの報告)。
+        # due_counter.pyがカード種別ごとに続き番号を持つようにしたが、この値は
+        # Ankiコレクション側の実際の位置とは同期しないため、ここで確認・修正
+        # できるようにしてある。
+        tab_due = ttk.Frame(notebook)
+        notebook.add(tab_due, text="新規カードの位置")
+        tab_due.grid_columnconfigure(1, weight=1)
+        ttk.Label(
+            tab_due,
+            text="出力するカードに書き込む「位置」(Ankiの新規カードの並び順)の"
+            "開始番号です。出力するたびにノート件数分だけ自動で進みます。\n"
+            "Anki側で既に使われている番号と重複すると、その番号のカード同士が"
+            "交互に出題されてしまいます。デッキごとの現在の最大値は"
+            "fix_anki_new_order.py --show で確認できます。",
+            wraplength=hint_wrap,
+            justify="left",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(10, 6))
+
+        # 表示用のデッキ名。実体はそれぞれ card_defs.json /
+        # grammar_multi_builder.DECK_NAME / build_grammar_dailyconv_v1_final.DECK_NAME
+        # が持っており、ここはラベル文言としてのみ使う。
+        due_labels = {
+            "word": "単語 (02.単語・MindTips::単語):",
+            "grammar_multi": "AIに質問 (02.単語・MindTips::文法・用法):",
+            "daily": "DailyConversation (02.単語・MindTips::DailyConversation):",
+        }
+        self.due_counter_vars = {}
+        for i, key in enumerate(due_counter.COUNTER_KEYS):
+            ttk.Label(tab_due, text=due_labels.get(key, key)).grid(
+                row=1 + i, column=0, sticky="w", padx=8, pady=5
+            )
+            var = tk.StringVar()
+            self.due_counter_vars[key] = var
+            ttk.Entry(tab_due, textvariable=var, width=12).grid(
+                row=1 + i, column=1, sticky="w", padx=(0, 8), pady=5
+            )
+        ttk.Label(
+            tab_due,
+            text="※ 習熟用は Num フィールドの続き番号をそのまま位置に使うため、"
+            "ここには出てきません(習熟用タブ側で管理されています)。",
+            wraplength=hint_wrap,
+            justify="left",
+        ).grid(row=1 + len(due_counter.COUNTER_KEYS), column=0, columnspan=2,
+               sticky="w", padx=8, pady=(6, 2))
+        ttk.Button(
+            tab_due,
+            text="保存",
+            command=self.on_due_counter_save_clicked,
+            style="Accent.TButton" if SV_TTK_AVAILABLE else "TButton",
+        ).grid(row=2 + len(due_counter.COUNTER_KEYS), column=0, columnspan=2,
+               sticky="ew", padx=8, pady=(4, 10))
+        self.refresh_due_counter_fields()
+
         # --- カード定義タブ(2026-07-27新設) ---
         # 「単語」タブなど、AIが都度カード内容を生成するタブが出力するノート
         # タイプ(フィールド名・カードテンプレート・CSS・デッキ)を、Pythonコードの
@@ -1743,9 +1806,44 @@ class AnkiTTSApp(_BaseTk):
         dlg.minsize(req_w, req_h)
 
     def _open_settings_dialog(self):
+        # 出力のたびに進む値なので、開くたびに読み直す(このダイアログは
+        # 起動時に1度だけ構築してwithdraw/deiconifyで使い回しているため、
+        # 構築時の値のままだと古い番号が表示されてしまう)。
+        self.refresh_due_counter_fields()
         self.settings_dialog.deiconify()
         self.settings_dialog.lift()
         self.settings_dialog.focus_set()
+
+    # --- 新規カードの位置タブ(⚙設定、2026-08-20追加) -----------------------
+    def refresh_due_counter_fields(self):
+        """due_counter.jsonの現在値を入力欄へ反映する。"""
+        if not hasattr(self, "due_counter_vars"):
+            return
+        for key, var in self.due_counter_vars.items():
+            var.set(str(due_counter.get_next_due(key)))
+
+    def on_due_counter_save_clicked(self):
+        """入力欄の値をdue_counter.jsonへ保存する。
+
+        1以上の整数でない値は保存せずに知らせる(0以下や空文字をそのまま
+        書き込むと、次回の出力でAnki側の既存カードと位置が衝突するため)。"""
+        invalid = []
+        saved = []
+        for key, var in self.due_counter_vars.items():
+            raw = var.get().strip()
+            if due_counter.set_next_due(key, raw):
+                saved.append(f"{key}={due_counter.get_next_due(key)}")
+            else:
+                invalid.append(f"{key}: {raw!r}")
+        if invalid:
+            messagebox.showerror(
+                "エラー",
+                "1以上の整数を入力してください(この項目は保存していません):\n"
+                + "\n".join(invalid),
+            )
+        if saved:
+            self.log("新規カードの位置の開始番号を保存しました: " + " / ".join(saved))
+        self.refresh_due_counter_fields()
 
     # --- カード定義タブ(⚙設定、2026-07-27追加) -----------------------------
     # 「単語」タブなどが出力するノートタイプの定義(card_defs.json)を、
@@ -2443,7 +2541,12 @@ class AnkiTTSApp(_BaseTk):
                     )
                     return
 
-                deck, row_map = deck_builder.build_deck_and_row_map(rows)
+                # cards.due(新規カードの位置)は出力のたびに続き番号を採番する
+                # (2026-08-20追加。due_counter.pyの項を参照)。
+                daily_start_num = due_counter.get_next_due("daily")
+                deck, row_map = deck_builder.build_deck_and_row_map(
+                    rows, start_num=daily_start_num
+                )
                 excluded = len(rows) - len(row_map)
                 if excluded:
                     self.log(
@@ -2455,8 +2558,15 @@ class AnkiTTSApp(_BaseTk):
                 deck_builder.write_deck_to_apkg(deck, temp_path)
                 self.log(f"デッキを生成しました: {temp_path} ({len(row_map)} ノート)")
 
+                self.log(
+                    f"新規カードの位置は {daily_start_num} から採番しました"
+                    f"(次回は {daily_start_num + len(row_map)} から。⚙設定の「新規カードの位置」タブで変更できます)。"
+                )
                 self._set_apkg_path(temp_path)
                 self._current_row_map = row_map
+                # ④のTTS生成・apkg出力が成功した時点で、この件数分だけ
+                # 開始番号を進める(mark_exportedと同じ2段階設計)。
+                self._pending_daily_due_advance = (temp_path, len(row_map))
                 self.sheets_update_var.set(True)
                 self._snapshot_tab_output_state("daily")
                 self.log("生成したデッキを①以降に読み込みました。②③を確認して生成を実行してください(TTS設定は⚙から確認できます)。")
@@ -2846,6 +2956,7 @@ class AnkiTTSApp(_BaseTk):
             "pending_word_stock_items": self._pending_word_stock_items,
             "pending_shuujuku_stock_items": self._pending_shuujuku_stock_items,
             "pending_grammar_multi_stock_items": self._pending_grammar_multi_stock_items,
+            "pending_daily_due_advance": self._pending_daily_due_advance,
         }
         self._tab_output_state[tab_key] = entry
         if tab_key in tab_notes_state.PERSISTED_TAB_KEYS:
@@ -2886,6 +2997,10 @@ class AnkiTTSApp(_BaseTk):
         self._pending_word_stock_items = state["pending_word_stock_items"]
         self._pending_shuujuku_stock_items = state["pending_shuujuku_stock_items"]
         self._pending_grammar_multi_stock_items = state["pending_grammar_multi_stock_items"]
+        # 2026-08-20に追加したキーなので、それ以前に保存された
+        # tab_notes_state.jsonにはまだ入っていない(直接添字だとKeyErrorで
+        # 起動できなくなるため.get()で読む)。
+        self._pending_daily_due_advance = state.get("pending_daily_due_advance")
         self.load_fields(state["apkg_path"])
 
     def _clear_notes_pane_for_empty_tab(self):
@@ -3054,10 +3169,19 @@ class AnkiTTSApp(_BaseTk):
         ):
             return
         try:
-            deck = grammar_multi_builder.build_deck(pending)
+            # cards.due(新規カードの位置)は出力のたびに続き番号を採番する。
+            # 以前は毎回0から振り直していたため、別バッチのカードとAnki側で
+            # 位置が衝突し、1つの質問から作った3問がまとまって出題されない
+            # 状態になっていた(2026-08-20。due_counter.pyの項を参照)。
+            start_num = due_counter.get_next_due("grammar_multi")
+            deck = grammar_multi_builder.build_deck(pending, start_num=start_num)
             temp_path = tab_notes_state.pending_deck_path("ai_ask")
             deck.write_to_file(temp_path)
             self.log(f"Grammar Multiデッキを生成しました: {temp_path} ({len(pending)} ノート)")
+            self.log(
+                f"新規カードの位置は {start_num} から採番しました"
+                f"(次回は {start_num + len(pending)} から。⚙設定の「新規カードの位置」タブで変更できます)。"
+            )
             self._set_apkg_path(temp_path)
             # ここではまだmark_exportedを呼ばない。④のTTS生成・apkg出力が
             # 実際に成功した時点(run_generate)でまとめて出力済みにする
@@ -3380,10 +3504,18 @@ class AnkiTTSApp(_BaseTk):
         ):
             return
         try:
-            deck = card_def_builder.build_deck_from_def(card_def, pending)
+            # cards.due(新規カードの位置)は出力のたびに続き番号を採番する
+            # (以前はdue未指定でgenankiの既定値0が全ノートに入っていた。
+            # 2026-08-20。due_counter.pyの項を参照)。
+            start_num = due_counter.get_next_due("word")
+            deck = card_def_builder.build_deck_from_def(card_def, pending, start_num=start_num)
             temp_path = tab_notes_state.pending_deck_path("word")
             deck.write_to_file(temp_path)
             self.log(f"単語デッキを生成しました: {temp_path} ({len(pending)} ノート)")
+            self.log(
+                f"新規カードの位置は {start_num} から採番しました"
+                f"(次回は {start_num + len(pending)} から。⚙設定の「新規カードの位置」タブで変更できます)。"
+            )
             self._set_apkg_path(temp_path)
             # ここではまだmark_exportedを呼ばない。④のTTS生成・apkg出力が
             # 実際に成功した時点(run_generate)でまとめて出力済みにする
@@ -4475,6 +4607,9 @@ class AnkiTTSApp(_BaseTk):
                 tracked_path, tracked_items = self._pending_word_stock_items
                 if tracked_path == generated_apkg_path:
                     word_stock.mark_exported(tracked_items)
+                    # 新規カードの位置(cards.due)の続き番号も同じだけ進める
+                    # (2026-08-20追加。due_counter.pyの項を参照)。
+                    due_counter.advance_next_due("word", len(tracked_items))
                     self.log(f"単語ストックの {len(tracked_items)} 件を出力済みにしました。")
                     self.refresh_word_stock_view()
                 else:
@@ -4503,6 +4638,9 @@ class AnkiTTSApp(_BaseTk):
                 tracked_path, tracked_items = self._pending_grammar_multi_stock_items
                 if tracked_path == generated_apkg_path:
                     grammar_multi_stock.mark_exported(tracked_items)
+                    # 新規カードの位置(cards.due)の続き番号も同じだけ進める
+                    # (2026-08-20追加。due_counter.pyの項を参照)。
+                    due_counter.advance_next_due("grammar_multi", len(tracked_items))
                     self.log(f"Grammar Multiストックの {len(tracked_items)} 件を出力済みにしました。")
                     self.refresh_ai_ask_stock_view()
                 else:
@@ -4511,6 +4649,22 @@ class AnkiTTSApp(_BaseTk):
                         "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
                     )
                 self._pending_grammar_multi_stock_items = None
+            if self._pending_daily_due_advance:
+                # DailyConversationはストックを持たない(出力済みの記録は
+                # スプレッドシート側)ので、位置の続き番号だけをここで進める。
+                tracked_path, tracked_count = self._pending_daily_due_advance
+                if tracked_path == generated_apkg_path:
+                    due_counter.advance_next_due("daily", tracked_count)
+                    self.log(
+                        f"DailyConversationの新規カードの位置を {tracked_count} 件分進めました"
+                        f"(次回の開始番号: {due_counter.get_next_due('daily')})。"
+                    )
+                else:
+                    self.log(
+                        "(DailyConversationの位置の続き番号は対象外です: "
+                        "今回処理したapkgが、デッキを生成した時点のapkgと異なるため)"
+                    )
+                self._pending_daily_due_advance = None
 
             # ④のTTS音声生成が完了したノート一覧は「出力済み」として一覧から
             # 消す(2026-07-28追加。「ノート一覧に入っているものをTTSで出力

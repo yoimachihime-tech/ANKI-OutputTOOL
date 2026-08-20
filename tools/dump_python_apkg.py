@@ -55,11 +55,15 @@ GUID_CASES = [
 ]
 
 
-def build_deck_for(card_def_key: str, items: list):
+def build_deck_for(card_def_key: str, items: list, start_num: int = 1):
     """(genanki.Deck, model_id, deck_id) を返す。card_defs.json経由/独立
-    ビルダー経由のどちらでも呼び出し側から見た戻り値の形を揃える。"""
+    ビルダー経由のどちらでも呼び出し側から見た戻り値の形を揃える。
+
+    start_num: cards.due(新規カードの位置)の開始番号。Web版は
+    dueCounter.jsが持つ続き番号をbuildApkg({startDue})へ渡すので、
+    検証時は両者へ同じ値を与えて突き合わせる(2026-08-20追加)。"""
     if card_def_key == "grammar_multi":
-        deck = grammar_multi_builder.build_deck(items)
+        deck = grammar_multi_builder.build_deck(items, start_num=start_num)
         return deck, grammar_multi_builder.canon.GRAMMAR_MODEL.model_id, grammar_multi_builder.DECK_ID
 
     if card_def_key == "shuujuku":
@@ -75,7 +79,7 @@ def build_deck_for(card_def_key: str, items: list):
         # itemsは「添削結果」シートの生の行(sheets_reader.fetch_pending_rowsの
         # 戻り値と同じ形)。build_deck_and_row_map()がprocess_sheet_rows()での
         # 除外まで含めてデスクトップ版と同じ経路で処理する。
-        deck, _row_map = deck_builder.build_deck_and_row_map(items)
+        deck, _row_map = deck_builder.build_deck_and_row_map(items, start_num=start_num)
         return deck, dailyconv_canon.MODEL_ID, dailyconv_canon.DECK_ID
 
     # card_defs.json は実行時に生成されるファイルで、Git管理外(実データを
@@ -90,7 +94,7 @@ def build_deck_for(card_def_key: str, items: list):
     card_def = card_defs.get_def(card_def_key)
     if not card_def:
         raise SystemExit(f"カード定義 '{card_def_key}' が見つかりません。")
-    deck = card_def_builder.build_deck_from_def(card_def, items)
+    deck = card_def_builder.build_deck_from_def(card_def, items, start_num=start_num)
     return deck, card_def["model_id"], card_def["deck_id"]
 
 
@@ -105,6 +109,11 @@ def main() -> int:
         "--card-def", default="word",
         choices=["word", "grammar_multi", "shuujuku", "daily"],
     )
+    parser.add_argument(
+        "--start-num", type=int, default=1,
+        help="cards.due(新規カードの位置)の開始番号(既定1)。"
+             "Web版のbuildApkg({startDue})と同じ値を渡して突き合わせる。",
+    )
     args = parser.parse_args()
 
     items = json.load(sys.stdin)
@@ -112,7 +121,9 @@ def main() -> int:
     # print()で標準出力に書くため、そのままだと出力するJSONが壊れる。
     # 検証時に見えるよう捨てずに標準エラーへ回す。
     with contextlib.redirect_stdout(sys.stderr):
-        deck, model_id, deck_id = build_deck_for(args.card_def, items)
+        deck, model_id, deck_id = build_deck_for(
+            args.card_def, items, start_num=args.start_num
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         apkg_path = os.path.join(tmp, "python.apkg")

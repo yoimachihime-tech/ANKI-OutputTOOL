@@ -277,6 +277,33 @@
 
   <hr>
 
+  <!-- 新規カードの位置(2026-08-20追加)。Ankiの新規カードは「位置」(cards.due)の
+       順に出題される。以前は出力のたびに0から振り直していたため、別々のバッチで
+       出したカードが同じ位置に居座り、1つの質問から作った複数問がまとまって
+       出題されずに他のカードと混ざっていた(片桐からの報告)。lib/dueCounter.js が
+       カード種別ごとに続き番号を持つようにしたが、この値はAnkiコレクション側の
+       実際の位置とは同期しないため、ここで確認・修正できるようにしてある。 -->
+  <h3>新規カードの位置(Ankiの出題順)</h3>
+  <p class="hint">
+    出力する .apkg に書き込む「位置」の開始番号です。出力するたびにカード件数分だけ
+    自動で進みます。<b>Anki側で既に使われている番号と重複すると、その番号のカード同士が
+    交互に出題されます。</b>デッキごとの現在の最大値は、PC側で
+    <code>fix_anki_new_order.py --show</code> を実行すると確認できます。
+    習熟用(音読)は Num フィールドの続き番号をそのまま位置に使うため、ここには出てきません。
+  </p>
+  <label for="due-next-word">単語 (02.単語・MindTips::単語)</label>
+  <input type="number" id="due-next-word" min="1" step="1" inputmode="numeric" autocomplete="off">
+  <label for="due-next-grammar_multi">AIに質問 (02.単語・MindTips::文法・用法)</label>
+  <input type="number" id="due-next-grammar_multi" min="1" step="1" inputmode="numeric" autocomplete="off">
+  <label for="due-next-daily">DailyConversation (02.単語・MindTips::DailyConversation)</label>
+  <input type="number" id="due-next-daily" min="1" step="1" inputmode="numeric" autocomplete="off">
+  <div class="row">
+    <button type="button" id="due-next-save" class="ghost">位置の開始番号を保存</button>
+  </div>
+  <p id="due-next-status" class="status" role="status" aria-live="polite" data-autohide></p>
+
+  <hr>
+
   <h3>複数端末間の同期(任意)</h3>
   <p class="hint">
     単語・AIに質問・習熟用(音読)の3ストックを、上記と同じスプレッドシート内の

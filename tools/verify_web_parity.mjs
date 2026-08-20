@@ -59,13 +59,23 @@ function ok(message) {
   console.log(`  ✅ ${message}`);
 }
 
+// cards.due(新規カードの位置)の開始番号。**1以外の値**にしてあるのは、
+// 「開始番号 + 並び順」という採番式そのものがPython版とWeb版で一致することを
+// 確かめるため(1のままだと、片方が0始まりのインデックスに戻っても
+// 気づけない場合がある。2026-08-20追加)。
+const PARITY_START_DUE = 500;
+
 /** Python側(dump_python_apkg.py --card-def <cardDefKey>)を呼んで正解データを取得する。 */
 function dumpPython(cardDefKey, items) {
   // 入出力とも UTF-8 を明示する(日本語Windowsでは既定が cp932 になり、
   // items の日本語が壊れて Python 側が UnicodeEncodeError になるため)。
   const stdout = execFileSync(
     'python3',
-    [join(HERE, 'dump_python_apkg.py'), '--card-def', cardDefKey],
+    [
+      join(HERE, 'dump_python_apkg.py'),
+      '--card-def', cardDefKey,
+      '--start-num', String(PARITY_START_DUE),
+    ],
     {
       input: Buffer.from(JSON.stringify(items), 'utf8'),
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
@@ -96,7 +106,9 @@ async function verifyCardDef(cardDefKey, items, labelOf, webItems, labelItems) {
   const expected = dumpPython(cardDefKey, items);
   const cardDef = cardDefsAll[cardDefKey];
 
-  const blob = await buildApkg({ cardDef, ankiSchema, items: webItems || items });
+  const blob = await buildApkg({
+    cardDef, ankiSchema, items: webItems || items, startDue: PARITY_START_DUE,
+  });
   const zip = await globalThis.JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
 
   const entries = Object.keys(zip.files).sort();

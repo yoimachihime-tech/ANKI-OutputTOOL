@@ -46,16 +46,27 @@ def build_guid(card_def: dict, item: dict) -> str:
     return genanki.guid_for(card_def["key"], key_value)
 
 
-def build_deck_from_def(card_def: dict, items: list):
+def build_deck_from_def(card_def: dict, items: list, start_num: int = 1):
     """card_def(card_defs.get_def()の戻り値)とitems(dictのリスト、キーは
-    各fieldの"item_key")から、genanki.Deckを組み立てる。"""
+    各fieldの"item_key")から、genanki.Deckを組み立てる。
+
+    start_num: cards.due(Ankiの新規カードの位置)の開始番号(既定1)。
+    以前はdueを指定していなかったためgenankiの既定値0が全ノートに入り、
+    単語デッキの新規カードがすべて同じ位置に積まれていた(2026-08-20修正)。
+    呼び出し元(tts_gui.py)がdue_counter.get_next_due("word")で続き番号を渡す。
+    """
     if not GENANKI_AVAILABLE:
         raise CardDefBuilderError("genanki がインストールされていません。`pip install genanki` を実行してください。")
     model = build_model(card_def)
     deck = genanki.Deck(card_def["deck_id"], card_def["deck_name"])
-    for item in items:
+    for offset, item in enumerate(items):
         fields = [str(item.get(f["item_key"], "")) for f in card_def["fields"]]
-        note = genanki.Note(model=model, fields=fields, guid=build_guid(card_def, item))
+        note = genanki.Note(
+            model=model,
+            fields=fields,
+            guid=build_guid(card_def, item),
+            due=start_num + offset,
+        )
         deck.add_note(note)
     return deck
 

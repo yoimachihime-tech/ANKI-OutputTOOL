@@ -31,11 +31,14 @@ class DeckBuilderError(Exception):
     見つからない場合の専用例外。"""
 
 
-def build_deck_and_row_map(raw_rows: list):
+def build_deck_and_row_map(raw_rows: list, start_num: int = 1):
     """sheets_reader.fetch_pending_rows()が返したraw_rowsから、(genanki.Deck, row_map)を作る。
 
     row_map: {ノートのguid: シートのID列の値} の辞書。sheets_writer.mark_rows_as_exported()
     に渡すrow_idsを、TTS処理後にAnkiノートのguidから逆引きするために使う。
+
+    start_num: cards.due(Ankiの新規カードの位置)の開始番号。正典側の
+    build_deck(rows, start_num)へそのまま渡すだけ(詳細はそちらのdocstring参照)。
     """
     if not DECK_BUILDER_AVAILABLE:
         raise DeckBuilderError(
@@ -43,7 +46,7 @@ def build_deck_and_row_map(raw_rows: list):
             "このフォルダに見つかりません。`pip install genanki` を実行してください。"
         )
     rows = _builder.process_sheet_rows(raw_rows)
-    deck = _builder.build_deck(rows)
+    deck = _builder.build_deck(rows, start_num=start_num)
     row_map = {genanki.guid_for("dailyconv", r["id"]): r["id"] for r in rows}
     return deck, row_map
 

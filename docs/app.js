@@ -25,6 +25,9 @@ import {
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
 import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
 import {
+  getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
+} from './lib/dueCounter.js';
+import {
   synthesizeFieldWithTags, synthesizeExampleAudioTags, synthesizeTestSample,
   decodeAudioSamples, computeWaveformMinMax, computePeakAmplitude, isClipped, findSafeVolumeGainDb,
 } from './lib/tts.js';
@@ -467,6 +470,7 @@ function bindEvents() {
   // 設定パネル自身の閉じるボタン(2026-07-30追加)。設定は縦に長いため、
   // 下までスクロールした位置からでも閉じられるようにするためのもの。
   on('settings-close', 'click', toggleSettings);
+  on('due-next-save', 'click', onDueCounterSave);
   on('quota-clear-counts', 'click', onQuotaClearCounts);
   on('quota-clear-limits', 'click', onQuotaClearLimits);
   on('toggle-key', 'click', () => {
@@ -607,9 +611,50 @@ function toggleSettings() {
   $('settings').hidden = !willOpen;
   $('main-content').hidden = willOpen;
   $('settings-toggle').textContent = willOpen ? '✕ 設定を閉じる' : '⚙ 設定';
-  // 開くたびに描き直す。この値は設定を開いていない間にも増えるため、
+  // 開くたびに描き直す。これらの値は設定を開いていない間にも増えるため、
   // 一度描いたきりにすると必ず古い数字が出る。
-  if (willOpen) renderQuotaUsage();
+  if (willOpen) {
+    renderQuotaUsage();
+    renderDueCounters();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 新規カードの位置(cards.due)の開始番号(2026-08-20追加)
+//
+// lib/dueCounter.js が持つ「次の開始番号」を設定画面に出し、手で直せる
+// ようにする。Ankiコレクション側の実際の位置とは同期しないため、初回や
+// Anki側で位置を振り直した後は、ここで入れ直す必要がある。
+// ---------------------------------------------------------------------------
+
+function renderDueCounters() {
+  for (const key of DUE_COUNTER_KEYS) {
+    const el = $(`due-next-${key}`);
+    if (el) el.value = String(getNextDue(key));
+  }
+}
+
+function onDueCounterSave() {
+  const status = $('due-next-status');
+  const invalid = [];
+  const saved = [];
+  for (const key of DUE_COUNTER_KEYS) {
+    const el = $(`due-next-${key}`);
+    if (!el) continue;
+    const raw = el.value.trim();
+    if (setNextDue(key, raw)) saved.push(`${key}=${getNextDue(key)}`);
+    else invalid.push(`${key}: 「${raw}」`);
+  }
+  renderDueCounters();
+  if (invalid.length) {
+    setStatus(
+      status,
+      `1以上の整数を入力してください(この項目は保存していません): ${invalid.join(' / ')}`,
+      true,
+    );
+    return;
+  }
+  setStatus(status, `位置の開始番号を保存しました: ${saved.join(' / ')}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -2766,6 +2811,9 @@ function onBackupExport() {
     // 習熟用の続き番号(Num)は、復元後に既存カードと番号が衝突しないよう
     // 一緒に残しておく(復元時は大きい方を採用する)。
     shuujuku_next_num: getNextNum(),
+    // 新規カードの位置(cards.due)の続き番号も同じ理由で残す
+    // (2026-08-20追加。dueCounter.js の項を参照)。
+    next_due: Object.fromEntries(DUE_COUNTER_KEYS.map((k) => [k, getNextDue(k)])),
   };
 
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
@@ -2854,6 +2902,14 @@ async function onBackupFileSelected(event) {
   const backupNum = Number(backup.shuujuku_next_num) || 0;
   const gap = backupNum - getNextNum();
   if (gap > 0) advanceNextNum(gap);
+
+  // 新規カードの位置の続き番号も同じ考え方で、大きい方を採用する
+  // (小さい方に戻すと、既にAnkiへ取り込んだカードと位置が衝突するため)。
+  // next_due は 2026-08-20 より前のバックアップには入っていない。
+  for (const key of DUE_COUNTER_KEYS) {
+    const fromBackup = Number(backup.next_due?.[key]) || 0;
+    if (fromBackup > getNextDue(key)) setNextDue(key, fromBackup);
+  }
 
   setStatus(
     status,
@@ -3282,9 +3338,18 @@ async function onDailyExport() {
     const { items, media } = await embedTtsAudioIntoItems(
       readyItems, TTS_FIELD_KEYS.daily, 'daily', status,
     );
-    const blob = await buildApkg({ cardDef, ankiSchema: shared.ankiSchema, items, media });
+    // cards.due(Ankiの新規カードの位置)は出力のたびに続き番号を採番する
+    // (dueCounter.js の項を参照。以前は0始まりのインデックスだったため、
+    // 別バッチのカードとAnki側で位置が衝突していた)。
+    const startDue = getNextDue('daily');
+    const blob = await buildApkg({
+      cardDef, ankiSchema: shared.ankiSchema, items, media, startDue,
+    });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `daily_${stamp}.apkg`);
+    // ダウンロードに成功した時点で初めて番号を進める(失敗したバッチで
+    // 番号を消費すると、Anki側に存在しない番号が飛んでしまうため)。
+    advanceNextDue('daily', items.length);
   } catch (e) {
     hideLoading(status);
     setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
@@ -3637,14 +3702,22 @@ async function onExport(tabKey) {
     const { items, media } = await embedTtsAudioIntoItems(
       pendingItems, TTS_FIELD_KEYS[tabKey] || [], tabKey, status,
     );
+    // cards.due(Ankiの新規カードの位置)は出力のたびに続き番号を採番する
+    // (dueCounter.js の項を参照。以前は word が全ノート due=0、
+    // grammar_multi が0始まりのインデックスで、どちらも出力のたびに
+    // 振り直されて別バッチのカードとAnki側で位置が衝突していた)。
+    const startDue = getNextDue(cfg.cardDefKey);
     const blob = await buildApkg({
       cardDef,
       ankiSchema: shared.ankiSchema,
       items,
       media,
+      startDue,
     });
     const stamp = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `${tabKey}_${stamp}.apkg`);
+    // ダウンロードに成功した時点で初めて番号を進める(exported_atと同じ2段階設計)。
+    advanceNextDue(cfg.cardDefKey, items.length);
 
     // .apkgの生成・ダウンロードに実際に成功した項目だけへexported_atを
     // 記録する。pendingItemsはcfg.stockの要素をそのまま参照しているため

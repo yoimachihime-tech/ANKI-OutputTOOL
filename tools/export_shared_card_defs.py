@@ -109,9 +109,12 @@ def build_grammar_multi_def() -> dict:
             "prefix": "grammar-multi-v1",
             "item_keys": ["topic_key", "note_index"],
         },
-        # grammar_multi_builder.build_deck()はdue=itemsのリスト内インデックス
-        # を使う(word/card_def_builderのdue=0固定とは異なる)。
-        "due_scheme": {"type": "index"},
+        # grammar_multi_builder.build_deck()のdue=start_num+offset。
+        # 開始番号はdue_counter.py(Web版はdocs/lib/dueCounter.js)が
+        # カード種別ごとに永続化しており、出力のたびに件数分だけ進む
+        # (2026-08-20。以前は0始まりのインデックスだったため、別バッチの
+        # カードとAnki側で位置が衝突していた)。
+        "due_scheme": {"type": "sequence"},
         "anki_model": model.to_json(0, grammar_multi_builder.DECK_ID),
     }
 
@@ -210,8 +213,8 @@ def build_daily_def() -> dict:
             "prefix": "dailyconv",
             "item_keys": ["id"],
         },
-        # build_deck()はdue=enumerate(rows)のインデックス(grammar_multiと同じ)。
-        "due_scheme": {"type": "index"},
+        # build_deck()のdue=start_num+offset(grammar_multiと同じ)。
+        "due_scheme": {"type": "sequence"},
         # build_deck()は全ノートにsource::gemini_dailyconvタグを付ける。
         # 他のカード種別はタグ無しなので、この定義だけが持つ項目。
         "tags": [dailyconv_canon.SOURCE_TAG],
@@ -236,7 +239,10 @@ def main() -> int:
             "dedup_key": card_def["dedup_key"],
             "fields": card_def["fields"],
             "guid_scheme": {"type": "dedup_key", "prefix": card_def["key"], "dedup_key": card_def["dedup_key"]},
-            "due_scheme": {"type": "fixed_zero"},
+            # card_def_builder.build_deck_from_def()のdue=start_num+offset
+            # (2026-08-20。以前は全ノートdue=0だったため、単語デッキの新規
+            # カードがすべて同じ位置に積まれていた)。
+            "due_scheme": {"type": "sequence"},
             # Ankiのcol.modelsへそのまま入れるJSON(genanki生成、上記docstring参照)
             "anki_model": build_anki_model_json(card_def),
         }

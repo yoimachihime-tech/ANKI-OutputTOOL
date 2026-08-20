@@ -56,19 +56,31 @@ export function cardOrdsFor(ankiModel, fields) {
 /**
  * カードの新規学習順(due)を、card_def.due_scheme(共有JSON)に従って計算する。
  * カード種別ごとにPython側の採番方法が異なるため、種類を分けてある:
- *   - fixed_zero: 常に0(card_def_builder.build_deck_from_def()、単語など)
- *   - index     : itemsのリスト内インデックス(grammar_multi_builder.build_deck())
+ *   - sequence  : startDue からの通し番号(word/grammar_multi/daily)。
+ *                 startDue は dueCounter.js が種別ごとに永続化している
+ *                 「次の開始番号」で、出力のたびに件数分だけ進む。
  *   - field     : item内の特定フィールドの値をそのまま使う
  *                 (build_shuujuku_v1.build_deck()のdue=idx。Numフィールドと
  *                 同じ値になる。この値は出力時点で払い出される連番なので、
  *                 呼び出し側が事前にitemへ埋め込んでおく必要がある)
+ *   - fixed_zero: 常に0。2026-08-20より前のwordの採番方法で、後方互換のため
+ *                 残してあるだけ(現在どの定義もこの型を使っていない)。
+ *   - index     : 0始まりのインデックス。同じく旧grammar_multi/dailyの
+ *                 採番方法で、後方互換のためだけに残してある。
+ *
+ * 【sequenceを追加した理由(2026-08-20)】
+ * fixed_zero/indexは出力のたびに0から振り直すため、別のバッチで出力した
+ * カードがAnki側で同じ位置に並び、1つの質問から作った複数問がまとまって
+ * 出題されずに他のカードと混ざっていた(片桐からの報告)。
  *
  * @param {object} dueScheme cardDef.due_scheme(`{"type": ...}`)。省略時はfixed_zero扱い
  * @param {object} item
  * @param {number} index itemsの中でのこのitemの位置(0始まり)
+ * @param {number} [startDue=1] type="sequence"のときの開始番号
  */
-export function dueFor(dueScheme, item, index) {
+export function dueFor(dueScheme, item, index, startDue = 1) {
   const type = dueScheme?.type || 'fixed_zero';
+  if (type === 'sequence') return startDue + index;
   if (type === 'index') return index;
   if (type === 'field') {
     const n = Number(item[dueScheme.key]);
@@ -109,9 +121,11 @@ export function fieldsFromItem(cardDef, item) {
  * @param {object}   opts.ankiSchema  docs/shared/anki_schema.json
  * @param {object[]} opts.items       出力する item の配列
  * @param {Map<string, Uint8Array>} [opts.media] メディア(ファイル名 → 中身)
+ * @param {number}   [opts.startDue=1] due_scheme.type="sequence" のときの開始番号
+ *   (dueCounter.getNextDue(キー) の値を呼び出し側から渡す)
  * @returns {Promise<Blob>}
  */
-export async function buildApkg({ cardDef, ankiSchema, items, media }) {
+export async function buildApkg({ cardDef, ankiSchema, items, media, startDue = 1 }) {
   if (!items || items.length === 0) {
     throw new Error('出力するカードがありません。');
   }
@@ -163,7 +177,7 @@ export async function buildApkg({ cardDef, ankiSchema, items, media }) {
       const item = items[i];
       const fields = fieldsFromItem(cardDef, item);
       const guid = await buildItemGuid(cardDef, item);
-      const due = dueFor(cardDef.due_scheme, item, i);
+      const due = dueFor(cardDef.due_scheme, item, i, startDue);
       const noteId = nextId;
       nextId += 1;
 

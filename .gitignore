@@ -10,6 +10,7 @@
 /daily_pending_exclusions.json
 /grammar_multi_stock.json
 /tab_notes_state.json
+/due_counter.json
 
 # サービスアカウントJSONキー等の認証情報(万一このフォルダに置かれても除外)
 *serviceaccount*.json

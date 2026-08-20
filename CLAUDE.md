@@ -108,6 +108,13 @@ grammar_multi_builder.py
 grammar_multi_stock.py
                   「AIに質問」タブの候補のファイル永続化ストック(習熟用とは
                   完全に別、2026-07-27追加、実装済み)
+due_counter.py    新規カードの位置(cards.due)の続き番号をカード種別ごとに
+                  永続化するモジュール(2026-08-20追加、実装済み。下記
+                  「新規カードの位置(cards.due)の採番」を参照)
+tools/fix_anki_new_order.py
+                  Ankiコレクションを直接読んで、デッキごとの位置の最大値と
+                  「次の開始番号」を表示する/位置を振り直すスクリプト
+                  (2026-08-20追加。due_counter.pyへ入れる番号を調べる用)
 build_word_v1.py  「単語」ノートタイプ・デッキ定義の実体(2026-07-27時点では
                   card_defs.jsonの初期シード元としてのみ使用。下記「単語カード
                   生成との関係」参照)
@@ -1129,6 +1136,72 @@ index/reading/pos/meaning/example/example_ja/example_blank/noteの8キーを持�
 ストックに残す方式に変更しても、guidが同じなのでAnki側では上書き更新される
 だけであり問題ない)。
 
+## 新規カードの位置(cards.due)の採番(2026-08-20追加)
+
+Ankiの新規カードは「位置」(`cards.due`)の順に出題される。このソフトが
+出力する.apkgにはその値を書き込んでいるが、**2026-08-20より前は出力の
+たびに0から振り直していた**:
+
+| カード種別 | 旧 due | 問題 |
+| --- | --- | --- |
+| word | 指定なし(genankiの既定値0) | 全ノートが同じ位置 |
+| grammar_multi | `enumerate(items)`の0始まり | バッチごとに0から重複 |
+| daily | `enumerate(rows)`の0始まり | バッチごとに0から重複 |
+| shuujuku | `due=idx`(Numフィールドと同じ) | 問題なし(既に続き番号) |
+
+### 何が起きていたか(片桐からの報告)
+
+「1つの質問から作った3問が、まとまって出題されずに他の生成カードと同じ
+出題形式でまとまって出てしまう」。原因は2つあった。
+
+1. **Anki側のデッキ設定**「新規カードの並び順」が既定の
+   `カードの種類、その後集めた順`だと、集めた新規カードを**テンプレート番号順に
+   並べ替える**。dueをどう振ってもこの設定のままでは形式ごとにまとまる。
+   → `集めた順番`(protobufの`new_card_sort_order = NO_SORT`)へ変更が必要。
+2. **位置の重複**。上記のとおり出力のたびに0から振り直していたため、別々の
+   バッチのカードが同じ位置に居座り、その番号のカード同士が交互に出題された。
+
+実測(Anki 25.09.4のスケジューラを直接動かして確認)では、位置がノートを
+またいで重複していなければ、**1ノート1番号(兄弟カードが同じ位置)でも
+ブロックは保たれる**。必要な条件は「ノート間で位置が重複しないこと」だけ。
+
+### 対応
+
+`due_counter.py`(Web版は`docs/lib/dueCounter.js`)がカード種別ごとに
+「次の開始番号」を永続化し、`due = 開始番号 + itemsの並び順`で採番する。
+番号を進めるのは**apkgの出力が実際に成功した後だけ**(`mark_exported`と
+同じ2段階設計。失敗したバッチで番号を消費すると、Anki側に存在しない番号が
+飛んでしまうため)。
+
+- 共有定義の`due_scheme`は`{"type": "sequence"}`
+  (`tools/export_shared_card_defs.py`が書き出す)。旧`index`/`fixed_zero`は
+  後方互換のため`apkg.js`/`dueFor()`に残してあるが、どの定義も使っていない。
+- Python側の既定`start_num`とJS側の既定`startDue`は**どちらも1**にすること。
+  ズレると同じitemsから別のdueのapkgが出てしまう。
+  `tools/verify_web_parity.mjs`は`PARITY_START_DUE = 500`(1以外の値)で
+  両者を突き合わせ、採番式そのものの一致を固定している。
+- 単体テスト: `tools/test_due_counter.mjs`(Web版) / `test_due_counter.py`
+  (デスクトップ版)。`npm test`に含めてある。
+
+### 【重要】Ankiコレクション側とは同期しない
+
+この番号はローカルのカウンタでしかなく、Ankiの実際の位置を見ていない。
+**初回、およびAnki側で位置を振り直した後は、⚙設定「新規カードの位置」タブ
+(Web版は設定画面の同じ項目)へ手で入れ直すこと**。入れるべき値は
+
+```text
+<Ankiのvenv>/python.exe tools/fix_anki_new_order.py "<collection.anki2>" --deck "02.単語・MindTips" --show
+```
+
+の「次の開始番号」列。このコマンドはAnki起動中でも実行できる(WALごと一時
+コピーして読むため)。「位置衝突」列が0でなければ、その分のノートが交互に
+出題される状態なので`--append`等で直す。
+
+なお、Ankiの「忘れる」でカードを新規に戻すと位置が
+「元の位置を復元」ONなら作成当時の古い値、OFFならコレクション共通の
+`nextPos`(片桐の環境では999948〜)になり、いずれもデッキの連番から外れる。
+その場合も`--show`で確認して入れ直す。
+
 ## Grammar Multiカード生成との関係(2026-07-27追加)
 
 「AIに質問」タブの出力先。**習熟用(音読・ATSU方式)とは目的が異なる**
@@ -1187,11 +1260,11 @@ index/reading/pos/meaning/example/example_ja/example_blank/noteの8キーを持�
   DECK_ID/DECK_NAMEから`genanki.Deck`を組み立てる橋渡し役
   (`deck_builder.py`/`build_shuujuku_v1.build_deck()`と同じ位置づけ)。
   guidは`genanki.guid_for("grammar-multi-v1", topic_key, str(note_index))`。
-  `due`は既存デッキの最終due番号から連番、という運用ルールがclaude.ai側の
-  手動生成(サンドボックス実行)では使われていたが、このソフトは毎回新規の
-  一時apkgをバッチ生成する設計のため、実際のAnkiコレクションの現在のdue値を
-  参照する手段がなく、単純にitemsのリスト順(0始まり)を使う(既存の
-  word_stock/shuujuku_stockの出力も同様に単純な連番)。
+  `due`は`start_num + itemsのリスト順`。**2026-08-20より前は0始まりの
+  インデックスをそのまま使っていた**が、出力のたびに0から振り直されるため
+  別バッチのカードとAnki側で位置が衝突していた(詳細は下記「新規カードの位置
+  (cards.due)の採番」)。開始番号は`due_counter.get_next_due("grammar_multi")`
+  が払い出し、出力成功時に件数分だけ進む。
 - `tts_gui.py`の「AIに質問」タブ: `on_ai_ask_clicked`→
   `gemini_client.generate_grammar_multi_items_from_question`→
   `grammar_multi_stock.add_pending_items`。「まとめてGrammar Multiとして
