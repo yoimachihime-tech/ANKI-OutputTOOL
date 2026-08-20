@@ -115,6 +115,10 @@ tools/fix_anki_new_order.py
                   Ankiコレクションを直接読んで、デッキごとの位置の最大値と
                   「次の開始番号」を表示する/位置を振り直すスクリプト
                   (2026-08-20追加。due_counter.pyへ入れる番号を調べる用)
+tools/migrate_shuujuku_notetype.py
+                  既存の習熟用ノートを、v1(Num/Content)からv2(1文=1フィールド)へ
+                  **学習履歴を保ったまま**移行するスクリプト(2026-08-20追加、
+                  実行済み。下記「習熟用(ATSU方式)カード生成との関係」を参照)
 build_word_v1.py  「単語」ノートタイプ・デッキ定義の実体(2026-07-27時点では
                   card_defs.jsonの初期シード元としてのみ使用。下記「単語カード
                   生成との関係」参照)
@@ -235,15 +239,17 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
 - `load_row_map(path)` / `match_sheet_row_ids(col, note_ids, row_map)`:
   ノートのguidからスプレッドシートの行ID(ID列の値)を逆引きするための関数。
   詳細は下記「row_map.jsonによるスプレッドシート連携」を参照。
-- `parse_shuujuku_content_html(content_html)` / `extract_shuujuku_tts_text(content_html)`
-  (2026-07-24追加): 習熟用(ATSU方式)ノートの`Content`フィールド(レンダリング済み
-  HTML)から、`build_shuujuku_v1.render_item()`が出力するCSSクラス名
-  (`pattern-line`/`gloss-line`/`ex-en`/`ex-jp`/`expl-label`/`source-tag`)を頼りに
-  正規表現でPattern/Meaning/Examples/Explanation/Sourceを逆抽出する。
-  `extract_shuujuku_tts_text`は`examples`のうち英文(`ex-en`)部分だけを`<br>`区切りで
-  結合して返す(和訳・パターン名・解説はTTS対象から除外)。
-  **`build_shuujuku_v1.py`側のCSSクラス名を変更した場合はこの正規表現も追従が
-  必要**(密結合。テストは`test_source_transform.py`相当を参照)。
+- `parse_shuujuku_content_html(content_html)`(2026-07-24追加、**現在は旧v1
+  ノート専用**): 習熟用v1(`Num`/`Content`の2フィールド)の`Content`から、
+  CSSクラス名(`pattern-line`/`gloss-line`/`ex-en`/`ex-jp`/`expl-label`/
+  `source-tag`)を頼りに正規表現でPattern/Meaning/Examples/Explanation/Sourceを
+  逆抽出する。2026-08-20の習熟用v2(1文=1フィールド)以降、新しく出力される
+  ノートにこの構造は現れないので、**v1で出力されたノート以外に使わないこと**。
+  残してあるのは`tools/migrate_shuujuku_notetype.py`が既存ノートの移行に使う
+  ため(と、手元に残っている旧形式apkgを読む必要が出たときのため)。
+  対になっていた`extract_shuujuku_tts_text` /
+  `analyze_shuujuku_sentence_targets` /
+  `generate_shuujuku_sentence_tts_for_collection`はv2化で不要になり撤去済み。
 - `analyze_targets(...)` / `generate_tts_for_collection(...)`にキーワード専用引数
   `source_transform`を追加(2026-07-24): 渡すと、`strip_sound_tags`後・
   `strip_html_for_tts`前のSourceフィールド生テキストに対して適用される。
@@ -251,17 +257,15 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
   notetype向けに、TTSに渡す前だけテキストを絞り込むためのフック。
   `tts_gui.py`側の`_get_source_transform_for()`が実際の関数を選択する。
 - `contains_japanese(text)` / `strip_japanese_sentences(raw_field_text)`
-  (2026-07-27追加): `extract_shuujuku_tts_text`が習熟用ノート専用(CSSクラス名
-  への依存)なのに対し、こちらはHTML構造に一切依存しない**汎用**の
-  source_transform。`split_into_sentences`で文単位に分割し、ひらがな/
+  (2026-07-27追加): HTML構造に一切依存しない**汎用**のsource_transform
+  (2026-08-20時点では、これが唯一のsource_transform)。`split_into_sentences`で文単位に分割し、ひらがな/
   カタカナ/漢字(半角カタカナ含む、`_JAPANESE_CHAR_RE`)を含む文を丸ごと
   除外して`<br>`で再結合するだけ(1文内の部分的な日本語だけを取り除くこと
   はしない)。単語タブの`Example`フィールドのように、そもそも構造的に
   英日混在しない設計のフィールドでも、AIがプロンプト指示に反して日本語を
   混ぜて返してきた場合の保険として使える。`tts_gui.py`の
   `self.exclude_japanese_var`(③のチェックボックス)がONの時だけ、
-  `_get_source_transform_for()`がノートタイプ固有の変換(習熟用の
-  `extract_shuujuku_tts_text`等、無ければNone)の後段にこれを合成して返す。
+  `_get_source_transform_for()`がこれを返す(OFFならNone)。
 - **TTS APIエラーの分類(`_classify_tts_error` / `TtsApiError`、2026-07-28追加)**:
   以前は`call_google_tts` / `call_google_tts_wav`がHTTPエラーを一律3回
   リトライし、生のJSONを`RuntimeError`で投げていた。(a)割り当て超過・課金
@@ -298,23 +302,17 @@ TTS呼び出し、HTML→読み上げテキスト整形、文分割、Ankiコレ
   `synthesize_per_sentence` / `synthesize_with_gaps`はどちらもこの関数を
   内部で使っているため、per_sentence(文ごとにタグを分ける)・結合の
   どちらのモードでも効果がある。
-- **習熟用ノートの例文ごと個別TTS+インラインタグ挿入(2026-07-27追加)**:
-  「習熟用タブで生成する場合は例文ごとに個別のMP3を作り、タグをその例文の
-  直下に配置してほしい」という要望への対応。通常のフィールド全体を1つの
-  音声にまとめる/タグをフィールド末尾に追記する方式(`analyze_targets`/
-  `generate_tts_for_collection`)とは別に、専用の
-  `analyze_shuujuku_sentence_targets(col, nt_name, field_idx, force_regen)` /
-  `generate_shuujuku_sentence_tts_for_collection(col, nt_name, field_idx, to_process, ...)`を新設した。`to_process`は`(note_id, 例文の連番)`の
-  ペア(例文単位、フィールド単位ではない)。生成方式が根本的に異なる
-  (Contentフィールドの`<div class="ex-en">...</div>`の内側にタグを
-  `re.sub`のコールバックで直接埋め込む、`_SHUUJUKU_EX_EN_RE`を再利用)ため、
-  通常のフィールド末尾追記方式では実現できず別関数にした。「音声済み
-  スキップ」の判定はノート単位(フィールド全体に`[sound:...]`が1つでもあれば
-  そのノートの全例文をまとめてスキップ)。`tts_gui.py`側は
-  `nt_name == SHUUJUKU_NOTETYPE_NAME`の場合、②のTTS対象フィールド選択に
-  関わらず常にこの専用ロジックを使う(フィールド選択UIはこのノートタイプでは
-  実質無視される。②に案内ラベル`self.shuujuku_tts_hint_label`を表示して
-  その旨を明示する)。
+- **習熟用ノートの例文ごと個別TTS+インラインタグ挿入(2026-07-27追加、
+  2026-08-20撤去)**: 習熟用v1では`Content`という1フィールドに例文がまとまって
+  いたため、例文ごとに個別のMP3を作ってタグを`<div class="ex-en">`の内側へ
+  埋め込む専用関数(`analyze_shuujuku_sentence_targets` /
+  `generate_shuujuku_sentence_tts_for_collection`)を持っていた。
+  習熟用v2で1文=1フィールド(`I1Ex1EN`…)になり、通常の
+  `analyze_targets`/`generate_tts_for_collection`(選んだフィールドを読み上げ、
+  そのフィールド末尾にタグを追記)で同じことができるようになったため、
+  この2関数と`extract_shuujuku_tts_text`は撤去した。②のフィールド選択も
+  無視されなくなり、既定値が英文フィールドになるだけになった
+  (`_default_tts_fields`)。
 - **`strip_sound_tags`の汎用化(2026-07-27修正)**: 以前は文字列**末尾**の
   `<br>[sound:...]`しか除去できなかったが、習熟用ノートの例文ごとインライン
   タグ挿入方式(上記)ではタグがフィールドの途中(各`ex-en`divの中)に複数箇所
@@ -382,31 +380,30 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
     ストック選択時、`_show_shuujuku_item_preview`が設定)のどちらか。
     ノート一覧が空でも、習熟用ストックを選択していればプレビューできる
     (2026-07-24修正: 以前はノート一覧の選択に固定されていた)。
-    shuujuku側は`build_shuujuku_v1.render_item()` + `FRONT_TMPL`/`BACK_TMPL`/
-    `BASE_CSS`でレンダリングする(実際に`build_deck()`が生成するのと同じ見た目)。
+    shuujuku側は`build_shuujuku_v1.build_fields_dict()`でフィールド値を作り、
+    `FRONT_TMPL`/`BACK_TMPL`/`BASE_CSS`でレンダリングする(実際に`build_deck()`が
+    生成するのと同じ見た目。Num/I1Badgeには`shuujuku_stock.get_next_num()`の
+    値を仮に使う)。
   - 実装はEdge/Chromeの`--app`モード(`_find_app_mode_browser`が実行ファイルを
     探索)を`subprocess.Popen`で直接起動する方式で、新規の依存パッケージは
     不要(Ankiが内部で使っているのと同じChromiumエンジンなので再現度も高い)。
     見つからない場合は`open_with_default_player`(既定ブラウザでの通常表示)に
     フォールバックする。
-- **習熟用(ATSU方式)ノートのプレビュー構造化**(2026-07-24追加): `update_preview`は
-  `notetype名 == SHUUJUKU_NOTETYPE_NAME`(定数、値は
-  `"ATSU方式 (PDF再現・音読用)"`)かつ`Content`フィールドがある場合、生HTMLの
-  代わりに`tts_core.parse_shuujuku_content_html()`でPattern/Meaning/Examples/
-  Explanation/Sourceに分解し、`_render_shuujuku_fields_to_pane(parsed)`で描画する。
-  これは「習熟用(音読)」タブのストック選択時プレビュー(`_show_shuujuku_item_preview`)
-  と**同じ描画ロジックを共有**しており、まとめて出力した後にノート一覧経由で
-  確認する場合も、出力前のストックプレビューと同じ見た目(フィールド構成が
-  一目でわかる形)になる。**理由**: 「まとめて出力」直後にノート一覧へ現れる
-  カードの`Content`が生HTMLのまま表示され、フィールド構成・内容が分かりづらい
-  という指摘への対応。
-- **習熟用ノートのTTS対象を英文例文のみに限定**(2026-07-24追加):
-  `_get_source_transform_for(nt_name)`が`nt_name == SHUUJUKU_NOTETYPE_NAME`のとき
-  `tts_core.extract_shuujuku_tts_text`を返し、`on_dry_run_clicked`/`run_generate`
-  経由で`analyze_targets`/`generate_tts_for_collection`の`source_transform`引数に
-  渡される。**理由**: `Content`フィールドには英語例文だけでなく日本語(Pattern名・
-  Meaning・和訳・Explanation)も混在しており、そのままTTSに渡すと日本語部分まで
-  英語音声で読み上げようとしてしまう懸念への対応。
+- **習熟用(ATSU方式)ノートのプレビュー構造化**(2026-07-24追加、2026-08-20撤去):
+  習熟用v1では`update_preview`が`Content`の生HTMLの代わりに
+  `tts_core.parse_shuujuku_content_html()`で分解した内容を描画していた。
+  v2で1文=1フィールドになり、通常の全フィールド表示がそのまま
+  Pattern/Examples/Tip…の一覧になるため、この分岐は不要になった。
+  ストック選択時のプレビュー(`_show_shuujuku_item_preview` →
+  `_render_shuujuku_fields_to_pane`)は、item dict(pattern/meaning/examples/
+  expl/source_label)を表示するものなので今までどおり残っている。
+- **習熟用ノートのTTS対象を英文例文のみに限定**(2026-07-24追加、2026-08-20に
+  役目を終えた): v1では`Content`に英語例文と日本語が混在していたため、
+  `_get_source_transform_for()`が習熟用ノートのときだけ英文抽出関数を返して
+  いた。v2で英文が独立したフィールド(`I1ExnEN`)になったので、
+  そのフィールドを選ぶだけで済むようになり、この分岐は撤去した
+  (`_get_source_transform_for()`に残っているのは③の「日本語を含む文を除外」
+  チェックだけ)。
 - **②のTTS対象フィールドは複数選択・可変(2026-07-27変更)**: 従来あった
   「読み上げ元(Source)」「タグ追加先(Target)」という2つの別フィールド選択は
   廃止した(読み上げ元とタグ追加先は常に同じフィールドで良いという指示による。
@@ -415,20 +412,19 @@ tkinterウィジェットの構築・イベントハンドラ・見た目だけ�
   1行のComboboxとして表示される。「＋ フィールドを追加」ボタン
   (`_add_tts_field_row`)で行を増やし、各行の「－」ボタン(`_remove_tts_field_row`。
   最後の1行は無効化され0件にはできない)で減らせる。`on_notetype_selected`が
-  ノートタイプ切替時の既定値を決める: `Answer`と`Example`の両方があれば
-  その2つ(Grammar DailyConversationでの主な使い方に合わせ、「類似表現」の
-  Exampleフィールドも既定でTTS対象にする)、どちらも無ければ先頭フィールド。
+  ノートタイプ切替時の既定値を`_default_tts_fields(fields)`から決める
+  (2026-08-20にメソッドとして切り出し。一括出力タブがノートタイプごとに
+  同じ既定値を使うため):
+  - `I\d+Ex\d+EN`にマッチするフィールド(習熟用v2・ATSU表現120選の英文)が
+    あれば、それを全部選ぶ。和訳(`〜JP`)やプレースホルダー混じりのパターン行を
+    含めないため。②には案内ラベル`self.shuujuku_tts_hint_label`を出す。
+  - 無ければ`Answer`と`Example`(Grammar DailyConversationでの主な使い方に
+    合わせ、「類似表現」のExampleフィールドも既定でTTS対象にする)。
+  - どちらも無ければ先頭フィールド。
+
   行のUI再構築は`_rebuild_tts_field_rows`が毎回`self.tts_field_vars`から
   作り直す(差分更新ではない)。「🔊試聴」(`on_preview_play_clicked`)は
   複数フィールド選択時でも先頭のフィールドのみを対象にする(簡易実装)。
-  デフォルト候補には`Content`も追加してある(習熟用ノート用、後述)。
-- **習熟用ノートは②のフィールド選択を無視する(2026-07-27追加)**:
-  `on_dry_run_clicked`/`run_generate`は、`nt_name == SHUUJUKU_NOTETYPE_NAME`
-  の場合、②で何が選択されていても常に`tts_core.analyze_shuujuku_sentence_ targets`/`generate_shuujuku_sentence_tts_for_collection`(Contentの
-  例文ごとに個別MP3+インラインタグ、詳細はtts_core.pyの項を参照)を使う。
-  この専用ロジックが動いていることを片桐に伝えるため、②に警告色の案内
-  ラベル`self.shuujuku_tts_hint_label`を表示し、`on_notetype_selected`が
-  ノートタイプに応じて`grid()`/`grid_remove()`で表示を切り替える。
 - **`load_fields`が0件のapkgを読み込んだ場合の`notetype_var`クリア
   (2026-07-27修正)**: 以前は、読み込んだapkgにノートが1件も無い場合
   (例: DailyConversationのシート取得結果が全て「誤りなし」/ID重複で
@@ -1008,9 +1004,15 @@ claude.aiチャット(`build_grammar_dailyconv_v1_final.py`の`build_deck()`を
 「習熟用(音読)」カードは、DailyConversationとは別のnotetype/デッキで、
 2026-07-24にこのソフトウェアへ**Gemini APIを使った仮実装**として統合済み。
 
-- notetype: ATSU方式 (PDF再現・音読用) / MODEL_ID 1901020103491
-  フィールド: Num / Content(1項目=1カード)
-- デッキ: 02.単語・MindTips::習熟用(固定)
+- notetype: **ATSU方式 (音読用・TTS対応) / MODEL_ID 1787203000001**(v2、2026-08-20〜)
+  フィールド(16個、1項目=1カード):
+  `DeckTitle / Num / I1Badge / I1PatternEN / I1PatternJP /
+  I1Ex1EN / I1Ex1JP / I1Ex2EN / I1Ex2JP / I1Ex3EN / I1Ex3JP / I1Ex4EN / I1Ex4JP /
+  I1Tip / Source / AllAudio`
+  - 旧v1は「ATSU方式 (PDF再現・音読用) / MODEL_ID 1901020103491」で、
+    `Num` / `Content` の2フィールドしか無く、Contentに英文・和訳・意味・解説・
+    出典をまとめたHTMLが入っていた。**このv1は廃止**(下記「v2への移行」参照)。
+- デッキ: 02.単語・MindTips::習熟用(固定、v1から変更なし)
 - 正典ファイル: `build_shuujuku_v1.py`(claude.ai側のプロジェクト知識ベースが本体。
   このフォルダにあるのは2026-07-24時点の参照用コピー。
   `build_grammar_dailyconv_v1_final.py`と同じく「正典はclaude.ai側」という
@@ -1025,6 +1027,68 @@ claude.aiチャット(`build_grammar_dailyconv_v1_final.py`の`build_deck()`を
 1項目だけ確度の低い推測が残っている(ファイル冒頭のNOTEコメント参照)。
 影響はカード内の下線・ハイライト表示のみで、notetype・デッキ・データ構造には
 影響しない。
+
+### v2への移行: 1文=1フィールド化(2026-08-20)
+
+v1(`Num`/`Content`)は、1つのフィールドに英文と日本語が混在していたため
+
+- フィールド単位でTTSをかけると日本語まで英語音声で読み上げてしまい、
+  Contentを正規表現で解析して英文だけ抜き出す**習熟用専用のTTS経路**
+  (`tts_core.analyze_shuujuku_sentence_targets` /
+  `generate_shuujuku_sentence_tts_for_collection` / `extract_shuujuku_tts_text`)
+  を持つ必要があった
+- HyperTTS等、フィールド単位で動く一般的なアドオンが使えなかった
+
+という問題があった。そこで「ATSU表現・構文120選 (音読用・TTS対応)」
+(MODEL_ID 1901020500001)と同じ**1文=1フィールド**の様式へ作り直した。
+
+- フィールド名の`I1`接頭辞は参照元に合わせてそのまま残してある
+  (将来120選デッキとフィールドをコピーし合ったり、HyperTTSのプリセットを
+  使い回したりできるようにするため)。参照元は2項目=1カードなので`I2*`を
+  持つが、習熟用は1項目=1カードなので持たない。
+- 参照元は例文3つまでだが、既存ノートに例文4つのものがあったため
+  `I1Ex4EN/JP`を追加してある(テンプレートは`{{#I1Ex4EN}}`の条件分岐なので、
+  3つ以下のカードの見た目は参照元と同じ)。上限は
+  `build_shuujuku_v1.MAX_EXAMPLES`。
+- 参照元に無い`Source`(出典表示、v1の`source-tag`相当)を追加してある。
+- **guidの計算方法(`genanki.guid_for('shuujuku', kind, key)`)は変えていない**。
+  変えるとAnki側で「既存ノートの更新」ではなく「別ノートの追加」になり、
+  ストックの重複判定・再出力時の上書きが壊れるため。
+- フィールド名とitem_keyの対応の正典は`build_shuujuku_v1.FIELD_ITEM_KEYS`。
+  `card_defs.py`の`seed_default_shuujuku_def_if_missing()`と
+  `tools/export_shared_card_defs.py`はここを参照するだけにしてある
+  (並びを再掲すると片方だけ古くなるため)。Web版(`docs/lib/shuujuku.js`の
+  `buildFieldsReadyItem()`)はPython側の`build_fields_dict()`と同じ値を作る
+  ことを`tools/verify_web_parity.mjs`が突き合わせている。
+
+**専用TTS経路は撤去済み**。習熟用ノートも他のノートタイプと同じ
+`analyze_targets` / `generate_tts_for_collection`(選んだフィールドを読み上げ、
+そのフィールド末尾に`[sound:...]`を追記する)で処理される。②のTTS対象
+フィールドの既定値は`AnkiTTSApp._default_tts_fields()`が決め、
+`I\d+Ex\d+EN`にマッチするフィールド(=英文)があればそれを全部選ぶ。
+`tts_core.parse_shuujuku_content_html()`だけは**旧v1ノートの解析用**として
+残してある(下記の移行スクリプトが使う)。
+
+#### 既存ノートの移行(`tools/migrate_shuujuku_notetype.py`)
+
+フィールド構成を変えたapkgを作り直してインポートしても、Ankiのインポータは
+新しいguidのノートを「新規」として取り込み、cardsのスケジューリングとrevlogは
+復元されない(2026-08-20に120選デッキで確認済み)。そのため移行スクリプトは
+**notesテーブルの`mid`/`flds`/`sfld`/`csum`だけを書き換え、cards/revlogには
+一切触らない**。ノートIDもカードIDも変わらないので学習履歴は100%残る。
+
+- 実行は`anki`パッケージのある環境で(`AnkiProgramFiles\.venv\Scripts\python.exe`)。
+  genankiは使わない(ノートタイプ定義は`docs/shared/card_defs.json`から読む)。
+- 既定は下見のみ。`--apply`で実際に書き換える(実行前に`backup/`へ
+  コレクションを丸ごと退避する)。Ankiが起動中はロックを検出して何もしない。
+- ノートタイプの追加は`col.models.add_dict()`(Ankiのバックエンドは`id=0`を
+  要求する)→**直後にSQLで`notetypes`/`fields`/`templates`のidを
+  MODEL_IDへ書き換える**、という手順。ここを合わせておかないと、次にこの
+  ツールが出力したapkgをインポートしたときに同名の別ノートタイプが増える。
+- 2026-08-20に実行済み: 50ノート(うち学習履歴あり15枚・revlog 72件)を移行し、
+  Content内の`[sound:...]`126個すべてを対応する`I1ExnEN`へ引き継いだ。
+  実行後の同期は**「アップロード」**を選ぶこと(スキーマ変更のため)。
+  空になった旧ノートタイプはAnki側に残してある(手動で削除してよい)。
 
 ### 重要な制約: この変換は完全自動化できない(AI呼び出しが必須)
 
@@ -1308,6 +1372,73 @@ Ankiの新規カードは「位置」(`cards.due`)の順に出題される。こ
   (`verify_grammar_multi_parity.mjs`は固定の生JSONで後処理だけを検証して
   いるため、プロンプトの文面自体はテスト対象外。実際にGeminiがこの新しい
   指示に従って改善された出力を返すかは実機での確認が必要)。
+
+## 一括出力タブ(2026-08-20追加)
+
+各タブに溜まっている未出力の候補を、**1回の操作で1つのapkgにまとめて**出力する
+ためのタブ(`_source_tab_labels`の`"bulk"`)。個々のタブの「まとめてノート一覧に
+出力」を順番に押していく手間を省くためのもので、②③④の流れと出力済みマークの
+付き方は各タブから出力した場合とまったく同じ。
+
+- **集める対象**: 各ストックの未出力候補から、`find_duplicate_pending_indices()`が
+  重複として返すインデックスを除いたもの。**重複クラスタは片方だけ残さず丸ごと
+  対象外にする**(どちらを残すべきかはソフトには判断できず、勝手に選ぶと意図
+  しない方が出力されるため)。各タブの一覧で琥珀色にハイライトされているものと
+  完全に同じ集合なので、そのタブで削除して整理してから一括出力すればよい。
+  除外した件数はタブ上部の要約に出す。
+- **DailyConversation**: 候補の実体がローカルのストックではなくスプレッドシート
+  なので、チェックボックスで含める/含めないを選べる。設定不足・読み込み失敗の
+  場合はそこだけ飛ばして他のタブぶんは出力する(全部が道連れにならないように)。
+  カテゴリ「誤りなし」・ID重複の除外は従来どおり`deck_builder`側で行われる。
+- **デッキの組み立て**: 各タブと同じビルダー(`build_shuujuku_v1.build_deck` /
+  `grammar_multi_builder.build_deck` / `card_def_builder.build_deck_from_def` /
+  `deck_builder.build_deck_and_row_map`)をそのまま呼び、
+  `card_def_builder.write_decks_to_apkg()`(= `genanki.Package`)で1ファイルに
+  まとめる。**デッキはタブごとに分かれたまま**なので、Anki側では今までどおり
+  別々のデッキに入る。Numやcards.dueの採番も各タブ単独のときと同じ。
+- **出力済みマーク**: `_pending_word_stock_items`等の4系統すべてに同じapkgパスを
+  記録しておく。`run_generate`の完了処理は元々この4系統を独立に見ているので、
+  そのまま流用できる(④が成功した時点で各ストックがまとめて出力済みになる)。
+- **タブの状態**: `pending_decks/bulk.apkg` +
+  `tab_notes_state.PERSISTED_TAB_KEYS`の`"bulk"`。他のタブとまったく同じ扱い。
+
+### ④のTTS生成が複数ノートタイプに対応した(2026-08-20)
+
+一括出力のapkgには3〜4種類のノートタイプが入るため、`run_generate`は
+**ノートタイプごとにループする**ようになった(単独タブの場合はこのリストが
+1件になるだけで、処理内容は従来と同じ)。
+
+- 対象ノートタイプ: `_tts_target_notetypes()`。一括出力タブならノートを持つ
+  ノートタイプすべて、それ以外は②で選択されている1つだけ。
+- TTS対象フィールド: `_tts_field_indices_for()`。一括出力タブでは②の選択を
+  使わず、ノートタイプごとに`_default_tts_fields()`の既定値を使う
+  (②のUIは1ノートタイプぶんしか持てないため)。この挙動は②に注意書き
+  (`bulk_tts_hint_label`)で明示している。
+- プログレスバーはapkg全体で1本(ノートタイプごとに0へ戻らないよう、
+  それまでの件数を足した位置を表示する)。
+- スプレッドシートへの書き戻し対象は、全ノートタイプぶんの処理済みペアを
+  足し合わせた`processed_pairs`から求める。
+
+## ⚙設定ダイアログの見た目(2026-08-20整理)
+
+「設定内の文字が全体的に多く、どこの項目がどこまで続いているのか分かりづらい」
+という指摘への対応。**説明文の中身は減らさず、見た目の優先度だけを下げて
+区切りを入れる**方針にしてある。
+
+- `_settings_section(parent, row, title)`: グループの見出し(太字・アクセント色)
+  + 区切り線を置き、次に使うrowを返す。
+- `_settings_hint(parent, row, text)`: 補足説明を1段小さく・淡色・字下げして
+  置き、次に使うrowを返す。それまで設定項目と同じ見た目で並んでいた説明文を
+  すべてこちらに移した。
+- 色とフォントはテーマ連動。style名(`SettingsSection.TLabel` /
+  `SettingsHint.TLabel`)だけ定数で持ち、実際の値は`_style_settings_labels()`が
+  設定する(`_style_text_widgets()`から呼ばれる)。
+- 各タブの行番号は`row`変数を進めながら振ること。項目を足すたびに以降の行番号を
+  振り直す必要が無いようにするため(以前は数値リテラル直書きだった)。
+- あわせて`_style_text_widgets()`の呼び出しを`_build_settings_dialog()`の
+  **後**に移し、設定ダイアログ内のtk.Text/tk.Listbox(カード定義タブの編集欄・
+  定義一覧)と各タブのストック一覧もダークモードに追従するようにした
+  (それまでこれらだけ白いまま残っていた)。
 
 ## カード定義エディタ(⚙設定「カード定義」タブ)
 
@@ -3073,12 +3204,16 @@ worker/                             Googleログインを長持ちさせるた�
   (実際、shuujuku追加時は`due_scheme`に`"field"`タイプを1つ足しただけで
   word/grammar_multiのコードは無変更のまま通った)。
 - **習熟用(shuujuku)だけはguid/due以外にも特殊事情がある**:
-  Contentフィールドはitemの1値をそのまま流し込むのではなく、
-  pattern/meaning/examples/expl/source_labelを`build_shuujuku_v1.render_item()`
-  相当のロジックでHTMLに合成した結果であり、しかもNum/dueは出力時点で
+  ストックに貯めるitem(pattern/meaning/examples/expl/source_label)は
+  Ankiのフィールドと1対1に対応せず、しかもDeckTitle/Num/I1Badge/dueは出力時点で
   払い出す続き番号(Ankiのソートフィールド衝突を避けるため)に依存する。
-  そのためWeb側は生のitem(ストックに貯める形)をそのまま`buildApkg()`に
-  渡すのではなく、`docs/lib/shuujuku.js`の`buildFieldsReadyItems(items, startNum)`で先にNum/Contentを確定させてから渡す
+  そのためWeb側は生のitemをそのまま`buildApkg()`に渡すのではなく、
+  `docs/lib/shuujuku.js`の`buildFieldsReadyItems(items, startNum)`で先に
+  フィールドを確定させてから渡す
+  (※2026-08-20の習熟用v2までは、ここで`Num`と、HTMLを合成した`Content`の
+  2フィールドだけを作っていた。v2で1文=1フィールドになり、
+  `buildFieldsReadyItem()`がPython側の`build_fields_dict()`と同じ16個の値を
+  作るようになった。上の「習熟用(ATSU方式)カード生成との関係」を参照)
   (`docs/app.js`の`onExportShuujuku()`を参照)。続き番号は
   `getNextNum()`/`advanceNextNum()`がlocalStorageで管理し、apkg生成が
   実際に成功した時点で初めて進める(デスクトップ版の

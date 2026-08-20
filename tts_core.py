@@ -177,14 +177,19 @@ def html_to_display_text(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 習熟用(ATSU方式)ノートのContentフィールド解析
+# 習熟用(ATSU方式)【v1】ノートのContentフィールド解析
 # ---------------------------------------------------------------------------
 #
-# 習熟用notetypeはNum/Contentの2フィールドしか無く、Contentには
-# build_shuujuku_v1.render_item()が生成した「Pattern・Meaning・Examples
-# (英文+和訳)・Explanation・Source」を1つにまとめたHTMLが入っている。
-# このHTML構造(CSSクラス名)に依存した正規表現でのパースになるため、
-# build_shuujuku_v1.py側のテンプレート構造が変わると追従できなくなる点に注意。
+# 【これは旧形式(v1)専用のパーサ。新規出力では使わない】
+# 習熟用notetypeのv1はNum/Contentの2フィールドしか無く、Contentには
+# 「Pattern・Meaning・Examples(英文+和訳)・Explanation・Source」を1つに
+# まとめたHTMLが入っていた。2026-08-20のv2で1文=1フィールドに分けたため、
+# 新しく出力されるノートにこの構造は現れない。
+# 残してあるのは (a) tools/migrate_shuujuku_notetype.py が既存50ノートの
+# Contentを新フィールドへ分解するのに使うため、(b) 手元に残っている旧形式の
+# apkgを読む必要が出たときのため。
+# このHTML構造(CSSクラス名)に依存した正規表現でのパースなので、v1で出力された
+# ノート以外に対して使わないこと。
 # (このモジュールからbuild_shuujuku_v1をimportしていないのは、tts_core.pyを
 # tkinter同様「必須ではない周辺モジュール」から独立させる方針のため)
 
@@ -220,163 +225,15 @@ def parse_shuujuku_content_html(content_html: str) -> dict:
     }
 
 
-def extract_shuujuku_tts_text(content_html: str) -> str:
-    """習熟用ノートのContentフィールドから、TTSで読み上げるべき英語例文
-    部分(class="ex-en")だけを抽出する。Contentには英語例文だけでなく
-    日本語の意味・和訳・解説・出典も混在しているため、フィールド全体を
-    そのままTTSにかけると日本語部分まで英語音声で読み上げようとして
-    しまう。patternフィールドもプレースホルダー語(日本語)混じりのため
-    読み上げ対象からは除外する。"""
-    parsed = parse_shuujuku_content_html(content_html)
-    return "<br>".join(en for en, _ja in parsed["examples"] if en)
-
-
-# ---------------------------------------------------------------------------
-# 習熟用ノートの英語例文を1文ずつ個別にTTS化する(2026-07-27追加)
-# ---------------------------------------------------------------------------
-#
-# 通常のanalyze_targets/generate_tts_for_collectionは、1フィールドの内容を
-# まとめて1つの音声(またはper_sentence指定時は別々の音声だがタグはフィールド
-# 末尾にまとめて追記)にする設計。習熟用ノートでは「例文ごとに個別のMP3を
-# 生成し、タグをその例文の直下(<div class="ex-en">...</div>の直後)に
-# 配置してほしい」という要望に対応するため、専用の関数を用意する
-# (Contentフィールドの構造そのものを書き換える必要があり、通常のフィールド
-# 末尾追記方式では実現できないため)。
-
-
-def analyze_shuujuku_sentence_targets(col, nt_name: str, field_idx: int, force_regen: bool):
-    """習熟用ノートのContentフィールド(field_idx)を走査し、英語例文(ex-en)を
-    1文ずつ処理対象にする。戻り値は(処理対象(note_id, 例文の連番)ペアのリスト,
-    音声済みスキップ数, 空欄スキップ数, 合計文字数)で、analyze_targets()と
-    互換の形にしている。「音声済みスキップ」はノート単位の判定(フィールド
-    全体に既に[sound:...]が1つでもあれば、そのノートの全例文をまとめて
-    スキップする。force_regen時は全て再生成する)。"""
-    note_ids = col.find_notes(f'note:"{nt_name}"')
-    to_process = []
-    skip_has_audio = 0
-    skip_empty = 0
-    total_chars = 0
-
-    for nid in note_ids:
-        note = col.get_note(nid)
-        content_html = note.fields[field_idx]
-        has_audio = bool(SOUND_TAG_RE.search(content_html))
-        if has_audio and not force_regen:
-            skip_has_audio += 1
-            continue
-
-        sentences = [
-            strip_html_for_tts(html_to_display_text(m))
-            for m in _SHUUJUKU_EX_EN_RE.findall(content_html)
-        ]
-        sentences = [s for s in sentences if s]
-        if not sentences:
-            skip_empty += 1
-            continue
-
-        for i in range(len(sentences)):
-            to_process.append((nid, i))
-        total_chars += sum(len(s) for s in sentences)
-
-    return to_process, skip_has_audio, skip_empty, total_chars
-
-
-def generate_shuujuku_sentence_tts_for_collection(
-    col,
-    nt_name: str,
-    field_idx: int,
-    to_process: list,
-    *,
-    api_key: str,
-    voice: str,
-    lang: str,
-    bitrate: int,
-    force_regen: bool,
-    volume_gain_db: float = 0.0,
-    log=lambda msg: None,
-    on_progress=lambda done, total: None,
-    should_cancel=lambda: False,
-) -> GenerateResult:
-    """習熟用ノートの英語例文(ex-en)を1文ずつ個別にTTS生成し、それぞれの
-    タグを対応する例文の直下(<div class="ex-en">...</div>の内側、文の直後)に
-    挿入する。通常のgenerate_tts_for_collectionと違い、フィールド全体に
-    1つのタグを追記するのではなく、re.subのコールバックで各ex-en divを
-    順番に処理しながらタグを埋め込む。
-
-    to_process: analyze_shuujuku_sentence_targets()の戻り値をそのまま渡す
-    想定((note_id, 例文の連番)のペア)。実際の処理はノート単位で行うため、
-    同じnote_idのエントリはまとめて1回のcol.update_noteで反映する。
-    """
-    processed = 0
-    cancelled = False
-    total = len(to_process)
-    progress_done = 0
-
-    notes_order = []
-    seen = set()
-    for nid, _ in to_process:
-        if nid not in seen:
-            notes_order.append(nid)
-            seen.add(nid)
-    counts_by_note = {}
-    for nid, _ in to_process:
-        counts_by_note[nid] = counts_by_note.get(nid, 0) + 1
-
-    for nid in notes_order:
-        if should_cancel():
-            cancelled = True
-            log(f"\nキャンセルされました。{processed} 件処理した時点で中断します。")
-            break
-
-        note = col.get_note(nid)
-        content_html = note.fields[field_idx]
-        if force_regen:
-            old_filenames = re.findall(r"\[sound:([^\]]+)\]", content_html)
-            if old_filenames:
-                try:
-                    col.media.trash_files(old_filenames)
-                except Exception as e:  # noqa: BLE001
-                    log(f"  (旧音声ファイルの削除に失敗: {e})")
-            content_html = strip_sound_tags(content_html)
-
-        sentence_counter = [0]
-
-        def _insert_tag(match, _nid=nid):
-            inner_html = match.group(1)
-            text = strip_html_for_tts(html_to_display_text(inner_html))
-            idx = sentence_counter[0]
-            sentence_counter[0] += 1
-            if not text:
-                return match.group(0)
-            log(f"生成中 (note {_nid}, 例文 #{idx + 1}): {text[:40]}...")
-            audio_bytes, ext = synthesize_with_gaps(
-                text, voice, lang, api_key, gap_seconds=0, mp3_bitrate_kbps=bitrate,
-                volume_gain_db=volume_gain_db,
-            )
-            fname = f"tts_{_nid}_{field_idx}_{idx}.{ext}"
-            stored_name = col.media.write_data(fname, audio_bytes)
-            return f'<div class="ex-en">{inner_html}<br>[sound:{stored_name}]</div>'
-
-        new_content = _SHUUJUKU_EX_EN_RE.sub(_insert_tag, content_html)
-        note.fields[field_idx] = new_content
-        col.update_note(note)
-
-        note_count = counts_by_note.get(nid, 0)
-        processed += note_count
-        progress_done += note_count
-        on_progress(progress_done, total)
-
-    return GenerateResult(processed=processed, cancelled=cancelled)
-
-
 # ---------------------------------------------------------------------------
 # 日本語文の汎用除外フィルタ(source_transform用、2026-07-27追加)
 # ---------------------------------------------------------------------------
 #
-# extract_shuujuku_tts_text は習熟用ノートのHTML構造(class="ex-en"等)に
-# 依存した抽出であり、単語タブの Example フィールドのようにそうした構造を
-# 持たないフィールドには使えない。こちらはHTML構造に依存せず、文単位で
-# ひらがな・カタカナ・漢字の有無を判定して除外するだけの汎用フィルタ。
+# HTML構造に依存せず、文単位でひらがな・カタカナ・漢字の有無を判定して
+# 除外するだけの汎用フィルタ。任意のノートタイプ・フィールドに使える
+# (2026-08-20まではこれと別に、習熟用v1のHTML構造(class="ex-en"等)に依存した
+# 抽出関数 extract_shuujuku_tts_text があったが、v2の1文=1フィールド化で
+# 不要になったため撤去した)。
 # 1文の中に英語と日本語が混在している場合は、その文ごと除外する
 # (部分的に日本語だけを取り除くことはしない)。
 

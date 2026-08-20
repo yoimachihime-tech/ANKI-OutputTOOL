@@ -207,27 +207,33 @@ def seed_default_daily_def_if_missing(path: str = None) -> bool:
 def seed_default_shuujuku_def_if_missing(path: str = None) -> bool:
     """「習熟用(音読)」の定義が無い場合、build_shuujuku_v1.pyの内容を
     **参照専用**(editable=False)として登録する。理由・注意はseed_default_
-    daily_def_if_missingと同じ(実際の出力はrender_item()/build_deck()が
-    行い、card_defとしての保存は出力に反映されない)。
-    戻り値: 実際に登録したかどうか。"""
-    if get_def("shuujuku", path) is not None:
-        return False
+    daily_def_if_missingと同じ(実際の出力はbuild_deck()が行い、card_defと
+    しての保存は出力に反映されない)。
+    戻り値: 実際に登録したかどうか。
 
+    2026-08-20(v2、1文=1フィールド化)から、**既に登録済みでもmodel_idが
+    build_shuujuku_v1.MODEL_IDと違う場合は上書きし直す**。card_defs.jsonは
+    Git管理外で各PCに残り続けるため、これが無いと⚙設定「カード定義」タブに
+    v1(Num/Contentの2フィールド)の古い内容が表示されたままになる。
+    参照専用の定義なので、片桐の編集内容を踏み潰す心配はない。"""
     import build_shuujuku_v1 as bs
+
+    existing = get_def("shuujuku", path)
+    if existing is not None and existing.get("model_id") == bs.MODEL_ID:
+        return False
 
     upsert_def(
         {
             "key": "shuujuku",
             "label": "習熟用(音読)",
-            "notetype_name": "ATSU方式 (PDF再現・音読用)",
+            "notetype_name": bs.MODEL_NAME,
             "model_id": bs.MODEL_ID,
             "deck_id": bs.DECK_ID,
             "deck_name": bs.DECK_NAME,
             "dedup_key": "",
             "editable": False,
             "fields": [
-                {"anki_name": "Num", "item_key": "num"},
-                {"anki_name": "Content", "item_key": "content"},
+                {"anki_name": name, "item_key": key} for name, key in bs.FIELD_ITEM_KEYS
             ],
             "templates": [
                 {"name": "カード 1", "qfmt": bs.FRONT_TMPL, "afmt": bs.BACK_TMPL},

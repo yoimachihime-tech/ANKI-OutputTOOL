@@ -412,7 +412,7 @@ examples/expl/source_label を HTML に合成した結果であり、item の1�
 依存する。そのため他の種別と違い、ストックに貯める item は生の
 pattern/meaning/... のままにしておき、`.apkg` を書き出す直前に
 `docs/lib/shuujuku.js`の`buildFieldsReadyItems(items, startNum)`で
-Num/Content を確定させてから`buildApkg()`に渡す
+フィールドを確定させてから`buildApkg()`に渡す
 (`app.js`の`onExportShuujuku()`を参照)。続き番号は`getNextNum()`/
 `advanceNextNum()`が localStorage で管理し、apkg生成が実際に成功した
 時点で初めて進める(デスクトップ版の`shuujuku_stock.get_next_num()`/

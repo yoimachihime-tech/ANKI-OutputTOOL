@@ -354,18 +354,74 @@
     "shuujuku": {
       "key": "shuujuku",
       "label": "習熟用(音読)",
-      "notetype_name": "ATSU方式 (PDF再現・音読用)",
-      "model_id": 1901020103491,
+      "notetype_name": "ATSU方式 (音読用・TTS対応)",
+      "model_id": 1787203000001,
       "deck_id": 1907280020001,
       "deck_name": "02.単語・MindTips::習熟用",
       "fields": [
+        {
+          "anki_name": "DeckTitle",
+          "item_key": "deck_title"
+        },
         {
           "anki_name": "Num",
           "item_key": "num"
         },
         {
-          "anki_name": "Content",
-          "item_key": "content"
+          "anki_name": "I1Badge",
+          "item_key": "badge"
+        },
+        {
+          "anki_name": "I1PatternEN",
+          "item_key": "pattern_en"
+        },
+        {
+          "anki_name": "I1PatternJP",
+          "item_key": "pattern_jp"
+        },
+        {
+          "anki_name": "I1Ex1EN",
+          "item_key": "ex1_en"
+        },
+        {
+          "anki_name": "I1Ex1JP",
+          "item_key": "ex1_jp"
+        },
+        {
+          "anki_name": "I1Ex2EN",
+          "item_key": "ex2_en"
+        },
+        {
+          "anki_name": "I1Ex2JP",
+          "item_key": "ex2_jp"
+        },
+        {
+          "anki_name": "I1Ex3EN",
+          "item_key": "ex3_en"
+        },
+        {
+          "anki_name": "I1Ex3JP",
+          "item_key": "ex3_jp"
+        },
+        {
+          "anki_name": "I1Ex4EN",
+          "item_key": "ex4_en"
+        },
+        {
+          "anki_name": "I1Ex4JP",
+          "item_key": "ex4_jp"
+        },
+        {
+          "anki_name": "I1Tip",
+          "item_key": "tip"
+        },
+        {
+          "anki_name": "Source",
+          "item_key": "source"
+        },
+        {
+          "anki_name": "AllAudio",
+          "item_key": "all_audio"
         }
       ],
       "guid_scheme": {
@@ -381,11 +437,11 @@
         "key": "num"
       },
       "anki_model": {
-        "css": "\n.card { font-family: -apple-system, \"Helvetica Neue\", Arial, \"Hiragino Sans\", sans-serif;\n    font-size: 18px; line-height: 1.7; text-align: left; color: #1a1a1a;\n    background-color: #ffffff; padding: 16px; }\n.night_mode.card { color: #e6e6e6; background-color: #2f2f31; }\n*, *::before, *::after { box-sizing: border-box; }\n.deck-title { font-size: 15px; font-weight: 700; color:#6b7280; margin-bottom: 10px; }\n.night_mode .deck-title { color:#b0b3ba; }\n.item-card { margin: 14px 0; padding: 16px; border-radius: 14px; border: 1px solid #e5e7eb; background:#ffffff; }\n.night_mode .item-card { background:#3a3a3d; border-color:#55565c; }\n.item-head { display:flex; align-items:center; gap:10px; margin-bottom: 10px; }\n.item-num { display:inline-flex; align-items:center; justify-content:center; min-width:34px; height:34px; padding:0 8px;\n  border-radius: 10px; background:#ede9fe; color:#534ab7; font-weight:800; font-size:17px; }\n.night_mode .item-num { background:#4b4470; color:#c9c2f7; }\n.pattern-line { font-size: 21px; font-weight: 800; color:#1e3a8a; }\n.night_mode .pattern-line { color:#8ab4f8; }\n.pattern-line mark, .gloss-line mark { background: #cfe6ff; color:#0b3d91; border-radius:4px; padding:1px 4px; font-weight:800; }\n.night_mode .pattern-line mark, .night_mode .gloss-line mark { background:#274a72; color:#bcdcff; }\n.pattern-line u, .gloss-line u { text-decoration-color:#534ab7; }\n.gloss-line { font-size: 14px; color:#6b7280; margin: 4px 0 12px; }\n.night_mode .gloss-line { color:#b0b3ba; }\n.ex-row { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background:#f5f6f8; }\n.night_mode .ex-row { background:#26262a; }\n.ex-en { font-size: 17px; color:#0b3d91; font-weight:600; }\n.night_mode .ex-en { color:#bcdcff; }\n.ex-en mark { background:#cfe6ff; color:#0b3d91; border-radius:4px; padding:1px 4px; }\n.night_mode .ex-en mark { background:#274a72; color:#bcdcff; }\n.ex-jp { font-size: 15px; color:#374151; margin-top: 3px; }\n.night_mode .ex-jp { color:#cbd5e1; }\n.expl-box { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background:#fef7e6; border-left: 3px solid #f0b429; font-size: 14px; color:#78530a; }\n.night_mode .expl-box { background:#4a3f22; border-left-color:#f0b429; color:#f0c05a; }\n.expl-label { font-size: 11px; font-weight:700; color:#92660a; margin-bottom: 3px; }\n.night_mode .expl-label { color:#f0c05a; }\n.source-tag { font-size: 11px; color:#9ca3af; margin-top: 10px; text-align: right; }\n.night_mode .source-tag { color:#7c8087; }\n@media (max-width: 480px) {\n  .card { padding: 6px 8px; font-size: 16px; }\n  .item-card { padding: 10px; margin: 8px 0; border-radius: 10px; }\n  .pattern-line { font-size: 18px; }\n  .ex-en { font-size: 15.5px; }\n}\n",
+        "css": "\n.card {\n    font-family: -apple-system, \"Helvetica Neue\", Arial, \"Hiragino Sans\", sans-serif;\n    font-size: 18px; line-height: 1.6; text-align: left; color: #1a1a1a;\n    background-color: #ffffff; padding: 16px;\n}\n.night_mode.card { color: #e6e6e6; background-color: #2f2f31; }\n*, *::before, *::after { box-sizing: border-box; }\n\n.deck-title { font-size: 15px; font-weight: 700; color:#6b7280; margin-bottom: 10px; }\n.night_mode .deck-title { color:#b0b3ba; }\n\n.group-card { margin: 14px 0; padding: 16px; border-radius: 14px; border: 1px solid #e5e7eb; background:#ffffff; }\n.night_mode .group-card { background:#3a3a3d; border-color:#55565c; }\n\n.group-num { display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:30px; padding:0 8px;\n  border-radius: 9px; background:#ede9fe; color:#534ab7; font-weight:800; font-size:15px; margin-bottom:8px; }\n.night_mode .group-num { background:#4b4470; color:#c9c2f7; }\n\n.base-box { background:#f5f6f8; border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; }\n.night_mode .base-box { background:#26262a; }\n.base-row { display:flex; align-items:center; gap:8px; }\n.base-en { font-size: 20px; font-weight: 800; color:#1e3a8a; }\n.night_mode .base-en { color:#8ab4f8; }\n.base-sep { border-top: 1px dashed #c7cad1; margin: 6px 0; }\n.night_mode .base-sep { border-top-color:#55565c; }\n.base-jp { font-size: 14px; color:#374151; }\n.night_mode .base-jp { color:#cbd5e1; }\n\n.para-label { font-size: 13px; font-weight: 800; color:#9333ea; margin: 4px 0 8px; border-bottom:1px solid #ecdcfb; padding-bottom:4px;}\n.night_mode .para-label { color:#c893f5; border-bottom-color:#4a3a5a; }\n\n.ex-block { margin: 6px 0 12px; }\n.para-item { display:flex; align-items:center; gap:10px; background:#f5f6f8; border-radius: 10px; padding: 8px 12px; margin: 0; }\n.night_mode .para-item { background:#26262a; }\n.para-arrow { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%;\n  background:#111827; color:#fff; font-size:12px; flex-shrink:0; }\n.night_mode .para-arrow { background:#e6e6e6; color:#2f2f31; }\n.para-num { font-family: monospace; font-weight:700; color:#111827; font-size:14px; flex-shrink:0; }\n.night_mode .para-num { color:#e6e6e6; }\n.para-text { font-weight: 700; color:#0b3d91; font-size:17px; flex:1; }\n.night_mode .para-text { color:#bcdcff; }\n\n.ex-jp { font-size: 14px; color:#374151; margin: 4px 0 0 14px; }\n.night_mode .ex-jp { color:#cbd5e1; }\n\n.base-en mark, .base-jp mark, .para-text mark, .ex-jp mark {\n  background:#cfe6ff; color:#0b3d91; border-radius:4px; padding:1px 4px; font-weight:800; }\n.night_mode .base-en mark, .night_mode .base-jp mark,\n.night_mode .para-text mark, .night_mode .ex-jp mark { background:#274a72; color:#bcdcff; }\n.base-en u, .base-jp u { text-decoration-color:#534ab7; }\n\n.tts-btn { flex-shrink:0; }\n\n.tip-box { display:flex; align-items:flex-start; gap:10px; margin-top: 12px; padding: 10px; border-radius: 12px; border:1px solid #e5e7eb; }\n.night_mode .tip-box { border-color:#55565c; }\n.tip-avatar { width:34px; height:34px; border-radius:50%; border:1px solid #d1d5db; flex-shrink:0;\n  display:flex; align-items:center; justify-content:center; font-size:16px; background:#fff; }\n.night_mode .tip-avatar { background:#3a3a3d; border-color:#55565c; }\n.tip-bubble { background:#2563eb; color:#ffffff; border-radius: 14px; padding: 10px 14px; font-size: 14px; line-height:1.6; }\n\n/* 出典表示(参照元の120選ノートタイプには無い、習熟用だけの追加分)。 */\n.source-tag { font-size: 11px; color:#9ca3af; margin-top: 10px; text-align: right; }\n.night_mode .source-tag { color:#7c8087; }\n\n.all-audio { display:flex; align-items:center; gap:10px; margin-top: 14px; padding: 8px 12px;\n  border-radius: 10px; background:#f5f6f8; font-size: 13px; color:#6b7280; }\n.night_mode .all-audio { background:#26262a; color:#b0b3ba; }\n.all-audio-label { flex-shrink:0; font-weight:700; }\n\n@media (max-width: 480px) {\n  .card { padding: 6px 8px; font-size: 16px; }\n  .group-card { padding: 10px; margin: 8px 0; border-radius: 10px; }\n  .base-en { font-size: 17px; }\n  .para-text { font-size: 15px; }\n  .ex-jp { font-size: 13px; }\n  .tip-bubble { font-size: 13px; }\n}\n\n/* --- 再生ボタンを行の左端に固定（本文の折り返しを壊さない） --- */\n.para-item { display: block; position: relative; padding: 8px 12px 8px 48px; }\n.para-item .para-arrow { display: none; }\n.para-text { display: inline; }\n.base-row { position: relative; }\n.base-en { display: inline; }\n.para-item br, .base-row br { display: none; }\n.para-item a, .base-row a { position: absolute; left: 10px; top: 50%;\n  transform: translateY(-50%); line-height: 0; }\n.para-item a svg, .base-row a svg { width: 28px; height: 28px; }\n/* 音声が無い行は左の余白を詰める（:has 未対応環境ではこの2行が無視される） */\n.para-item:not(:has(a)) { padding-left: 12px; }\n.base-row:has(a) { padding-left: 42px; }\n",
         "did": 1907280020001,
         "flds": [
           {
-            "name": "Num",
+            "name": "DeckTitle",
             "ord": 0,
             "font": "Liberation Sans",
             "media": [],
@@ -394,8 +450,134 @@
             "sticky": false
           },
           {
-            "name": "Content",
+            "name": "Num",
             "ord": 1,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Badge",
+            "ord": 2,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1PatternEN",
+            "ord": 3,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1PatternJP",
+            "ord": 4,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex1EN",
+            "ord": 5,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex1JP",
+            "ord": 6,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex2EN",
+            "ord": 7,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex2JP",
+            "ord": 8,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex3EN",
+            "ord": 9,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex3JP",
+            "ord": 10,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex4EN",
+            "ord": 11,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Ex4JP",
+            "ord": 12,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "I1Tip",
+            "ord": 13,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "Source",
+            "ord": 14,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
+          },
+          {
+            "name": "AllAudio",
+            "ord": 15,
             "font": "Liberation Sans",
             "media": [],
             "rtl": false,
@@ -403,27 +585,38 @@
             "sticky": false
           }
         ],
-        "id": "1901020103491",
+        "id": "1787203000001",
         "latexPost": "\\end{document}",
         "latexPre": "\\documentclass[12pt]{article}\n\\special{papersize=3in,5in}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amssymb,amsmath}\n\\pagestyle{empty}\n\\setlength{\\parindent}{0in}\n\\begin{document}\n",
         "latexsvg": false,
         "mod": 0,
-        "name": "ATSU方式 (PDF再現・音読用)",
+        "name": "ATSU方式 (音読用・TTS対応)",
         "req": [
           [
             0,
-            "all",
+            "any",
             [
-              1
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              7,
+              9,
+              11,
+              13,
+              14,
+              15
             ]
           ]
         ],
-        "sortf": 0,
+        "sortf": 1,
         "tags": [],
         "tmpls": [
           {
             "name": "カード 1",
-            "qfmt": "{{Content}}",
+            "qfmt": "<div class=\"deck-title\">{{DeckTitle}} &nbsp;No.{{Num}}</div><div class=\"group-card\"><div class=\"group-num\">{{I1Badge}}</div><div class=\"base-box\"><div class=\"base-row\"><div class=\"base-en\">{{I1PatternEN}}</div></div><div class=\"base-sep\"></div><div class=\"base-jp\">{{I1PatternJP}}</div></div><div class=\"para-label\">&#10548; Read it aloud!</div>{{#I1Ex1EN}}<div class=\"ex-block\"><div class=\"para-item\"><span class=\"para-arrow\">&#10148;</span><span class=\"para-text\">{{I1Ex1EN}}</span></div><div class=\"ex-jp\">{{I1Ex1JP}}</div></div>{{/I1Ex1EN}}{{#I1Ex2EN}}<div class=\"ex-block\"><div class=\"para-item\"><span class=\"para-arrow\">&#10148;</span><span class=\"para-text\">{{I1Ex2EN}}</span></div><div class=\"ex-jp\">{{I1Ex2JP}}</div></div>{{/I1Ex2EN}}{{#I1Ex3EN}}<div class=\"ex-block\"><div class=\"para-item\"><span class=\"para-arrow\">&#10148;</span><span class=\"para-text\">{{I1Ex3EN}}</span></div><div class=\"ex-jp\">{{I1Ex3JP}}</div></div>{{/I1Ex3EN}}{{#I1Ex4EN}}<div class=\"ex-block\"><div class=\"para-item\"><span class=\"para-arrow\">&#10148;</span><span class=\"para-text\">{{I1Ex4EN}}</span></div><div class=\"ex-jp\">{{I1Ex4JP}}</div></div>{{/I1Ex4EN}}{{#I1Tip}}<div class=\"tip-box\"><div class=\"tip-avatar\">&#128100;</div><div class=\"tip-bubble\">{{I1Tip}}</div></div>{{/I1Tip}}{{#Source}}<div class=\"source-tag\">{{Source}}</div>{{/Source}}</div>{{#AllAudio}}<div class=\"all-audio\"><span class=\"all-audio-label\">&#127911; 通し音声</span>{{AllAudio}}</div>{{/AllAudio}}",
             "afmt": "{{FrontSide}}",
             "ord": 0,
             "bafmt": "",

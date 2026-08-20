@@ -77,9 +77,12 @@ try:
 except ImportError:
     DAILY_BUILDER_AVAILABLE = False
 
-# 習熟用(ATSU方式)notetypeの正式名称。build_shuujuku_v1が無い環境でも
-# 判定(TTS対象の絞り込み・プレビュー構造化表示)ができるよう定数化しておく。
-SHUUJUKU_NOTETYPE_NAME = "ATSU方式 (PDF再現・音読用)"
+# 「1文=1フィールド」型ノートタイプの英文フィールド名(I1Ex1EN、I2Ex3EN など)。
+# 習熟用v2と「ATSU表現・構文120選 (音読用・TTS対応)」がこの命名なので、
+# ②のTTS対象フィールドの既定値をノートタイプ名ではなくこの形で決める
+# (どちらのノートタイプでも、和訳(〜JP)や日本語混じりのパターン行を
+# 読み上げ対象に含めないようにするため)。
+EN_SENTENCE_FIELD_RE = re.compile(r"^I\d+Ex\d+EN$")
 
 # UIフォントの候補(優先順)。コード中の font=("", ...) という書き方は
 # 「Tkの既定フォント family を継承する」のではなく実際には "Arial" に
@@ -174,9 +177,9 @@ class AnkiTTSApp(_BaseTk):
 
         self.force_regen_var = tk.BooleanVar(value=self._config.get("force_regen", False))
         # 日本語(ひらがな/カタカナ/漢字)を含む文をTTS対象から除外するか
-        # (2026-07-27追加)。習熟用ノート専用のextract_shuujuku_tts_textと違い、
-        # HTML構造に依存しない汎用フィルタ(tts_core.strip_japanese_sentences)
-        # なので、単語タブなど任意のノートタイプ・フィールドで有効化できる。
+        # (2026-07-27追加)。HTML構造に依存しない汎用フィルタ
+        # (tts_core.strip_japanese_sentences)なので、単語タブなど任意の
+        # ノートタイプ・フィールドで有効化できる。
         self.exclude_japanese_var = tk.BooleanVar(
             value=self._config.get("exclude_japanese_sentences", False)
         )
@@ -270,6 +273,7 @@ class AnkiTTSApp(_BaseTk):
         self.refresh_shuujuku_stock_view()
         self.refresh_word_stock_view()
         self.refresh_ai_ask_stock_view()
+        self.refresh_bulk_view()
         self.refresh_carddef_listbox()
 
         # 起動時に選択されているタブ(既定はdaily)について、tab_notes_state.json
@@ -439,10 +443,34 @@ class AnkiTTSApp(_BaseTk):
         self._style_text_widgets(mode)
         self._save_current_config()
 
+    def _style_settings_labels(self, mode: str):
+        """設定ダイアログのグループ見出し・補足説明のstyleをテーマに合わせる。
+        見出しは太字+やや強い色、補足説明は1段小さく淡い色にして、
+        「設定項目そのもの」と「説明文」が一目で区別できるようにする。"""
+        style = ttk.Style(self)
+        if mode == "dark":
+            section_fg, hint_fg = "#8ab4f8", "#a0a4aa"
+        else:
+            section_fg, hint_fg = "#1e3a8a", "#5f6368"
+        base = tkfont.nametofont("TkDefaultFont")
+        family = base.cget("family")
+        size = base.cget("size")
+        # Tkのフォントサイズは負値=ピクセル指定なので、単純に-1すると
+        # かえって大きくなってしまう。符号に応じて「1段小さく」する。
+        smaller = size + 1 if size < 0 else max(size - 1, 7)
+        style.configure(
+            self.SETTINGS_SECTION_STYLE, foreground=section_fg, font=(family, size, "bold")
+        )
+        style.configure(self.SETTINGS_HINT_STYLE, foreground=hint_fg, font=(family, smaller))
+
     def _style_text_widgets(self, mode: str):
         """tk.Text/tk.Listbox はttkテーマ(sv-ttk)の適用対象外で、ダークモードでも
         白いまま残ってしまうため、配色を手動でテーマに合わせる。
-        新しくtk.Text/tk.Listboxを足す場合はここに登録すること。"""
+        新しくtk.Text/tk.Listboxを足す場合はここに登録すること。
+
+        設定ダイアログの見出し(_settings_section)と補足説明(_settings_hint)の
+        色・フォントもここでテーマに合わせる(2026-08-20追加)。"""
+        self._style_settings_labels(mode)
         if mode == "dark":
             bg, fg = "#1c1c1c", "#f0f0f0"
         else:
@@ -451,12 +479,24 @@ class AnkiTTSApp(_BaseTk):
             getattr(self, "log_text", None),
             getattr(self, "preview_text", None),
             getattr(self, "ai_ask_text", None),
+            # ⚙設定「カード定義」タブの編集欄(2026-08-20追加。ここに載せる前は
+            # ダークモードでもこの4つだけ白いままで、他と揃っていなかった)。
+            getattr(self, "carddef_fields_text", None),
+            getattr(self, "carddef_qfmt_text", None),
+            getattr(self, "carddef_afmt_text", None),
+            getattr(self, "carddef_css_text", None),
         ):
             if widget is not None:
                 widget.configure(bg=bg, fg=fg, insertbackground=fg)
-        listbox = getattr(self, "shuujuku_listbox", None)
-        if listbox is not None:
-            listbox.configure(bg=bg, fg=fg)  # Listboxにはinsertbackgroundが無い
+        for listbox in (
+            getattr(self, "shuujuku_listbox", None),
+            getattr(self, "daily_pending_listbox", None),
+            getattr(self, "ai_ask_listbox", None),
+            getattr(self, "word_listbox", None),
+            getattr(self, "carddef_listbox", None),
+        ):
+            if listbox is not None:
+                listbox.configure(bg=bg, fg=fg)  # Listboxにはinsertbackgroundが無い
 
     def _toggle_log(self):
         if self._log_visible:
@@ -672,12 +712,14 @@ class AnkiTTSApp(_BaseTk):
         self.source_tab_var = tk.StringVar(value="daily")
         self._source_tab_buttons = {}
         # 表示順は入力の流れが分かるように: DailyConversation/AIに質問(習熟用への
-        # 供給元)→習熟用(それらを集約して出力)→apkgインポート(独立した手動経路)
+        # 供給元)→習熟用(それらを集約して出力)→単語→一括出力(全タブの未出力を
+        # まとめる)→apkgインポート(独立した手動経路)
         self._source_tab_labels = {
             "daily": "DailyConversation",
             "ai_ask": "AIに質問",
             "shuujuku": "習熟用(音読)",
             "word": "単語",
+            "bulk": "一括出力",
             "apkg_import": "apkgインポート",
         }
         for key, label in self._source_tab_labels.items():
@@ -1051,6 +1093,52 @@ class AnkiTTSApp(_BaseTk):
             justify="left",
         ).grid(row=10, column=0, sticky="w", padx=8, pady=(0, 8))
 
+        # --- タブ: 一括出力(2026-08-20追加) ---------------------------------
+        # 各タブに溜まっている未出力の候補(重複としてハイライトされているもの・
+        # DailyConversationの除外行/「誤りなし」行は除く)を、1つのapkgに
+        # まとめて出力する。個々のタブの「まとめてノート一覧に出力」を
+        # 順番に押していく手間を省くためのもので、出力後の②③④の流れと
+        # 出力済みマークの付き方は各タブから出力した場合とまったく同じ。
+        tab_bulk = ttk.Frame(self.source_tabs_container)
+        tab_bulk.grid_columnconfigure(0, weight=1)
+
+        self.bulk_summary_label = ttk.Label(
+            tab_bulk, text="", wraplength=hint_wrap, justify="left"
+        )
+        self.bulk_summary_label.grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+
+        bulk_btns = ttk.Frame(tab_bulk)
+        bulk_btns.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+        ttk.Button(bulk_btns, text="更新", width=8, command=self.refresh_bulk_view).pack(
+            side="left"
+        )
+        self.bulk_include_daily_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            bulk_btns,
+            text="DailyConversation(シート)も含める",
+            variable=self.bulk_include_daily_var,
+        ).pack(side="left", padx=(8, 0))
+
+        self.bulk_export_btn = ttk.Button(
+            tab_bulk,
+            text="未出力をまとめてノート一覧に出力",
+            command=self.on_export_all_pending_clicked,
+            style="Accent.TButton" if SV_TTK_AVAILABLE else "TButton",
+        )
+        self.bulk_export_btn.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
+
+        ttk.Label(
+            tab_bulk,
+            text=(
+                "各タブのストックのうち、重複としてハイライトされていないものを"
+                "すべて集めて1つのapkgにします(デッキはタブごとに分かれたまま"
+                "なので、Anki側では今までどおり別々のデッキに入ります)。"
+                "④の生成が完了するまで、候補は各タブのストックに残ります。"
+            ),
+            wraplength=hint_wrap,
+            justify="left",
+        ).grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+
         # --- タブ: apkgインポート(外部で生成された.apkgを手動で読み込む。
         #     DailyConversation/習熟用/AIに質問はapkgを参照しなくても用途を
         #     満たせるため、手動インポートはこの独立タブに分離してある) ---
@@ -1096,12 +1184,13 @@ class AnkiTTSApp(_BaseTk):
             justify="left",
         ).grid(row=4, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 8))
 
-        # タブ本体5枚をキー付きで保持し、固定ヘッダーのボタンから切り替える
+        # タブ本体をキー付きで保持し、固定ヘッダーのボタンから切り替える
         self._source_tab_frames = {
             "daily": tab_daily,
             "ai_ask": tab_ai_ask,
             "shuujuku": tab_shuujuku,
             "word": tab_word,
+            "bulk": tab_bulk,
             "apkg_import": tab_apkg_import,
         }
         self._switch_source_tab("daily")
@@ -1136,14 +1225,14 @@ class AnkiTTSApp(_BaseTk):
             frm_fields, text="＋ フィールドを追加", command=self._add_tts_field_row
         ).grid(row=2, column=1, sticky="w", padx=(0, 8), pady=(4, 8))
 
-        # 習熟用ノート選択時、フィールド選択が無視される(常にContentの例文
-        # ごとに個別処理される)ことを案内するラベル(2026-07-27追加)。
+        # 「1文=1フィールド」型ノートタイプ選択時に、英文フィールドだけが
+        # 自動で選ばれていることを案内するラベル(2026-07-27追加、2026-08-20更新)。
         # on_notetype_selectedがノートタイプに応じて表示/非表示を切り替える。
         self.shuujuku_tts_hint_label = ttk.Label(
             frm_fields,
             text=(
-                "※このノートタイプはフィールド選択に関わらず、Contentの例文ごとに"
-                "個別のMP3を生成し、各例文の直下にタグを配置します。"
+                "※このノートタイプは英文フィールド(I1Ex1EN…)を既定のTTS対象にしています"
+                "(和訳・パターン行は対象外)。必要なら上で追加・削除できます。"
             ),
             foreground="#c98a1f",
             wraplength=hint_wrap,
@@ -1151,6 +1240,23 @@ class AnkiTTSApp(_BaseTk):
         )
         self.shuujuku_tts_hint_label.grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
         self.shuujuku_tts_hint_label.grid_remove()
+
+        # 「一括出力」タブでは、②の選択に関わらずapkg内の全ノートタイプが
+        # 処理される(ノートタイプごとに既定のフィールドが選ばれる)。ここで
+        # 明示しないと「②で選んだノートタイプだけ処理される」と誤解される
+        # (2026-08-20追加)。
+        self.bulk_tts_hint_label = ttk.Label(
+            frm_fields,
+            text=(
+                "※「一括出力」タブのapkgは、ここでの選択に関わらず全ノートタイプが"
+                "順番に処理されます(TTS対象フィールドはノートタイプごとに自動選択)。"
+            ),
+            foreground="#c98a1f",
+            wraplength=hint_wrap,
+            justify="left",
+        )
+        self.bulk_tts_hint_label.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+        self.bulk_tts_hint_label.grid_remove()
 
         # TTS設定はヘッダーの「⚙ 設定」ダイアログに移設した(_build_settings_dialog)。
 
@@ -1307,10 +1413,47 @@ class AnkiTTSApp(_BaseTk):
             command=self._toggle_right_pane,
         ).pack(fill="both", expand=True, pady=2)
 
-        # tk.Text(ログ・プレビュー)はttkテーマの対象外なので、手動で配色を合わせる
+        self._build_settings_dialog()
+
+        # tk.Text/tk.Listbox(ログ・プレビュー・各ストック一覧・カード定義の編集欄)は
+        # ttkテーマの対象外なので、手動で配色を合わせる。設定ダイアログを組み立てた
+        # **後**に呼ぶこと(2026-08-20修正。以前は先に呼んでいたため、設定ダイアログ側の
+        # ウィジェットだけダークモードでも白いまま残っていた)。
         self._style_text_widgets(self.theme_var.get())
 
-        self._build_settings_dialog()
+    # --- 設定ダイアログの部品(2026-08-20追加) ------------------------------
+    # 設定項目が増えて「どこからどこまでが1つの設定か」が分かりにくくなった
+    # ため、見出し+区切り線でグループを作り、補足説明は淡色・小さめ・字下げに
+    # 落として設定項目そのものと区別する。色とフォントはテーマ切替に追従させたい
+    # ので、ここではstyle名だけを決めておき、実際の値は_style_text_widgets()が
+    # 設定する。
+    SETTINGS_SECTION_STYLE = "SettingsSection.TLabel"
+    SETTINGS_HINT_STYLE = "SettingsHint.TLabel"
+
+    def _settings_section(self, parent, row: int, title: str, columnspan: int = 3) -> int:
+        """設定タブ内にグループの見出しと区切り線を置き、次に使うrowを返す。"""
+        ttk.Label(parent, text=title, style=self.SETTINGS_SECTION_STYLE).grid(
+            row=row, column=0, columnspan=columnspan, sticky="w", padx=8,
+            pady=(10 if row == 0 else 18, 0),
+        )
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=row + 1, column=0, columnspan=columnspan, sticky="ew", padx=8, pady=(2, 6)
+        )
+        return row + 2
+
+    def _settings_hint(
+        self, parent, row: int, text: str, columnspan: int = 3, wrap: int = 420, pady=(0, 4)
+    ) -> int:
+        """設定項目に付く補足説明を置き、次に使うrowを返す。直前の項目に
+        ぶら下がって見えるよう字下げし、淡色・小さめにして項目本体と分ける。"""
+        ttk.Label(
+            parent,
+            text=text,
+            style=self.SETTINGS_HINT_STYLE,
+            wraplength=max(wrap - 16, 100),
+            justify="left",
+        ).grid(row=row, column=0, columnspan=columnspan, sticky="w", padx=(24, 8), pady=pady)
+        return row + 1
 
     def _build_settings_dialog(self):
         """TTS設定・Gemini API設定・スプレッドシート連携・出力先は、生成の
@@ -1324,8 +1467,16 @@ class AnkiTTSApp(_BaseTk):
         2026-07-27に、それまで縦積みだったLabelFrameをカテゴリ別の横タブ
         (ttk.Notebook)に再構成し、DailyConversationタブにあったスプレッドシート
         ID/シート名、③出力・オプションにあった出力先もここへ移動した
-        (それぞれ元の場所は「⚙ 設定」を参照するよう案内文言に変更)。"""
-        pad = {"padx": 10, "pady": 6}
+        (それぞれ元の場所は「⚙ 設定」を参照するよう案内文言に変更)。
+
+        2026-08-20に、各タブの中を`_settings_section()`の見出し+区切り線で
+        グループ分けし、補足説明を`_settings_hint()`(小さめ・淡色・字下げ)に
+        統一した(「文字が多くてどの項目がどこまで続いているのか分かりづらい」
+        という片桐の指摘への対応)。設定項目そのものと説明文が同じ見た目で
+        並んでいたのが原因だったため、**説明文の中身は減らさず、見た目の
+        優先度だけを下げて区切りを入れる**方針にしてある。
+        行番号は各タブで`row`変数を進めながら振ること(項目を足すたびに
+        以降の行番号を振り直す必要が無いようにするため)。"""
         hint_wrap = 420
 
         dlg = tk.Toplevel(self)
@@ -1340,9 +1491,10 @@ class AnkiTTSApp(_BaseTk):
         # --- 全般タブ(2026-07-27追加: テーマ切替をヘッダーから移動) ---
         tab_general = ttk.Frame(notebook)
         notebook.add(tab_general, text="全般")
-        ttk.Label(tab_general, text="テーマ:").grid(row=0, column=0, sticky="w", padx=8, pady=(10, 5))
+        row = self._settings_section(tab_general, 0, "表示", columnspan=2)
+        ttk.Label(tab_general, text="テーマ:").grid(row=row, column=0, sticky="w", padx=8, pady=5)
         theme_row = ttk.Frame(tab_general)
-        theme_row.grid(row=0, column=1, sticky="w", pady=(10, 5))
+        theme_row.grid(row=row, column=1, sticky="w", pady=5)
         ttk.Radiobutton(
             theme_row,
             text="☀ ライト",
@@ -1357,43 +1509,55 @@ class AnkiTTSApp(_BaseTk):
             value="dark",
             command=self.on_theme_setting_changed,
         ).pack(side="left", padx=(10, 0))
+        row += 1
+        row = self._settings_hint(
+            tab_general, row, "切り替えるとすぐ反映され、次回の起動にも引き継がれます。",
+            columnspan=2, wrap=hint_wrap, pady=(0, 10),
+        )
 
         # --- TTS設定タブ ---
         tab_tts = ttk.Frame(notebook)
         notebook.add(tab_tts, text="TTS")
         tab_tts.grid_columnconfigure(1, weight=1)
 
-        ttk.Label(tab_tts, text="Google Cloud APIキー:").grid(
-            row=0, column=0, sticky="w", padx=8, pady=(10, 5)
-        )
+        row = self._settings_section(tab_tts, 0, "Google Cloud 認証")
+        ttk.Label(tab_tts, text="APIキー:").grid(row=row, column=0, sticky="w", padx=8, pady=5)
         ttk.Entry(tab_tts, textvariable=self.api_key_var, show="*").grid(
-            row=0, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=(10, 5)
+            row=row, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=5
         )
+        row += 1
         ttk.Checkbutton(
             tab_tts, text="このPCに保存する", variable=self.remember_key_var
-        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=row, column=1, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
 
-        ttk.Label(tab_tts, text="言語コード:").grid(row=2, column=0, sticky="w", padx=8, pady=5)
+        row = self._settings_section(tab_tts, row, "読み上げる声")
+        ttk.Label(tab_tts, text="言語コード:").grid(row=row, column=0, sticky="w", padx=8, pady=5)
         self.lang_combo = ttk.Combobox(
             tab_tts, textvariable=self.lang_var, values=tts_core.COMMON_LANGUAGE_CODES, width=12
         )
-        self.lang_combo.grid(row=2, column=1, sticky="w", pady=5)
+        self.lang_combo.grid(row=row, column=1, sticky="w", pady=5)
         self.lang_combo.bind("<<ComboboxSelected>>", lambda e: self.on_fetch_voices(silent=True))
         self.lang_combo.bind("<FocusOut>", lambda e: self.on_fetch_voices(silent=True))
         ttk.Button(
             tab_tts, text="音声一覧を取得", command=lambda: self.on_fetch_voices(silent=False)
-        ).grid(row=2, column=2, sticky="e", padx=(4, 8), pady=5)
+        ).grid(row=row, column=2, sticky="e", padx=(4, 8), pady=5)
+        row += 1
 
-        ttk.Label(tab_tts, text="音声名 (voice):").grid(row=3, column=0, sticky="w", padx=8, pady=5)
+        ttk.Label(tab_tts, text="音声名 (voice):").grid(row=row, column=0, sticky="w", padx=8, pady=5)
         self.voice_combo = ttk.Combobox(
             tab_tts,
             textvariable=self.voice_var,
             values=[self.voice_var.get()],
             state="readonly",
         )
-        self.voice_combo.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=5)
+        self.voice_combo.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=5)
+        row += 1
 
-        ttk.Label(tab_tts, text="文と文の間隔(秒):").grid(row=4, column=0, sticky="w", padx=8, pady=5)
+        row = self._settings_section(tab_tts, row, "音声の作り方")
+        ttk.Label(tab_tts, text="文と文の間隔(秒):").grid(
+            row=row, column=0, sticky="w", padx=8, pady=5
+        )
         self.gap_spin = ttk.Spinbox(
             tab_tts,
             from_=0.0,
@@ -1402,10 +1566,18 @@ class AnkiTTSApp(_BaseTk):
             textvariable=self.sentence_gap_var,
             width=8,
         )
-        self.gap_spin.grid(row=4, column=1, sticky="w", pady=5)
+        self.gap_spin.grid(row=row, column=1, sticky="w", pady=5)
+        row += 1
+
+        ttk.Checkbutton(
+            tab_tts,
+            text="文ごとに音声を分けて別タグを付ける(結合しない)",
+            variable=self.per_sentence_var,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 4))
+        row += 1
 
         ttk.Label(tab_tts, text="MP3圧縮ビットレート(kbps):").grid(
-            row=5, column=0, sticky="w", padx=8, pady=5
+            row=row, column=0, sticky="w", padx=8, pady=5
         )
         self.bitrate_combo = ttk.Combobox(
             tab_tts,
@@ -1414,19 +1586,14 @@ class AnkiTTSApp(_BaseTk):
             state="readonly",
             width=8,
         )
-        self.bitrate_combo.grid(row=5, column=1, sticky="w", pady=5)
+        self.bitrate_combo.grid(row=row, column=1, sticky="w", pady=5)
+        row += 1
         if not tts_core.LAMEENC_AVAILABLE:
-            ttk.Label(
-                tab_tts,
-                text="(lameenc未インストールのため圧縮できません。WAVのまま出力されます)",
-                wraplength=hint_wrap,
-            ).grid(row=6, column=0, columnspan=3, sticky="w", padx=8)
-
-        ttk.Checkbutton(
-            tab_tts,
-            text="文ごとに音声を分けて別タグを付ける(結合しない)",
-            variable=self.per_sentence_var,
-        ).grid(row=7, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 8))
+            row = self._settings_hint(
+                tab_tts, row,
+                "lameenc未インストールのため圧縮できません。WAVのまま出力されます。",
+                wrap=hint_wrap,
+            )
 
         # --- 音量ゲイン+テスト再生(2026-07-27追加) ---
         # 「TTSの音声が小さい場合がある」への対応。音量はGoogle Cloud TTSの
@@ -1435,9 +1602,11 @@ class AnkiTTSApp(_BaseTk):
         # 増幅するのではなく合成時点のゲインなので、クリッピング(音割れ)の
         # 心配が少ない。この値はテスト再生だけでなく、実際のカード生成にも
         # そのまま使われる(run_generate参照)。
-        ttk.Label(tab_tts, text="音量ゲイン(dB):").grid(row=8, column=0, sticky="w", padx=8, pady=5)
+        ttk.Label(tab_tts, text="音量ゲイン(dB):").grid(
+            row=row, column=0, sticky="w", padx=8, pady=5
+        )
         gain_row = ttk.Frame(tab_tts)
-        gain_row.grid(row=8, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=5)
+        gain_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=5)
         gain_row.grid_columnconfigure(0, weight=1)
         self.volume_gain_scale = ttk.Scale(
             gain_row, from_=-20.0, to=16.0, orient="horizontal", variable=self.volume_gain_db_var
@@ -1452,34 +1621,33 @@ class AnkiTTSApp(_BaseTk):
             gain_row, text="自動調整", width=8, command=self.on_auto_gain_clicked
         )
         self.auto_gain_btn.grid(row=0, column=2, padx=(6, 0))
+        row += 1
+        row = self._settings_hint(
+            tab_tts, row,
+            "「自動調整」で、0dB(音割れ)を超えない範囲でできるだけ音量が"
+            "大きくなるようゲインを自動計算します(Google Cloud APIキーが必要)。",
+            wrap=hint_wrap,
+        )
 
-        ttk.Label(
-            tab_tts,
-            text=(
-                "「自動調整」で、0dB(音割れ)を超えない範囲でできるだけ音量が"
-                "大きくなるようゲインを自動計算します(Google Cloud APIキーが必要)。"
-            ),
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=9, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
-
-        ttk.Label(
-            tab_tts,
-            text=(
-                "「テスト再生」で、上記の音声・言語コード・文と文の間隔・音量ゲインの"
-                "設定を反映した短いサンプル文(2文)を確認できます。"
-            ),
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 4))
+        row = self._settings_section(tab_tts, row, "テスト再生")
+        row = self._settings_hint(
+            tab_tts, row,
+            "上の音声・言語コード・文と文の間隔・音量ゲインの設定を反映した"
+            "短いサンプル文(2文)を確認できます。",
+            wrap=hint_wrap,
+        )
 
         self.test_waveform_canvas = tk.Canvas(
             tab_tts, width=380, height=50, highlightthickness=1, highlightbackground="#888888"
         )
-        self.test_waveform_canvas.grid(row=11, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
+        self.test_waveform_canvas.grid(
+            row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4)
+        )
+        row += 1
 
         test_play_row = ttk.Frame(tab_tts)
-        test_play_row.grid(row=12, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 10))
+        test_play_row.grid(row=row, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 10))
+        row += 1
         self.test_play_btn = ttk.Button(
             test_play_row, text="▶ テスト再生", command=self.on_test_play_clicked
         )
@@ -1494,67 +1662,78 @@ class AnkiTTSApp(_BaseTk):
         tab_gemini = ttk.Frame(notebook)
         notebook.add(tab_gemini, text="Gemini API")
         tab_gemini.grid_columnconfigure(1, weight=1)
-        ttk.Label(
-            tab_gemini,
-            text="DailyConversationタブでの習熟用候補の自動生成、および「AIに質問」タブで使用します。",
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(10, 6))
-        ttk.Label(tab_gemini, text="APIキー:").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 2))
-        ttk.Entry(tab_gemini, textvariable=self.gemini_api_key_var, show="*").grid(
-            row=1, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=(0, 2)
+        row = self._settings_section(tab_gemini, 0, "Gemini API")
+        row = self._settings_hint(
+            tab_gemini, row,
+            "DailyConversationタブでの習熟用候補の自動生成、および「AIに質問」タブで使用します。",
+            wrap=hint_wrap,
+            pady=(0, 6),
         )
-        ttk.Label(tab_gemini, text="モデル名:").grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(tab_gemini, text="APIキー:").grid(row=row, column=0, sticky="w", padx=8, pady=5)
+        ttk.Entry(tab_gemini, textvariable=self.gemini_api_key_var, show="*").grid(
+            row=row, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=5
+        )
+        row += 1
+        ttk.Label(tab_gemini, text="モデル名:").grid(
+            row=row, column=0, sticky="w", padx=8, pady=(5, 10)
+        )
         self.gemini_model_combo = ttk.Combobox(
             tab_gemini,
             textvariable=self.gemini_model_var,
             values=self.gemini_models_cache or [self.gemini_model_var.get()],
         )
-        self.gemini_model_combo.grid(row=2, column=1, sticky="ew", padx=(0, 4), pady=(0, 8))
+        self.gemini_model_combo.grid(row=row, column=1, sticky="ew", padx=(0, 4), pady=(5, 10))
         ttk.Button(
             tab_gemini, text="モデル一覧を取得", command=lambda: self.on_fetch_gemini_models(silent=False)
-        ).grid(row=2, column=2, sticky="e", padx=(0, 8), pady=(0, 8))
+        ).grid(row=row, column=2, sticky="e", padx=(0, 8), pady=(5, 10))
+        row += 1
 
         # --- スプレッドシートタブ(2026-07-27追加: DailyConversationタブから移動) ---
         tab_sheets = ttk.Frame(notebook)
         notebook.add(tab_sheets, text="スプレッドシート")
         tab_sheets.grid_columnconfigure(1, weight=1)
-        ttk.Label(
-            tab_sheets,
-            text="「添削結果」シートの読み込み元です。DailyConversationタブの"
-            "「まとめてノート一覧に出力」ボタンで使用します。",
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(10, 6))
+        row = self._settings_section(tab_sheets, 0, "「添削結果」シートの読み込み元", columnspan=2)
+        row = self._settings_hint(
+            tab_sheets, row,
+            "DailyConversationタブの「まとめてノート一覧に出力」ボタンで使用します。",
+            columnspan=2, wrap=hint_wrap, pady=(0, 6),
+        )
         ttk.Label(tab_sheets, text="スプレッドシートID:").grid(
-            row=1, column=0, sticky="w", padx=8, pady=5
+            row=row, column=0, sticky="w", padx=8, pady=5
         )
         ttk.Entry(tab_sheets, textvariable=self.sheets_spreadsheet_id_var).grid(
-            row=1, column=1, sticky="ew", padx=(0, 8), pady=5
+            row=row, column=1, sticky="ew", padx=(0, 8), pady=5
         )
-        ttk.Label(tab_sheets, text="シート(タブ)名:").grid(row=2, column=0, sticky="w", padx=8, pady=5)
+        row += 1
+        ttk.Label(tab_sheets, text="シート(タブ)名:").grid(
+            row=row, column=0, sticky="w", padx=8, pady=(5, 10)
+        )
         ttk.Entry(tab_sheets, textvariable=self.sheets_sheet_name_var, width=18).grid(
-            row=2, column=1, sticky="w", padx=(0, 8), pady=5
+            row=row, column=1, sticky="w", padx=(0, 8), pady=(5, 10)
         )
+        row += 1
 
         # --- 出力先タブ(2026-07-27追加: ③出力・オプションから移動) ---
         tab_output = ttk.Frame(notebook)
         notebook.add(tab_output, text="出力先")
         tab_output.grid_columnconfigure(1, weight=1)
-        ttk.Label(
-            tab_output,
-            text="TTS音声追加後に書き出すapkgの出力先です。apkgを選択・生成すると"
+        row = self._settings_section(tab_output, 0, "apkgの出力先")
+        row = self._settings_hint(
+            tab_output, row,
+            "TTS音声追加後に書き出すapkgの保存先です。apkgを選択・生成すると"
             "既定のファイル名が自動入力されます(必要なら変更してください)。",
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(10, 6))
-        ttk.Label(tab_output, text="出力先:").grid(row=1, column=0, sticky="w", padx=8, pady=5)
+            wrap=hint_wrap, pady=(0, 6),
+        )
+        ttk.Label(tab_output, text="出力先:").grid(
+            row=row, column=0, sticky="w", padx=8, pady=(5, 10)
+        )
         ttk.Entry(tab_output, textvariable=self.output_path).grid(
-            row=1, column=1, sticky="ew", pady=5
+            row=row, column=1, sticky="ew", pady=(5, 10)
         )
         ttk.Button(tab_output, text="参照...", width=7, command=self.on_browse_output).grid(
-            row=1, column=2, padx=(4, 8), pady=5
+            row=row, column=2, padx=(4, 8), pady=(5, 10)
         )
+        row += 1
 
         # --- 新規カードの位置タブ(2026-08-20新設) ---
         # AnkiのカードにはNew(新規)キューでの並び順を決める「位置」(cards.due)が
@@ -1568,16 +1747,13 @@ class AnkiTTSApp(_BaseTk):
         tab_due = ttk.Frame(notebook)
         notebook.add(tab_due, text="新規カードの位置")
         tab_due.grid_columnconfigure(1, weight=1)
-        ttk.Label(
-            tab_due,
-            text="出力するカードに書き込む「位置」(Ankiの新規カードの並び順)の"
-            "開始番号です。出力するたびにノート件数分だけ自動で進みます。\n"
-            "Anki側で既に使われている番号と重複すると、その番号のカード同士が"
-            "交互に出題されてしまいます。デッキごとの現在の最大値は"
-            "fix_anki_new_order.py --show で確認できます。",
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(10, 6))
+        row = self._settings_section(tab_due, 0, "次に出力するカードの開始番号", columnspan=2)
+        row = self._settings_hint(
+            tab_due, row,
+            "Ankiの新規カードの並び順(位置)として書き込む番号です。"
+            "出力するたびにノート件数分だけ自動で進みます。",
+            columnspan=2, wrap=hint_wrap, pady=(0, 6),
+        )
 
         # 表示用のデッキ名。実体はそれぞれ card_defs.json /
         # grammar_multi_builder.DECK_NAME / build_grammar_dailyconv_v1_final.DECK_NAME
@@ -1588,30 +1764,38 @@ class AnkiTTSApp(_BaseTk):
             "daily": "DailyConversation (02.単語・MindTips::DailyConversation):",
         }
         self.due_counter_vars = {}
-        for i, key in enumerate(due_counter.COUNTER_KEYS):
+        for key in due_counter.COUNTER_KEYS:
             ttk.Label(tab_due, text=due_labels.get(key, key)).grid(
-                row=1 + i, column=0, sticky="w", padx=8, pady=5
+                row=row, column=0, sticky="w", padx=8, pady=5
             )
             var = tk.StringVar()
             self.due_counter_vars[key] = var
             ttk.Entry(tab_due, textvariable=var, width=12).grid(
-                row=1 + i, column=1, sticky="w", padx=(0, 8), pady=5
+                row=row, column=1, sticky="w", padx=(0, 8), pady=5
             )
-        ttk.Label(
-            tab_due,
-            text="※ 習熟用は Num フィールドの続き番号をそのまま位置に使うため、"
-            "ここには出てきません(習熟用タブ側で管理されています)。",
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=1 + len(due_counter.COUNTER_KEYS), column=0, columnspan=2,
-               sticky="w", padx=8, pady=(6, 2))
+            row += 1
         ttk.Button(
             tab_due,
             text="保存",
             command=self.on_due_counter_save_clicked,
             style="Accent.TButton" if SV_TTK_AVAILABLE else "TButton",
-        ).grid(row=2 + len(due_counter.COUNTER_KEYS), column=0, columnspan=2,
-               sticky="ew", padx=8, pady=(4, 10))
+        ).grid(row=row, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 4))
+        row += 1
+
+        row = self._settings_section(tab_due, row, "番号が重複したときは", columnspan=2)
+        row = self._settings_hint(
+            tab_due, row,
+            "Anki側で既に使われている番号と重複すると、その番号のカード同士が"
+            "交互に出題されてしまいます。デッキごとの現在の最大値は"
+            "fix_anki_new_order.py --show で確認できます。",
+            columnspan=2, wrap=hint_wrap,
+        )
+        row = self._settings_hint(
+            tab_due, row,
+            "習熟用は Num フィールドの続き番号をそのまま位置に使うため、"
+            "ここには出てきません(習熟用タブ側で管理されています)。",
+            columnspan=2, wrap=hint_wrap, pady=(0, 10),
+        )
         self.refresh_due_counter_fields()
 
         # --- カード定義タブ(2026-07-27新設) ---
@@ -1654,9 +1838,10 @@ class AnkiTTSApp(_BaseTk):
         tab_carddefs.grid_columnconfigure(1, weight=1)
         cpad = {"padx": 8, "pady": 4}
 
-        ttk.Label(tab_carddefs, text="定義一覧:").grid(row=0, column=0, sticky="w", **cpad)
+        crow = self._settings_section(tab_carddefs, 0, "編集する定義を選ぶ", columnspan=2)
         carddef_list_frame = ttk.Frame(tab_carddefs)
-        carddef_list_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 4))
+        carddef_list_frame.grid(row=crow, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 4))
+        crow += 1
         self.carddef_listbox = tk.Listbox(carddef_list_frame, height=4, exportselection=False)
         carddef_list_vsb = ttk.Scrollbar(
             carddef_list_frame, orient="vertical", command=self.carddef_listbox.yview
@@ -1667,7 +1852,8 @@ class AnkiTTSApp(_BaseTk):
         self.carddef_listbox.bind("<<ListboxSelect>>", self.on_carddef_selected)
 
         carddef_btns = ttk.Frame(tab_carddefs)
-        carddef_btns.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        carddef_btns.grid(row=crow, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        crow += 1
         ttk.Button(carddef_btns, text="新規作成", command=self.on_carddef_new_clicked).pack(
             side="left"
         )
@@ -1678,13 +1864,11 @@ class AnkiTTSApp(_BaseTk):
             carddef_btns, text="apkgから読み込む...", command=self.on_carddef_import_apkg_clicked
         ).pack(side="left")
 
-        ttk.Separator(tab_carddefs, orient="horizontal").grid(
-            row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=4
-        )
-
-        ttk.Label(tab_carddefs, text="キー(内部識別子):").grid(row=4, column=0, sticky="w", **cpad)
+        crow = self._settings_section(tab_carddefs, crow, "基本情報", columnspan=2)
+        ttk.Label(tab_carddefs, text="キー(内部識別子):").grid(row=crow, column=0, sticky="w", **cpad)
         carddef_key_cell = ttk.Frame(tab_carddefs)
-        carddef_key_cell.grid(row=4, column=1, sticky="ew", **cpad)
+        carddef_key_cell.grid(row=crow, column=1, sticky="ew", **cpad)
+        crow += 1
         carddef_key_cell.grid_columnconfigure(0, weight=1)
         self.carddef_key_var = tk.StringVar()
         ttk.Entry(carddef_key_cell, textvariable=self.carddef_key_var, state="readonly").grid(
@@ -1703,44 +1887,53 @@ class AnkiTTSApp(_BaseTk):
             carddef_key_cell, text="", foreground="#c94a3f", wraplength=hint_wrap - 40
         )
         self.carddef_readonly_warning.grid(row=2, column=0, sticky="w", pady=(2, 0))
-        ttk.Label(tab_carddefs, text="表示名:").grid(row=5, column=0, sticky="w", **cpad)
+        ttk.Label(tab_carddefs, text="表示名:").grid(row=crow, column=0, sticky="w", **cpad)
         self.carddef_label_var = tk.StringVar()
         ttk.Entry(tab_carddefs, textvariable=self.carddef_label_var).grid(
-            row=5, column=1, sticky="ew", **cpad
+            row=crow, column=1, sticky="ew", **cpad
         )
-        ttk.Label(tab_carddefs, text="ノートタイプ名:").grid(row=6, column=0, sticky="w", **cpad)
+        crow += 1
+        ttk.Label(tab_carddefs, text="ノートタイプ名:").grid(row=crow, column=0, sticky="w", **cpad)
         self.carddef_notetype_var = tk.StringVar()
         ttk.Entry(tab_carddefs, textvariable=self.carddef_notetype_var).grid(
-            row=6, column=1, sticky="ew", **cpad
+            row=crow, column=1, sticky="ew", **cpad
         )
-        ttk.Label(tab_carddefs, text="デッキ名:").grid(row=7, column=0, sticky="w", **cpad)
+        crow += 1
+        ttk.Label(tab_carddefs, text="デッキ名:").grid(row=crow, column=0, sticky="w", **cpad)
         self.carddef_deckname_var = tk.StringVar()
         ttk.Entry(tab_carddefs, textvariable=self.carddef_deckname_var).grid(
-            row=7, column=1, sticky="ew", **cpad
+            row=crow, column=1, sticky="ew", **cpad
         )
+        crow += 1
         ttk.Label(tab_carddefs, text="重複防止キー(内部項目名):").grid(
-            row=8, column=0, sticky="w", **cpad
+            row=crow, column=0, sticky="w", **cpad
         )
         self.carddef_dedupkey_var = tk.StringVar()
         ttk.Entry(tab_carddefs, textvariable=self.carddef_dedupkey_var, width=16).grid(
-            row=8, column=1, sticky="w", **cpad
+            row=crow, column=1, sticky="w", **cpad
         )
+        crow += 1
 
-        ttk.Label(
-            tab_carddefs,
-            text=(
-                "フィールド一覧(1行1フィールド、「Ankiフィールド名 = 内部項目名」の"
-                "形式。内部項目名はAIが生成するデータのキー名と一致させること):"
-            ),
-            wraplength=hint_wrap,
-            justify="left",
-        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 2))
+        crow = self._settings_section(tab_carddefs, crow, "フィールド", columnspan=2)
+        crow = self._settings_hint(
+            tab_carddefs, crow,
+            "1行1フィールド、「Ankiフィールド名 = 内部項目名」の形式。"
+            "内部項目名はAIが生成するデータのキー名と一致させること。",
+            columnspan=2, wrap=hint_wrap, pady=(0, 2),
+        )
         self.carddef_fields_text = tk.Text(tab_carddefs, height=6, wrap="none")
-        self.carddef_fields_text.grid(row=10, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
+        self.carddef_fields_text.grid(
+            row=crow, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6)
+        )
+        crow += 1
 
-        ttk.Label(tab_carddefs, text="テンプレート:").grid(row=11, column=0, sticky="w", padx=8, pady=(2, 2))
+        crow = self._settings_section(tab_carddefs, crow, "カードテンプレート", columnspan=2)
+        ttk.Label(tab_carddefs, text="編集対象:").grid(
+            row=crow, column=0, sticky="w", padx=8, pady=(2, 2)
+        )
         template_sel_row = ttk.Frame(tab_carddefs)
-        template_sel_row.grid(row=11, column=1, sticky="ew", padx=8, pady=(2, 2))
+        template_sel_row.grid(row=crow, column=1, sticky="ew", padx=8, pady=(2, 2))
+        crow += 1
         self.carddef_template_combo = ttk.Combobox(template_sel_row, state="readonly", width=20)
         self.carddef_template_combo.pack(side="left")
         self.carddef_template_combo.bind("<<ComboboxSelected>>", self.on_carddef_template_selected)
@@ -1751,27 +1944,41 @@ class AnkiTTSApp(_BaseTk):
             template_sel_row, text="削除", width=5, command=self.on_carddef_template_remove_clicked
         ).pack(side="left", padx=(2, 0))
 
-        ttk.Label(tab_carddefs, text="テンプレート名:").grid(row=12, column=0, sticky="w", padx=8, pady=2)
+        ttk.Label(tab_carddefs, text="テンプレート名:").grid(
+            row=crow, column=0, sticky="w", padx=8, pady=2
+        )
         self.carddef_template_name_var = tk.StringVar()
         ttk.Entry(tab_carddefs, textvariable=self.carddef_template_name_var).grid(
-            row=12, column=1, sticky="ew", padx=8, pady=2
+            row=crow, column=1, sticky="ew", padx=8, pady=2
         )
+        crow += 1
 
-        ttk.Label(tab_carddefs, text="表面(Front)テンプレート:").grid(
-            row=13, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 2)
+        ttk.Label(tab_carddefs, text="表面(Front):").grid(
+            row=crow, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 2)
         )
+        crow += 1
         self.carddef_qfmt_text = tk.Text(tab_carddefs, height=5, wrap="none")
-        self.carddef_qfmt_text.grid(row=14, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
-
-        ttk.Label(tab_carddefs, text="裏面(Back)テンプレート:").grid(
-            row=15, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 2)
+        self.carddef_qfmt_text.grid(
+            row=crow, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6)
         )
-        self.carddef_afmt_text = tk.Text(tab_carddefs, height=5, wrap="none")
-        self.carddef_afmt_text.grid(row=16, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
+        crow += 1
 
-        ttk.Label(tab_carddefs, text="CSS:").grid(row=17, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 2))
+        ttk.Label(tab_carddefs, text="裏面(Back):").grid(
+            row=crow, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 2)
+        )
+        crow += 1
+        self.carddef_afmt_text = tk.Text(tab_carddefs, height=5, wrap="none")
+        self.carddef_afmt_text.grid(
+            row=crow, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6)
+        )
+        crow += 1
+
+        crow = self._settings_section(tab_carddefs, crow, "CSS", columnspan=2)
         self.carddef_css_text = tk.Text(tab_carddefs, height=6, wrap="none")
-        self.carddef_css_text.grid(row=18, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
+        self.carddef_css_text.grid(
+            row=crow, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6)
+        )
+        crow += 1
 
         self.carddef_save_btn = ttk.Button(
             tab_carddefs,
@@ -1779,7 +1986,10 @@ class AnkiTTSApp(_BaseTk):
             command=self.on_carddef_save_clicked,
             style="Accent.TButton" if SV_TTK_AVAILABLE else "TButton",
         )
-        self.carddef_save_btn.grid(row=19, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 10))
+        self.carddef_save_btn.grid(
+            row=crow, column=0, columnspan=2, sticky="ew", padx=8, pady=(10, 10)
+        )
+        crow += 1
 
         self._carddef_templates = []
         self._carddef_current_template_idx = None
@@ -2930,6 +3140,11 @@ class AnkiTTSApp(_BaseTk):
                 frame.pack_forget()
         for k, btn in self._source_tab_buttons.items():
             btn.configure(style="Accent.TButton" if (k == key and SV_TTK_AVAILABLE) else "TButton")
+        if key == "bulk":
+            # 他のタブでストックを増減した後に開かれることが多いので、
+            # 表示のたびに数え直す(2026-08-20追加)。
+            self.refresh_bulk_view()
+        self._update_bulk_tts_hint()
         # タブごとに「最後に出力したノート一覧」を復元する(2026-07-28追加)。
         # __init__からの初回呼び出し(previous_key == keyになる)では②の
         # ウィジェットがまだ存在しないため呼ばない。
@@ -3256,9 +3471,9 @@ class AnkiTTSApp(_BaseTk):
     def _render_shuujuku_fields_to_pane(self, parsed: dict):
         """Pattern/Meaning/Examples/Explanation/Sourceの構造化データを右の
         プレビューペインに書き込む。ストック中のitem dict、
-        tts_core.parse_shuujuku_content_html()の戻り値、どちらの形式でも可
-        (キー名を揃えてある)。呼び出し側でconfigure(state="normal")/削除・
-        configure(state="disabled")を行うこと。"""
+        tts_core.parse_shuujuku_content_html()の戻り値(旧v1ノートの解析結果)、
+        どちらの形式でも可(キー名を揃えてある)。呼び出し側で
+        configure(state="normal")/削除・configure(state="disabled")を行うこと。"""
         pv = self.preview_text
 
         def field(name, text):
@@ -3532,6 +3747,197 @@ class AnkiTTSApp(_BaseTk):
             self.log(f"単語デッキの生成に失敗しました: {e}")
             messagebox.showerror("エラー", f"単語デッキの生成に失敗しました:\n{e}")
 
+    # --- 一括出力タブ(2026-08-20追加) --------------------------------------
+    # 各タブの「まとめてノート一覧に出力」を1回で済ませるためのタブ。
+    # 集める対象は「まだ出力していない候補」から「重複としてハイライトされて
+    # いるもの」を除いたもの。**重複クラスタは片方だけ残すのではなく、
+    # 丸ごと対象外にする**(どちらを残すべきかはこのソフトには判断できず、
+    # 勝手に選ぶと意図しない方が出力されるため。各タブの一覧で琥珀色に
+    # ハイライトされているものと完全に同じ集合なので、片桐がそのタブで
+    # 削除して整理してから一括出力すればよい)。件数は下の要約に出す。
+    #
+    # DailyConversationだけは候補の実体がローカルのストックではなく
+    # スプレッドシートなので、読み込みに失敗した場合はそこだけ飛ばして
+    # 残りを出力する(全部が道連れにならないように)。
+
+    @staticmethod
+    def _pending_excluding_duplicates(stock_module) -> tuple:
+        """(出力対象のitemリスト, 重複として除外した件数) を返す。"""
+        pending = stock_module.get_pending()
+        dup_indices = stock_module.find_duplicate_pending_indices()
+        items = [item for i, item in enumerate(pending) if i not in dup_indices]
+        return items, len(pending) - len(items)
+
+    def refresh_bulk_view(self):
+        """「一括出力」タブの要約を作り直す。スプレッドシートは読みに行かない
+        (ネットワークアクセスは「まとめて出力」を押したときだけにする)。"""
+        if not hasattr(self, "bulk_summary_label"):
+            return
+        lines = []
+        total = 0
+        skipped = 0
+        for label, module in (
+            ("習熟用(音読)", shuujuku_stock),
+            ("AIに質問", grammar_multi_stock),
+            ("単語", word_stock),
+        ):
+            items, dup = self._pending_excluding_duplicates(module)
+            total += len(items)
+            skipped += dup
+            suffix = f" (重複 {dup} 件は対象外)" if dup else ""
+            lines.append(f"・{label}: {len(items)} 件{suffix}")
+        if self.bulk_include_daily_var.get():
+            lines.append("・DailyConversation: 出力時にシートを読み込みます")
+        else:
+            lines.append("・DailyConversation: 含めません")
+        head = f"出力対象(ストック分): 合計 {total} 件"
+        if skipped:
+            head += f" / 重複として除外: {skipped} 件"
+        self.bulk_summary_label.configure(text=head + "\n" + "\n".join(lines))
+
+    def _collect_daily_deck_for_bulk(self):
+        """DailyConversationの未出力行からデッキを作る。
+        戻り値: (deck, row_map)。設定が足りない・読めない場合は (None, None)。"""
+        spreadsheet_id = self.sheets_spreadsheet_id_var.get().strip()
+        sheet_name = self.sheets_sheet_name_var.get().strip()
+        credentials_path = os.environ.get("SHEETS_WRITER_CREDENTIALS", "")
+        if not spreadsheet_id or not sheet_name or not credentials_path:
+            self.log(
+                "(DailyConversationは飛ばしました: スプレッドシートID・シート名・"
+                "認証情報(SHEETS_WRITER_CREDENTIALS)のいずれかが未設定です)"
+            )
+            return None, None
+        if not DAILY_BUILDER_AVAILABLE:
+            self.log("(DailyConversationは飛ばしました: デッキ生成モジュールが読み込めません)")
+            return None, None
+        try:
+            rows = sheets_reader.fetch_pending_rows(spreadsheet_id, sheet_name, credentials_path)
+            rows = daily_pending_exclusions.filter_out_excluded(rows)
+            if not rows:
+                self.log("(DailyConversationの未出力行はありませんでした)")
+                return None, None
+            start_num = due_counter.get_next_due("daily")
+            deck, row_map = deck_builder.build_deck_and_row_map(rows, start_num=start_num)
+            excluded = len(rows) - len(row_map)
+            if excluded:
+                self.log(
+                    f"(DailyConversation: カテゴリ「誤りなし」・ID重複などの理由で "
+                    f"{excluded} 件はデッキから除外されました)"
+                )
+            if not row_map:
+                return None, None
+            self.log(f"DailyConversation: {len(row_map)} ノート(位置は {start_num} から)")
+            return deck, row_map
+        except Exception as e:  # noqa: BLE001
+            # ここで失敗しても他のタブぶんは出力したいので、握って先へ進む。
+            self.log(f"(DailyConversationは飛ばしました: シートの読み込みに失敗しました: {e})")
+            return None, None
+
+    def on_export_all_pending_clicked(self):
+        if not card_def_builder.GENANKI_AVAILABLE:
+            messagebox.showerror("エラー", "genanki がインストールされていません。")
+            return
+
+        word_items, _ = self._pending_excluding_duplicates(word_stock)
+        grammar_items, _ = self._pending_excluding_duplicates(grammar_multi_stock)
+        shuujuku_items, _ = self._pending_excluding_duplicates(shuujuku_stock)
+        include_daily = self.bulk_include_daily_var.get()
+        if not (word_items or grammar_items or shuujuku_items or include_daily):
+            messagebox.showinfo("該当なし", "出力できる未出力の候補がありません。")
+            return
+
+        counts = []
+        if shuujuku_items:
+            counts.append(f"習熟用 {len(shuujuku_items)} 件")
+        if grammar_items:
+            counts.append(f"AIに質問 {len(grammar_items)} 件")
+        if word_items:
+            counts.append(f"単語 {len(word_items)} 件")
+        if include_daily:
+            counts.append("DailyConversation(シートから読み込み)")
+        if not messagebox.askyesno(
+            "確認", "以下をまとめて1つのapkgに出力します。よろしいですか？\n\n" + "\n".join(counts)
+        ):
+            return
+
+        self.bulk_export_btn.configure(state="disabled", text="出力中...")
+
+        def worker():
+            try:
+                decks = []
+                # 習熟用のNum(ソートフィールド)、単語/AIに質問のcards.dueは
+                # いずれも「出力するたびに続き番号」なので、各タブから単独で
+                # 出力したときとまったく同じ採番方法を使う。
+                if shuujuku_items:
+                    if not SHUUJUKU_AVAILABLE:
+                        raise RuntimeError("build_shuujuku_v1.py が読み込めません。")
+                    start_num = shuujuku_stock.get_next_num()
+                    decks.append(build_shuujuku_v1.build_deck(shuujuku_items, start_num=start_num))
+                    self.log(f"習熟用: {len(shuujuku_items)} ノート(Numは {start_num} から)")
+                if grammar_items:
+                    if not GRAMMAR_MULTI_AVAILABLE:
+                        raise RuntimeError("grammar_multi_builder.py が読み込めません。")
+                    start_num = due_counter.get_next_due("grammar_multi")
+                    decks.append(grammar_multi_builder.build_deck(grammar_items, start_num=start_num))
+                    self.log(f"AIに質問: {len(grammar_items)} ノート(位置は {start_num} から)")
+                if word_items:
+                    card_def = card_defs.get_def("word")
+                    if not card_def:
+                        raise RuntimeError("「単語」のカード定義が見つかりません。")
+                    start_num = due_counter.get_next_due("word")
+                    decks.append(
+                        card_def_builder.build_deck_from_def(
+                            card_def, word_items, start_num=start_num
+                        )
+                    )
+                    self.log(f"単語: {len(word_items)} ノート(位置は {start_num} から)")
+
+                daily_deck, row_map = (None, None)
+                if include_daily:
+                    daily_deck, row_map = self._collect_daily_deck_for_bulk()
+                    if daily_deck is not None:
+                        decks.append(daily_deck)
+
+                if not decks:
+                    messagebox.showinfo("該当なし", "出力できる未出力の候補がありませんでした。")
+                    return
+
+                temp_path = tab_notes_state.pending_deck_path("bulk")
+                card_def_builder.write_decks_to_apkg(decks, temp_path)
+                self.log(f"一括デッキを生成しました: {temp_path} (デッキ {len(decks)} 個)")
+
+                # _set_apkg_pathは「出力済みマーク待ち」をいったん全部消すので、
+                # この順番でセットし直すこと(各タブの出力ハンドラと同じ作法)。
+                self._set_apkg_path(temp_path)
+                self._pending_shuujuku_stock_items = (
+                    (temp_path, shuujuku_items) if shuujuku_items else None
+                )
+                self._pending_grammar_multi_stock_items = (
+                    (temp_path, grammar_items) if grammar_items else None
+                )
+                self._pending_word_stock_items = (temp_path, word_items) if word_items else None
+                self._current_row_map = row_map or None
+                self._pending_daily_due_advance = (
+                    (temp_path, len(row_map)) if row_map else None
+                )
+                self.sheets_update_var.set(bool(row_map))
+                self._snapshot_tab_output_state("bulk")
+                self.refresh_bulk_view()
+                self.log(
+                    "生成したデッキを①以降に読み込みました。②③を確認して生成を実行してください。"
+                    "④の生成では、このapkgに入っている全ノートタイプが順番に処理されます"
+                    "(TTS対象フィールドはノートタイプごとに自動で選ばれます)。"
+                )
+            except Exception as e:  # noqa: BLE001
+                self.log(f"一括出力に失敗しました: {e}")
+                messagebox.showerror("エラー", f"一括出力に失敗しました:\n{e}")
+            finally:
+                self.bulk_export_btn.configure(
+                    state="normal", text="未出力をまとめてノート一覧に出力"
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
     @staticmethod
     def _parse_word_pairs(text: str) -> list:
         """「単語 | 文脈」形式の複数行テキストを(word, context)のタプルの
@@ -3769,28 +4175,85 @@ class AnkiTTSApp(_BaseTk):
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("読み込みエラー", str(e))
 
+    @staticmethod
+    def _default_tts_fields(fields: list) -> list:
+        """ノートタイプのフィールド一覧から、TTS対象の既定値を決める。
+
+        「1文=1フィールド」型のノートタイプ(習熟用v2・ATSU表現120選)は、
+        英文フィールド(I1Ex1EN…)を全部まとめて既定のTTS対象にする。
+        和訳(〜JP)やプレースホルダー混じりのパターン行を含めないため
+        (2026-08-20。それ以前の習熟用v1はContentフィールドを解析する専用
+        ロジックで同じことをしていた)。
+
+        そうでないノートタイプは「Answer」(正解文)と「Example」(類似表現/例文)
+        を既定にする(Grammar DailyConversationノートタイプでの主な使い方に
+        合わせたデフォルト。2026-07-27、Exampleも既定のTTS対象に追加)。
+        どれも無ければ先頭フィールド。
+
+        ②のフィールド選択UIは1ノートタイプぶんしか持てないので、
+        「一括出力」タブのように複数ノートタイプを1度に処理する場合は、
+        run_generate/ドライランがノートタイプごとにこの既定値を使う。"""
+        en_sentence_fields = [f for f in fields if EN_SENTENCE_FIELD_RE.match(f)]
+        if en_sentence_fields:
+            return en_sentence_fields
+        default_fields = [f for f in ("Answer", "Example") if f in fields]
+        if not default_fields and fields:
+            default_fields = [fields[0]]
+        return default_fields
+
+    def _tts_target_notetypes(self, col, tab_key: str) -> list:
+        """④で処理するノートタイプ名のリストを返す。
+
+        「一括出力」タブのapkgには複数のノートタイプが入っているため、
+        ノートを持つノートタイプすべてを対象にする。それ以外のタブでは
+        今までどおり②で選択されている1つだけ。"""
+        if tab_key != "bulk":
+            nt_name = self.notetype_var.get()
+            if not nt_name:
+                raise ValueError("ノートタイプが選択されていません(このapkgにノートが無い可能性があります)。")
+            return [nt_name]
+        names = [
+            name
+            for name in sorted(self.notetype_notes.keys())
+            if self.notetype_total_counts.get(name)
+        ]
+        if not names:
+            raise ValueError("このapkgに処理できるノートがありません。")
+        return names
+
+    def _tts_field_indices_for(self, nt_name: str, field_names: list, tab_key: str) -> list:
+        """nt_nameについて、TTS対象フィールドの位置(インデックス)を返す。
+        単独タブでは②の選択、一括出力タブではノートタイプごとの既定値を使う。"""
+        if tab_key == "bulk":
+            selected = self._default_tts_fields(field_names)
+        else:
+            selected = [v.get() for v in self.tts_field_vars]
+        return [field_names.index(f) for f in selected if f in field_names]
+
     def on_notetype_selected(self, event=None):
         nt_name = self.notetype_var.get()
         fields = self.notetype_fields.get(nt_name, [])
         self._current_nt_fields = fields
-        # TTSで読み上げる対象は「Answer」(正解文)と「Example」(類似表現/例文)の
-        # 両方がある場合はその2つを既定にする(Grammar DailyConversationノート
-        # タイプでの主な使い方に合わせたデフォルト。2026-07-27、Exampleも既定の
-        # TTS対象に追加)。習熟用ノート(Num/Contentのみ)では実際には
-        # SHUUJUKU_NOTETYPE_NAME分岐で常にContentが使われ、この選択自体は
-        # 無視されるが、プレビューの[TTS対象]バッジ表示が「Num」を指して
-        # 誤解を招かないよう、Contentも優先候補に加えておく。どれも無ければ
-        # 先頭フィールド。
-        default_fields = [f for f in ("Answer", "Example", "Content") if f in fields]
-        if not default_fields and fields:
-            default_fields = [fields[0]]
+        default_fields = self._default_tts_fields(fields)
+        en_sentence_fields = [f for f in fields if EN_SENTENCE_FIELD_RE.match(f)]
         self.tts_field_vars = [tk.StringVar(value=f) for f in default_fields]
         self._rebuild_tts_field_rows()
-        if nt_name == SHUUJUKU_NOTETYPE_NAME:
+        if en_sentence_fields:
             self.shuujuku_tts_hint_label.grid()
         else:
             self.shuujuku_tts_hint_label.grid_remove()
+        self._update_bulk_tts_hint()
         self.populate_notes_tree(nt_name)
+
+    def _update_bulk_tts_hint(self):
+        """「一括出力」タブを開いているときだけ、②に注意書きを出す。"""
+        label = getattr(self, "bulk_tts_hint_label", None)
+        if label is None:
+            return
+        if self.source_tab_var.get() == "bulk":
+            label.grid()
+        else:
+            label.grid_remove()
 
     def _rebuild_tts_field_rows(self):
         """self.tts_field_vars の内容に合わせて、TTS対象フィールドの行UIを
@@ -3898,17 +4361,6 @@ class AnkiTTSApp(_BaseTk):
         if fields is None:
             pv.insert("end", "apkgを読み込むと、ここに選択中ノートの内容が表示されます。", "empty")
             self._preview_source = None
-        elif nt_name == SHUUJUKU_NOTETYPE_NAME and "Content" in fields:
-            # 習熟用ノートはContentフィールドに全情報(英語例文+日本語の意味・
-            # 解説等)が混在した1つの塊なので、そのまま出すと読みにくい。
-            # ストック選択時と同じPattern/Meaning/Examples/Explanation/Source
-            # の構造化表示に再分解する(_render_shuujuku_fields_to_pane)。
-            content_html = values[fields.index("Content")]
-            parsed = tts_core.parse_shuujuku_content_html(content_html)
-            self._render_shuujuku_fields_to_pane(parsed)
-            self._preview_source = {
-                "kind": "note", "nt_name": nt_name, "fields": fields, "values": values, "nid": nid,
-            }
         else:
             selected_fields = {v.get() for v in self.tts_field_vars}
             for fname, fval in zip(fields, values):
@@ -3961,11 +4413,17 @@ class AnkiTTSApp(_BaseTk):
                     )
                     return
                 item = source["item"]
-                content = "<div class=\"deck-title\">習熟用 &nbsp;No.001</div>" + build_shuujuku_v1.render_item(
-                    1, item
+                # 実際に出力されるときと同じ番号でレンダリングする(Num・
+                # I1Badgeに入る値。まだ出力していないので確定はしないが、
+                # 001固定よりは実物に近い)。
+                values = build_shuujuku_v1.build_fields_dict(
+                    shuujuku_stock.get_next_num(), item
                 )
+                fields_dict = {
+                    name: values[key] for name, key in build_shuujuku_v1.FIELD_ITEM_KEYS
+                }
                 html_doc = tts_core.render_card_preview_html(
-                    {"Content": content},
+                    fields_dict,
                     build_shuujuku_v1.FRONT_TMPL,
                     build_shuujuku_v1.BACK_TMPL,
                     build_shuujuku_v1.BASE_CSS,
@@ -4259,22 +4717,24 @@ class AnkiTTSApp(_BaseTk):
         win.minsize(req_w, req_h)
 
     def _get_source_transform_for(self, nt_name: str):
-        """習熟用(ATSU方式)ノートは、Contentフィールドに英語例文と日本語の
-        意味・和訳・解説が混在しているため、フィールドをそのままTTSに
-        かけると日本語部分まで英語音声で読み上げようとしてしまう。
-        該当notetypeの場合だけ、英語例文部分だけを抽出する変換関数を返す。
+        """TTSに渡す前にフィールドの生テキストへかける変換関数を返す
+        (不要ならNone)。
 
-        これに加えて、③の「日本語を含む文をTTS対象から除外する」
-        チェック(`self.exclude_japanese_var`)がONの場合、
+        ③の「日本語を含む文をTTS対象から除外する」チェック
+        (`self.exclude_japanese_var`)がONの場合、
         `tts_core.strip_japanese_sentences`(HTML構造に依存しない文単位の
-        汎用フィルタ、2026-07-27追加)を後段に合成する。習熟用専用の抽出と
-        違い、単語タブなど任意のノートタイプ・フィールドに使える。"""
-        base = tts_core.extract_shuujuku_tts_text if nt_name == SHUUJUKU_NOTETYPE_NAME else None
+        汎用フィルタ、2026-07-27追加)を返す。任意のノートタイプ・
+        フィールドに使える。
+
+        2026-08-20まではここで習熟用(ATSU方式v1)専用の抽出関数を返していた。
+        v1のContentフィールドは英語例文と日本語の意味・和訳・解説が1つの
+        フィールドに混在していたためだが、v2で1文=1フィールドに分けた
+        (英文フィールドだけをTTS対象に選べばよくなった)ので不要になった。
+        引数のnt_nameは、将来またノートタイプ固有の変換が必要になったときの
+        ために残してある。"""
         if not self.exclude_japanese_var.get():
-            return base
-        if base is None:
-            return tts_core.strip_japanese_sentences
-        return lambda text: tts_core.strip_japanese_sentences(base(text))
+            return None
+        return tts_core.strip_japanese_sentences
 
     def on_dry_run_clicked(self):
         if not self.apkg_path.get():
@@ -4287,65 +4747,48 @@ class AnkiTTSApp(_BaseTk):
                     os.environ.get("TEMP", tempfile.gettempdir()), "_anki_tts_gui_dryrun.anki2"
                 )
                 col = tts_core.load_collection(self.apkg_path.get(), work_col_path)
+                tab_key = self.source_tab_var.get()
                 # 解析中にエラーが起きてもコレクションを必ず閉じる
                 # (2026-07-28修正。load_fieldsと同じ理由)。
                 try:
-                    nt_name = self.notetype_var.get()
-                    if not nt_name:
-                        raise ValueError("ノートタイプが選択されていません(このapkgにノートが無い可能性があります)。")
-                    nt = col.models.by_name(nt_name)
-                    field_names = [f["name"] for f in nt["flds"]]
-
-                    if nt_name == SHUUJUKU_NOTETYPE_NAME:
-                        # 習熟用ノートは、TTS対象フィールドの選択に関わらず常に
-                        # Contentフィールドの英語例文を1文ずつ処理する専用ロジックを
-                        # 使う(②のフィールド選択UIはこのノートタイプでは無視される)。
-                        content_idx = field_names.index("Content")
-                        to_process, skip_audio, skip_empty, total_chars = (
-                            tts_core.analyze_shuujuku_sentence_targets(
-                                col, nt_name, content_idx, self.force_regen_var.get()
-                            )
-                        )
-                    else:
-                        field_indices = [
-                            field_names.index(v.get())
-                            for v in self.tts_field_vars
-                            if v.get() in field_names
-                        ]
+                    # 一括出力タブのapkgは複数ノートタイプを含むので、
+                    # ノートタイプごとに数えて合算する(2026-08-20)。
+                    lines = []
+                    to_process_count = skip_audio = skip_empty = total_chars = 0
+                    for nt_name in self._tts_target_notetypes(col, tab_key):
+                        nt = col.models.by_name(nt_name)
+                        field_names = [f["name"] for f in nt["flds"]]
+                        field_indices = self._tts_field_indices_for(nt_name, field_names, tab_key)
                         if not field_indices:
-                            raise ValueError("TTS対象フィールドが選択されていません。")
-
-                        to_process, skip_audio, skip_empty, total_chars = tts_core.analyze_targets(
+                            raise ValueError(
+                                f"「{nt_name}」のTTS対象フィールドが選択されていません。"
+                            )
+                        tp, sa, se, chars = tts_core.analyze_targets(
                             col, nt_name, field_indices, self.force_regen_var.get(),
                             source_transform=self._get_source_transform_for(nt_name),
+                        )
+                        to_process_count += len(tp)
+                        skip_audio += sa
+                        skip_empty += se
+                        total_chars += chars
+                        lines.append(
+                            f"・{nt_name}: 新規 {len(tp)} 件 "
+                            f"(フィールド: {', '.join(field_names[i] for i in field_indices)})"
                         )
                 finally:
                     col.close()
 
-                if nt_name == SHUUJUKU_NOTETYPE_NAME:
-                    msg = (
-                        f"対象ノートタイプ: {nt_name}(例文ごとに個別のMP3を生成します)\n\n"
-                        f"新規生成予定: {len(to_process)} 件(例文単位)\n"
-                        f"スキップ(既に音声あり、ノート単位): {skip_audio} 件\n"
-                        f"スキップ(例文が空): {skip_empty} 件\n\n"
-                        f"生成予定の合計文字数: {total_chars:,} 文字\n\n"
-                        "※ Google Cloud Text-to-Speechの無料枠は音声の種類(Standard/"
-                        "WaveNet/Neural2/Chirp3-HDなど)によって異なります。正確な枠は"
-                        "Google Cloud Consoleの料金ページでご確認ください。"
-                    )
-                else:
-                    msg = (
-                        f"対象ノートタイプ: {nt_name}\n"
-                        f"TTS対象フィールド: {', '.join(v.get() for v in self.tts_field_vars)}\n\n"
-                        f"新規生成予定: {len(to_process)} 件(フィールド単位。1ノートで複数"
-                        "フィールドが対象の場合、その分だけ件数が増えます)\n"
-                        f"スキップ(既に音声あり): {skip_audio} 件\n"
-                        f"スキップ(空欄): {skip_empty} 件\n\n"
-                        f"生成予定の合計文字数: {total_chars:,} 文字\n\n"
-                        "※ Google Cloud Text-to-Speechの無料枠は音声の種類(Standard/"
-                        "WaveNet/Neural2/Chirp3-HDなど)によって異なります。正確な枠は"
-                        "Google Cloud Consoleの料金ページでご確認ください。"
-                    )
+                msg = (
+                    "対象ノートタイプ:\n" + "\n".join(lines) + "\n\n"
+                    f"新規生成予定: {to_process_count} 件(フィールド単位。1ノートで複数"
+                    "フィールドが対象の場合、その分だけ件数が増えます)\n"
+                    f"スキップ(既に音声あり): {skip_audio} 件\n"
+                    f"スキップ(空欄): {skip_empty} 件\n\n"
+                    f"生成予定の合計文字数: {total_chars:,} 文字\n\n"
+                    "※ Google Cloud Text-to-Speechの無料枠は音声の種類(Standard/"
+                    "WaveNet/Neural2/Chirp3-HDなど)によって異なります。正確な枠は"
+                    "Google Cloud Consoleの料金ページでご確認ください。"
+                )
                 self.log("--- ドライラン結果 ---\n" + msg)
                 messagebox.showinfo("ドライラン結果", msg)
             except Exception as e:  # noqa: BLE001
@@ -4479,69 +4922,72 @@ class AnkiTTSApp(_BaseTk):
             )
             col = tts_core.load_collection(generated_apkg_path, work_col_path)
 
-            nt_name = self.notetype_var.get()
-            if not nt_name:
-                raise ValueError("ノートタイプが選択されていません(このapkgにノートが無い可能性があります)。")
-            nt = col.models.by_name(nt_name)
-            field_names = [f["name"] for f in nt["flds"]]
             force_regen = self.force_regen_var.get()
 
-            def on_progress(done, total):
-                self.progress["value"] = done
-                self.update_idletasks()
-
-            is_shuujuku = nt_name == SHUUJUKU_NOTETYPE_NAME
-            if is_shuujuku:
-                # 習熟用ノートは、②のフィールド選択に関わらず常にContentの
-                # 英語例文を1文ずつ個別のMP3として生成し、各例文の直下にタグを
-                # 挿入する専用ロジックを使う(2026-07-27追加、片桐の要望による)。
-                content_idx = field_names.index("Content")
-                to_process, skipped_has_audio, skipped_empty, _total_chars = (
-                    tts_core.analyze_shuujuku_sentence_targets(col, nt_name, content_idx, force_regen)
+            # 習熟用ノートも2026-08-20のv2(1文=1フィールド化)以降は、他の
+            # ノートタイプと同じ「選択したフィールドを読み上げてそのフィールドの
+            # 末尾にタグを追記する」経路で処理する。v1のContentフィールド専用
+            # ロジック(analyze_shuujuku_sentence_targets等)は撤去した。
+            #
+            # 「一括出力」タブのapkgは複数ノートタイプを含むため、ノートタイプ
+            # ごとに (対象ペア, 変換関数) を作ってから順番に生成する
+            # (2026-08-20追加)。単独タブの場合はこのリストが1件になるだけで、
+            # 処理内容は今までと同じ。
+            plans = []
+            skipped_has_audio = skipped_empty = 0
+            nt_names = self._tts_target_notetypes(col, generated_tab_key)
+            for nt_name in nt_names:
+                nt = col.models.by_name(nt_name)
+                field_names = [f["name"] for f in nt["flds"]]
+                field_indices = self._tts_field_indices_for(
+                    nt_name, field_names, generated_tab_key
                 )
-                self.progress["maximum"] = max(len(to_process), 1)
-                self.progress["value"] = 0
-                result = tts_core.generate_shuujuku_sentence_tts_for_collection(
-                    col,
-                    nt_name,
-                    content_idx,
-                    to_process,
-                    api_key=self.api_key_var.get(),
-                    voice=self.voice_var.get(),
-                    lang=self.lang_var.get(),
-                    bitrate=int(self.mp3_bitrate_var.get()),
-                    force_regen=force_regen,
-                    volume_gain_db=self.volume_gain_db_var.get(),
-                    log=self.log,
-                    on_progress=on_progress,
-                    should_cancel=self._cancel_event.is_set,
-                )
-            else:
-                field_indices = [
-                    field_names.index(v.get()) for v in self.tts_field_vars if v.get() in field_names
-                ]
                 if not field_indices:
-                    raise ValueError("TTS対象フィールドが選択されていません。")
-
+                    raise ValueError(f"「{nt_name}」のTTS対象フィールドが選択されていません。")
                 source_transform = self._get_source_transform_for(nt_name)
-                to_process, skipped_has_audio, skipped_empty, _total_chars = tts_core.analyze_targets(
+                to_process, sa, se, _total_chars = tts_core.analyze_targets(
                     col, nt_name, field_indices, force_regen, source_transform=source_transform
                 )
-
-                self.progress["maximum"] = max(len(to_process), 1)
-                self.progress["value"] = 0
-
-                if (
-                    not self.per_sentence_var.get()
-                    and self.sentence_gap_var.get() > 0
-                    and not tts_core.LAMEENC_AVAILABLE
-                ):
+                plans.append((nt_name, to_process, source_transform))
+                skipped_has_audio += sa
+                skipped_empty += se
+                if len(nt_names) > 1:
                     self.log(
-                        "注意: lameencが未インストールのため、結合音声はMP3ではなくWAVのまま出力されます。"
-                        "圧縮したい場合は `pip install lameenc` を実行してください。"
+                        f"  {nt_name}: 対象 {len(to_process)} 件 "
+                        f"(フィールド: {', '.join(field_names[i] for i in field_indices)})"
                     )
 
-                result = tts_core.generate_tts_for_collection(
+            total_targets = sum(len(tp) for _n, tp, _s in plans)
+            self.progress["maximum"] = max(total_targets, 1)
+            self.progress["value"] = 0
+
+            if (
+                not self.per_sentence_var.get()
+                and self.sentence_gap_var.get() > 0
+                and not tts_core.LAMEENC_AVAILABLE
+            ):
+                self.log(
+                    "注意: lameencが未インストールのため、結合音声はMP3ではなくWAVのまま出力されます。"
+                    "圧縮したい場合は `pip install lameenc` を実行してください。"
+                )
+
+            processed_pairs = []
+            processed_total = 0
+            cancelled = False
+            done_base = 0
+            for nt_name, to_process, source_transform in plans:
+                if cancelled:
+                    break
+                if len(nt_names) > 1:
+                    self.log(f"\n--- {nt_name} ---")
+
+                # プログレスバーはapkg全体で1本にする(ノートタイプごとに
+                # 0へ戻らないよう、それまでの件数を足した位置を表示する)。
+                def on_progress(done, total, base=done_base):
+                    self.progress["value"] = base + done
+                    self.update_idletasks()
+
+                nt_result = tts_core.generate_tts_for_collection(
                     col,
                     nt_name,
                     to_process,
@@ -4558,12 +5004,17 @@ class AnkiTTSApp(_BaseTk):
                     on_progress=on_progress,
                     should_cancel=self._cancel_event.is_set,
                 )
+                processed_pairs.extend(to_process[: nt_result.processed])
+                processed_total += nt_result.processed
+                done_base += len(to_process)
+                cancelled = nt_result.cancelled
+
+            result = tts_core.GenerateResult(processed=processed_total, cancelled=cancelled)
 
             matched_sheet_ids = []
             if self.sheets_update_var.get():
-                # to_process は (note_id, field_idx) のペアなので、1ノートが
+                # processed_pairs は (note_id, field_idx) のペアなので、1ノートが
                 # 複数フィールドで処理されていても重複しないようnote_idだけを抽出する。
-                processed_pairs = to_process[: result.processed]
                 processed_note_ids = list(dict.fromkeys(nid for nid, _ in processed_pairs))
                 row_map = None
                 if self._current_row_map:
@@ -4678,6 +5129,9 @@ class AnkiTTSApp(_BaseTk):
                 self._snapshot_tab_output_state(generated_tab_key)
             else:
                 self._clear_tab_output_state(generated_tab_key)
+            # 一括出力タブの要約は各ストックの残り件数から作っているので、
+            # 出力済みマークを付けた後に数え直す(2026-08-20追加)。
+            self.refresh_bulk_view()
 
             status = "キャンセルにより途中まで" if result.cancelled else "完了"
             self.log(

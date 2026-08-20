@@ -71,6 +71,18 @@ def build_deck_from_def(card_def: dict, items: list, start_num: int = 1):
     return deck
 
 
+def write_decks_to_apkg(decks: list, output_path: str) -> None:
+    """複数のgenanki.Deckを1つの.apkgにまとめて書き出す(2026-08-20追加、
+    「一括出力」タブ用)。Anki側では今までどおりデッキごとに取り込まれる
+    (1つのapkgに複数デッキ・複数ノートタイプが入っているだけ)。
+
+    1デッキだけの場合の deck.write_to_file() と互換の出力になる
+    (genanki.Deck.write_to_file自身が Package([self]).write_to_file を呼ぶ)。"""
+    if not GENANKI_AVAILABLE:
+        raise CardDefBuilderError("genanki がインストールされていません。`pip install genanki` を実行してください。")
+    genanki.Package(decks).write_to_file(output_path)
+
+
 def fields_dict_from_item(card_def: dict, item: dict) -> dict:
     """プレビュー表示用に、Ankiフィールド名をキーにしたdictへ変換する
     (tts_core.render_card_preview_htmlにそのまま渡せる形)。"""

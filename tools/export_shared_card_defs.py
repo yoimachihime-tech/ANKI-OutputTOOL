@@ -120,20 +120,19 @@ def build_grammar_multi_def() -> dict:
 
 
 def build_shuujuku_def() -> dict:
-    """「ATSU方式 (PDF再現・音読用)」(習熟用タブ)の共有定義を組み立てる。
+    """「ATSU方式 (音読用・TTS対応)」(習熟用タブ)の共有定義を組み立てる。
 
     grammar_multiと同じく、Python側でも汎用ビルダーを経由しない独立実装
     (build_shuujuku_v1.py + shuujuku_stock.pyの続き番号管理)。
 
     【他のカード種別と根本的に違う点】
-    Contentフィールドは「pattern/meaning/examples/expl/source_labelを
-    render_item()でHTMLに合成した結果」であり、item自体の1フィールドを
-    そのまま流し込むものではない。さらにNum/Contentどちらも、出力時点で
-    払い出される連番(start_num、shuujuku_stock.get_next_num()相当)に
-    依存する。そのためWeb側は「生成時点のitem」をそのまま
-    fieldsFromItem()に渡すのではなく、docs/lib/shuujuku.jsの
-    renderShuujukuItem()で先にNum/Contentへ変換してから渡す必要がある
-    (docs/app.jsのonExportShuujuku参照)。
+    ストックに貯まっているitemは pattern/meaning/examples/expl/source_label
+    という「生の内容」で、Ankiのフィールド(DeckTitle/Num/I1PatternEN/…)とは
+    1対1に対応しない。さらにNum・I1Badge・DeckTitleは出力時点で払い出される
+    連番(start_num、shuujuku_stock.get_next_num()相当)に依存する。
+    そのためWeb側は「生成時点のitem」をそのままfieldsFromItem()に渡すのでは
+    なく、docs/lib/shuujuku.jsのbuildFieldsReadyItems()で先にフィールド確定済み
+    itemへ変換してから渡す必要がある(docs/app.jsのonExportShuujuku参照)。
 
     guidはgrammar_multiと同様の複合キー方式だが、キーの中身が
     (source_kind, source_topic)というsource_key由来の2値である点が異なる
@@ -147,9 +146,12 @@ def build_shuujuku_def() -> dict:
         "model_id": model.model_id,
         "deck_id": build_shuujuku_v1.DECK_ID,
         "deck_name": build_shuujuku_v1.DECK_NAME,
+        # フィールド名とitem_keyの対応は正典(build_shuujuku_v1.FIELD_ITEM_KEYS)
+        # を単一の出所にする。ここに並びを再掲するとv2のように構成を変えた
+        # ときに片方だけ古いまま残るため。
         "fields": [
-            {"anki_name": "Num", "item_key": "num"},
-            {"anki_name": "Content", "item_key": "content"},
+            {"anki_name": name, "item_key": key}
+            for name, key in build_shuujuku_v1.FIELD_ITEM_KEYS
         ],
         "guid_scheme": {
             "type": "compound",

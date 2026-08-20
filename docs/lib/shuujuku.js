@@ -1,20 +1,30 @@
 // shuujuku.js
 // ---------------------------------------------------------------------------
-// 「習熟用(音読)」カードの Content フィールド組み立てと、Num フィールドの
-// 続き番号管理。build_shuujuku_v1.py の render_item() / build_guid() /
-// build_deck() と、shuujuku_stock.get_next_num() / advance_next_num() に
-// 対応する Web 版。
+// 「習熟用(音読)」カードのフィールド組み立てと、Num フィールドの続き番号管理。
+// build_shuujuku_v1.py の build_fields_dict() / build_deck() と、
+// shuujuku_stock.get_next_num() / advance_next_num() に対応する Web 版。
 //
 // 【他のカード種別との違い(重要)】
 // word・grammar_multi は「生成した瞬間の値」がそのままAnkiフィールド値に
-// なるが、習熟用は違う。Content フィールドは pattern/meaning/examples/expl/
-// source_label を HTML に合成した結果で、しかも合成には出力時点で払い出す
-// 連番(Num)が必要になる。そのため、ストックに貯める item は生の
-// pattern/meaning/examples/... のままにしておき、実際に .apkg を書き出す
-// 直前に buildFieldsReadyItem() で Num/Content を確定させる
+// なるが、習熟用は違う。ストックに貯める item は pattern/meaning/examples/
+// expl/source_label という生の内容で、Ankiのフィールド(DeckTitle/Num/
+// I1PatternEN/…)とは1対1に対応しない。しかも DeckTitle/Num/I1Badge は
+// 出力時点で払い出す連番(Num)が無いと決まらない。そのため、実際に .apkg を
+// 書き出す直前に buildFieldsReadyItems() でフィールドを確定させる
 // (docs/app.js の onExportShuujuku を参照)。
+//
+// 【v2(2026-08-20): 1文=1フィールド化】
+// v1は Num/Content の2フィールドで、Content に英文・和訳・意味・解説・出典を
+// HTMLで詰め込んでいた。v2では「ATSU表現・構文120選 (音読用・TTS対応)」と
+// 同じ1文=1フィールドの様式にしたため、この Content 合成が無くなり、
+// 各フィールドの値を組み立てるだけになった。フィールド名・item_key の
+// 並びは build_shuujuku_v1.FIELD_ITEM_KEYS が正典
+// (docs/shared/card_defs.json 側にも同じ並びが書き出されている)。
 
 const NEXT_NUM_KEY = 'anki_tool_shuujuku_next_num';
+
+/** build_shuujuku_v1.MAX_EXAMPLES と同じ値にすること。 */
+export const MAX_EXAMPLES = 4;
 
 // build_shuujuku_v1.PLACEHOLDER_TOKENS と同一(順序も含めて一致させること。
 // 先に出現するトークンほど優先してマッチする)。
@@ -57,70 +67,68 @@ function highlightExampleEn(enText, hlWords) {
 }
 
 /**
- * render_item(item_num, item) と同一のHTMLを返す(Numのdeck-title行は含まない。
- * buildContentHtml()側で付与する)。
+ * build_shuujuku_v1.build_fields_dict() と同一の「フィールド確定済み値」を返す。
+ * 返すのはAnkiフィールド名ではなく item_key をキーにした dict
+ * (docs/shared/card_defs.json の fields[].item_key と対応)。
  *
- * @param {string[]|null} exampleAudioTags 例文ごとの`[sound:...]`タグ(2026-07-28
- *   TTS埋め込み追加時に追加)。渡すとitem.examplesと同じ順序でex-en divの内側
- *   (英文の直後)に`<br>`区切りで挿入する。tts_core.
- *   generate_shuujuku_sentence_tts_for_collection()の
- *   `<div class="ex-en">{inner_html}<br>[sound:{stored_name}]</div>`と同じ位置。
- *   要素が空文字/未指定の例文には何も挿入しない。省略時(null)は従来どおり
- *   音声無し(この関数の呼び出し元を増やしても既存の呼び出しは無変更で動く)。
+ * @param {number} itemNum 出力時に払い出す連番(Num/I1Badgeになる)
+ * @param {object} item ストックの生item
+ * @param {string} deckTitleLabel DeckTitleフィールドの値
+ * @param {string[]|null} exampleAudioTags 例文ごとの`[sound:...]`タグ。渡すと
+ *   item.examplesと同じ順序で、対応する英文フィールドの末尾に`<br>`区切りで
+ *   追記する(tts_core.generate_tts_for_collection()が通常のフィールドに対して
+ *   行うのと同じ「フィールド末尾に追記」の形)。省略時(null)は音声無し。
  */
-function renderItem(itemNum, item, exampleAudioTags = null) {
+export function buildFieldsReadyItem(itemNum, item, deckTitleLabel = '習熟用', exampleAudioTags = null) {
   const numStr = String(itemNum).padStart(3, '0');
-  const patternHtml = markPattern(esc(item.pattern));
-  const glossHtml = item.meaning ? markPlaceholders(esc(item.meaning)) : '';
-  const exHtml = (item.examples || []).map((ex, i) => {
-    const [en, jp, hlWords] = ex;
-    const enHtml = highlightExampleEn(en, hlWords);
-    const audioTag = exampleAudioTags ? (exampleAudioTags[i] || '') : '';
-    const enWithAudio = audioTag ? `${enHtml}<br>${audioTag}` : enHtml;
-    return `<div class="ex-row"><div class="ex-en">${enWithAudio}</div><div class="ex-jp">${esc(jp)}</div></div>`;
-  }).join('');
-  const explBlock = item.expl
-    ? `<div class="expl-box"><div class="expl-label">解説</div>${esc(item.expl)}</div>`
-    : '';
-  const glossBlock = glossHtml ? `<div class="gloss-line">${glossHtml}</div>` : '';
-  const sourceBlock = item.source_label
-    ? `<div class="source-tag">${esc(item.source_label)}</div>`
-    : '';
-  return `<div class="item-card"><div class="item-head">`
-    + `<span class="item-num">${numStr}</span>`
-    + `<span class="pattern-line">${patternHtml}</span></div>`
-    + `${glossBlock}${exHtml}${explBlock}${sourceBlock}</div>`;
-}
-
-/** build_deck() 内の content 組み立てと同一(deck-title行 + render_item)。 */
-export function buildContentHtml(itemNum, item, deckTitleLabel = '習熟用', exampleAudioTags = null) {
-  const numStr = String(itemNum).padStart(3, '0');
-  return `<div class="deck-title">${esc(deckTitleLabel)} &nbsp;No.${numStr}</div>`
-    + renderItem(itemNum, item, exampleAudioTags);
+  const values = {
+    deck_title: esc(deckTitleLabel),
+    num: numStr,
+    badge: numStr,
+    pattern_en: markPattern(esc(item.pattern)),
+    pattern_jp: item.meaning ? markPlaceholders(esc(item.meaning)) : '',
+    tip: item.expl ? esc(item.expl) : '',
+    source: item.source_label ? esc(item.source_label) : '',
+    // 通し音声(HyperTTS等で後から付ける前提)。このツールからは埋めない。
+    all_audio: '',
+  };
+  const examples = item.examples || [];
+  for (let n = 1; n <= MAX_EXAMPLES; n += 1) {
+    const i = n - 1;
+    if (i < examples.length) {
+      const [en, jp, hlWords] = examples[i];
+      const enHtml = highlightExampleEn(en, hlWords);
+      const tag = exampleAudioTags ? (exampleAudioTags[i] || '') : '';
+      values[`ex${n}_en`] = tag ? `${enHtml}<br>${tag}` : enHtml;
+      values[`ex${n}_jp`] = esc(jp);
+    } else {
+      values[`ex${n}_en`] = '';
+      values[`ex${n}_jp`] = '';
+    }
+  }
+  return values;
 }
 
 /**
  * ストックの生item(pattern/meaning/examples/expl/source_kind/source_topic/
- * source_label)を、apkg出力用の「Num/Content確定済みitem」に変換する。
+ * source_label)を、apkg出力用の「フィールド確定済みitem」に変換する。
  * guid計算に必要な source_kind/source_topic は変換後もそのまま保持する
  * (docs/lib/guid.js の compound スキームが参照するため)。
  *
  * @param {object[]} items ストックの生item配列
  * @param {number} startNum 開始番号(getNextNum()で取得した値を渡す)
  * @param {string[][]|null} audioTagsByItem itemsと同じ順序・同じ長さの配列で、
- *   各要素はその item の examples に対応する audio tag 配列(renderItem()の
- *   exampleAudioTagsにそのまま渡す。2026-07-28 TTS埋め込み追加時に追加)。
+ *   各要素はその item の examples に対応する audio tag 配列
+ *   (buildFieldsReadyItem()のexampleAudioTagsにそのまま渡す)。
  *   省略時(null)は従来どおり音声無し。
- * @returns {object[]} { num, content, source_kind, source_topic } の配列
+ * @returns {object[]} 生itemのキー + フィールド確定済みの値
  */
 export function buildFieldsReadyItems(items, startNum, audioTagsByItem = null) {
   return items.map((item, offset) => {
-    const idx = startNum + offset;
     const tags = audioTagsByItem ? audioTagsByItem[offset] : null;
     return {
       ...item,
-      num: String(idx).padStart(3, '0'),
-      content: buildContentHtml(idx, item, '習熟用', tags),
+      ...buildFieldsReadyItem(startNum + offset, item, '習熟用', tags),
     };
   });
 }

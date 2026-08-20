@@ -48,7 +48,10 @@ PENDING_DECKS_DIR = os.path.join(BASE_DIR, "pending_decks")
 # 続けていた。入力(作業用)と出力(成果物)でフォルダを分ける。
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
-PERSISTED_TAB_KEYS = ("daily", "shuujuku", "word", "ai_ask")
+# "bulk" は「一括出力」タブ(2026-08-20追加)。他の4タブの未出力候補をまとめて
+# 1つのapkgにしたもので、扱い(pending_decks/bulk.apkg + 状態の永続化)は
+# 他のタブとまったく同じ。
+PERSISTED_TAB_KEYS = ("daily", "shuujuku", "word", "ai_ask", "bulk")
 
 
 def is_pending_deck_path(path: str, decks_dir: str = None) -> bool:

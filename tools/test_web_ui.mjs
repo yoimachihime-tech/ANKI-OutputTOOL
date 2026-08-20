@@ -923,14 +923,14 @@ $('shuujuku-stock-list').querySelector('button').click();
 await sleep(100);
 if (dialogOpened) {
   const srcdoc = $('preview-frame').srcdoc || '';
-  // プレビューはNum/Contentが未確定のitemを、出力予定の次番号で仮レンダリング
-  // したもの(showShuujukuPreview)。esc()はhtml.escape(s, quote=False)相当
-  // なのでアポストロフィはエスケープされない("doesn't"のまま)。
+  // プレビューはDeckTitle/Num/I1Badge等が未確定のitemを、出力予定の次番号で
+  // 仮レンダリングしたもの(showShuujukuPreview)。esc()はhtml.escape(s, quote=False)
+  // 相当なのでアポストロフィはエスケープされない("doesn't"のまま)。
   if (srcdoc.includes("doesn't")) {
-    if (srcdoc.includes('deck-title') && srcdoc.includes('item-card')) {
-      ok('render_item()相当のHTML(deck-title・item-card)でレンダリングされた');
+    if (srcdoc.includes('deck-title') && srcdoc.includes('group-card')) {
+      ok('カードテンプレート相当のHTML(deck-title・group-card)でレンダリングされた');
     } else {
-      fail('プレビューHTMLにdeck-title/item-cardが含まれない');
+      fail('プレビューHTMLにdeck-title/group-cardが含まれない');
     }
   } else {
     fail('プレビュー内容が想定と異なる');
@@ -950,7 +950,7 @@ if (!downloaded) {
   await dumpApkgAndCheck(downloaded, {
     expectedNoteCount: 1,
     expectedCardCount: 1,
-    firstFieldEquals: '001', // Numフィールド(続き番号1件目なので001)
+    firstFieldEquals: '習熟用', // DeckTitleフィールド(v2から先頭はNumではない)
     tmpName: '.uitest_shuujuku.anki2',
   });
 }

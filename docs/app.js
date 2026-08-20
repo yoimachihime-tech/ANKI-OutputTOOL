@@ -23,7 +23,7 @@ import {
   correctEnglishText, consolidateNoErrorCorrections, listModels,
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
-import { buildContentHtml, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
+import { buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
 } from './lib/dueCounter.js';
@@ -1274,7 +1274,8 @@ async function embedTtsAudioIntoItems(items, fieldKeys, tabKey, status) {
 
 /**
  * 習熟用(音読)タブ用: 各itemのexamplesごとに音声タグを合成する。
- * buildFieldsReadyItems()のaudioTagsByItem引数にそのまま渡せる形で返す。
+ * buildFieldsReadyItems()のaudioTagsByItem引数にそのまま渡せる形で返す
+ * (タグは対応する英文フィールド I1ExnEN の末尾に追記される)。
  *
  * @returns {Promise<{audioTagsByItem: string[][]|null, media: Map<string, Uint8Array>}>}
  */
@@ -2059,8 +2060,8 @@ async function onExportShuujuku() {
     setStatus(status, '.apkg を生成中...');
     // Numフィールド・cards.dueは出力するたびに続き番号を採番する(desktop版の
     // shuujuku_stock.get_next_num()と同じ理由: Anki側のソートフィールド衝突を
-    // 避けるため)。そのためbuildFieldsReadyItems()でNum/Contentを確定させて
-    // から渡す(ストックの生item自体はNum/Contentを持たない)。
+    // 避けるため)。そのためbuildFieldsReadyItems()でフィールドを確定させて
+    // から渡す(ストックの生itemはDeckTitle/Num/I1Badge等を持たない)。
     const startNum = getNextNum();
     // TTS APIキーが設定されていれば、例文ごとに音声を合成してContentに
     // 埋め込む(未設定なら従来どおり音声無し)。
@@ -2097,7 +2098,7 @@ async function onExportShuujuku() {
 
 /**
  * 習熟用アイテムのプレビュー(実際に出力される次の番号を仮に使ってレンダリング
- * する。出力前のitemはNum/Contentを持たないため、他タブのshowPreview()を
+ * する。出力前のitemはDeckTitle/Num/I1Badge等を持たないため、他タブのshowPreview()を
  * そのまま使えない)。
  */
 function showShuujukuPreview(item) {
@@ -2107,10 +2108,11 @@ function showShuujukuPreview(item) {
     return;
   }
   const previewNum = getNextNum();
-  const values = {
-    Num: String(previewNum).padStart(3, '0'),
-    Content: buildContentHtml(previewNum, item),
-  };
+  // フィールド確定済みitem(item_keyがキー)を、テンプレート差し込み用に
+  // Ankiフィールド名がキーの形へ詰め替える(fieldsFromItem()と同じ対応表)。
+  const ready = buildFieldsReadyItem(previewNum, item);
+  const values = {};
+  def.fields.forEach((f) => { values[f.anki_name] = ready[f.item_key] ?? ''; });
   const tmpl = def.anki_model.tmpls[0];
   const front = renderTemplate(tmpl.qfmt, values);
   const back = renderTemplate(tmpl.afmt, values, front);
