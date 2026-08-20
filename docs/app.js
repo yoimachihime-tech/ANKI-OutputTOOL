@@ -23,7 +23,13 @@ import {
   correctEnglishText, consolidateNoErrorCorrections, listModels,
 } from './lib/gemini.js';
 import { buildApkg, fieldsFromItem } from './lib/apkg.js';
-import { buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum } from './lib/shuujuku.js';
+// `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
+// (2026-08-20: 習熟用のフィールド構成をv2へ変えた際、ここが無かったために
+// ブラウザが古い lib/shuujuku.js を読み続け、旧Num/Content形式のカードが
+// 出力され続けた)。shuujuku.js は app.js からしか import されていない。
+import {
+  buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum,
+} from './lib/shuujuku.js?v=20260820a';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
 } from './lib/dueCounter.js';
@@ -378,7 +384,16 @@ async function handleAuthRedirectReturn() {
 }
 
 async function fetchText(url) {
-  const res = await fetch(url);
+  // shared/ 配下(プロンプト・card_defs.json・anki_schema.json)にも版を付ける
+  // (2026-08-20追加)。index.html の `?v=` は app.js と style.css しか
+  // 更新しないため、これが無いとブラウザが古い card_defs.json を読み続け、
+  // 新しい lib/*.js と組み合わさって「フィールドが空のカードが出力される」
+  // といった食い違いが起きる。版は app.js 自身の `?v=` から取るので、
+  // index.html の値を更新すればここも一緒に切り替わる。
+  const versioned = APP_VERSION && !APP_VERSION.startsWith('(')
+    ? `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(APP_VERSION)}`
+    : url;
+  const res = await fetch(versioned);
   if (!res.ok) throw new Error(`${url} を読み込めませんでした (HTTP ${res.status})`);
   return res.text();
 }
