@@ -54,7 +54,9 @@ const FAKE_GRAMMAR_MULTI_NOTES = [
     choices: [{ opt: 'A', text: 'patient' }, { opt: 'B', text: 'patience' }, { opt: 'C', text: 'patiently' }],
     answer: 'patience',
     correct_opt: 'B',
-    examples: [['She has a lot of patience.', '彼女は忍耐力がある。']],
+    // 2026-08-21: プロンプトが指示するとおり学習対象語を <b> で囲んだ形。
+    // このノートだけ ExampleBlank が埋まり、「4. 例文穴埋め」が生える。
+    examples: [['She has a lot of <b>patience</b>.', '彼女は忍耐力がある。']],
     why: '空所には名詞が入ります。',
     whynot: [{ opt: 'A', reason: 'patient は形容詞。' }, { opt: 'C', reason: 'patiently は副詞。' }],
   },
@@ -504,7 +506,8 @@ if (localStorage.getItem('anki_tool_gemini_api_key') === 'DUMMY-KEY-FOR-TEST') {
   fail('APIキーが保存されない');
 }
 
-async function dumpApkgAndCheck(blob, { expectedNoteCount, expectedCardCount, firstFieldEquals, tmpName }) {
+async function dumpApkgAndCheck(blob, { expectedNoteCount, expectedCardCount,
+  firstFieldEquals, tmpName, expectedOrdCounts }) {
   const zip = await window.JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
   const names = Object.keys(zip.files).sort();
   if (names.join(',') === 'collection.anki2,media') ok(`zip の中身: ${names.join(', ')}`);
@@ -524,6 +527,20 @@ async function dumpApkgAndCheck(blob, { expectedNoteCount, expectedCardCount, fi
     else fail(`カード枚数: ${cards.n}(期待:${expectedCardCount})`);
     if (notes[0].flds.split('\x1f')[0] === firstFieldEquals) ok('フィールドが正しい順で格納されている');
     else fail(`フィールドの並びが想定外: ${notes[0].flds.split('\x1f')[0]}`);
+    // どのテンプレート(ord)のカードが何枚できたかまで見る。テンプレートごとに
+    // 生成条件が違うノートタイプ(Grammar Multiの「4. 例文穴埋め」は
+    // ExampleBlankが空なら作られない)で、条件が効いていることを固定するため。
+    if (expectedOrdCounts) {
+      const rows = db.prepare('SELECT ord, COUNT(*) AS n FROM cards GROUP BY ord ORDER BY ord').all();
+      const got = {};
+      for (const r of rows) got[r.ord] = r.n;
+      if (JSON.stringify(got) === JSON.stringify(expectedOrdCounts)) {
+        ok(`テンプレートごとのカード枚数が想定どおり: ${JSON.stringify(got)}`);
+      } else {
+        fail(`テンプレートごとのカード枚数が想定外: ${JSON.stringify(got)}`
+          + `(期待:${JSON.stringify(expectedOrdCounts)})`);
+      }
+    }
     db.close();
   } finally {
     try { unlinkSync(tmp); } catch { /* 残っても検証結果に影響しない */ }
@@ -855,7 +872,12 @@ if (!downloaded) {
 } else {
   await dumpApkgAndCheck(downloaded, {
     expectedNoteCount: 3,
-    expectedCardCount: 3, // 3ノート × テンプレート1種(判断問題のみ)
+    // 2026-08-21: ノートタイプ定義を実態(4テンプレート)に合わせた。
+    // 1〜3枚目は3ノートとも生えるが、「4. 例文穴埋め」は ExampleBlank が
+    // 空でないノートにだけ生える(req = all[ExampleBlank])。モックの3件のうち
+    // examples に <b> があるのは1件目だけなので 3+3+3+1 = 10 枚になる。
+    expectedCardCount: 10,
+    expectedOrdCounts: { 0: 3, 1: 3, 2: 3, 3: 1 },
     firstFieldEquals: '選択問題',
     tmpName: '.uitest_ai_ask.anki2',
   });

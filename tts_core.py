@@ -97,14 +97,67 @@ def list_google_voices(language_code: str, api_key: str) -> list:
 # テキスト整形・文分割
 # ---------------------------------------------------------------------------
 
-def strip_html_for_tts(raw: str) -> str:
-    text = raw
-    text = re.sub(r"<br\s*/?>", ". ", text, flags=re.IGNORECASE)
-    text = re.sub(r"</div>", ". ", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
+# --- 「表示のためだけの文字」を読み上げから外す(2026-08-21追加) ------------
+#
+# カード上の見た目のためにフィールドへ焼き込まれている文字は、そのままTTSに
+# 渡すと音声にも入ってしまう。片桐から「AIに質問タブで生成したカードにTTS
+# 音声を付けると、Ex2の近辺で描画されていない文字の読み上げが入る」と報告を
+# 受けて調べたところ、実測で以下のとおりだった:
+#
+#   「Ex1. She avoids eating late at night.」(6語+ラベル) … 3.98秒
+#   「You should avoid driving in the heavy snow.」(8語)   … 2.09秒
+#
+# 語数が少ないほうが倍近く長い。差の約1.9秒が「Ex1.」の読み上げ("E X one"+
+# 文末ポーズ)で、カード上はただの見出しラベルなのに音声では邪魔になっていた。
+#
+# 除去の対象:
+#   - 例文の採番ラベル `<span class="ex-num">Ex1.</span>`
+#     (build_grammar_multi_v1_updated.example_en / docs/lib/gemini.js が
+#      「AIに質問」「DailyConversation」のExampleフィールドに入れる)
+#   - Answer先頭の選択肢記号「(B) 」(Geminiが選択問題の正解に付けてくる)
+#   - spanで囲まれていない素の見出しラベル(下の_LABEL_ONLY_RE/_LEADING_LABEL_RE)
+#
+# **タグを消すだけでは足りない**点が肝で、`<[^>]+>`の除去では`<span>`は消えても
+# 中身の「Ex1.」は残る。ラベルの除去はタグ除去より前に行う必要がある。
+_EX_NUM_SPAN_RE = re.compile(
+    r"<span\b[^>]*\bclass\s*=\s*[\"'][^\"']*\bex-num\b[^\"']*[\"'][^>]*>.*?</span>",
+    re.IGNORECASE | re.DOTALL,
+)
+# 先頭のタグ(あれば)は温存したまま「(B) 」だけを落とす。選択肢は(A)〜(D)しか
+# 使っていないので、"(I) am ..." のような正当な文を巻き込まないよう範囲を絞る。
+_LEADING_OPTION_RE = re.compile(r"^(\s*(?:<[^>]+>\s*)*)\(\s*[A-Da-d]\s*\)\s*")
+
+
+def strip_display_only_markup(raw: str) -> str:
+    """カード上の見た目のためだけに入っている文字を、読み上げ対象から外す。
+
+    HTMLタグを除去する**前**に呼ぶこと(タグごと中身を落とす必要があるため)。
+    Web版の docs/lib/tts.js の stripDisplayOnlyMarkup() と同一の処理。
+    """
+    text = _EX_NUM_SPAN_RE.sub("", raw)
+    text = _LEADING_OPTION_RE.sub(r"\1", text)
     return text
+
+
+def strip_html_for_tts(raw: str) -> str:
+    """フィールドのHTMLを、TTSに渡す1行の平文に変換する。
+
+    `<br>`・`</div>`は文の区切りとして扱うが、**直前が既に「.」「!」「?」で
+    終わっている場合は句点を足さない**。以前は無条件に". "へ置換していたため、
+    「…best.<br><span class="ex-num">Ex2.</span>…」が「…best.. Ex2.…」となり、
+    Ex2の直前だけ余分な間が空いていた(2026-08-21修正)。
+
+    見出しラベル・選択肢記号の除去は_tts_sentences_from_html()側で行う。
+    """
+    out = ""
+    for sentence in _tts_sentences_from_html(raw):
+        if not out:
+            out = sentence
+        elif out.endswith((".", "!", "?")):
+            out += " " + sentence
+        else:
+            out += ". " + sentence
+    return out
 
 
 def strip_sound_tags(text: str) -> str:
@@ -118,24 +171,34 @@ def strip_sound_tags(text: str) -> str:
     return text.strip()
 
 
-# 「Ex1.」「2.」「Q1.」のような短い見出しラベル1つだけの断片を検出する
-# (英字0〜6文字+数字1〜3文字+句点)。少なくとも1桁の数字を要求することで、
-# "Yes." "No." のような正当な短文をラベルと誤認して結合してしまうのを防ぐ。
+# 「Ex1.」「2.」「Q1.」のような短い見出しラベルを検出する(英字0〜6文字+
+# 数字1〜3文字+句点)。少なくとも1桁の数字を要求することで、"Yes." "No." の
+# ような正当な短文をラベルと誤認しないようにしている。
+#
+# 2026-08-21に**結合から除去へ変更**した。以前は「ラベルだけの極小mp3が
+# 大量にできるのを防ぐ」ために次の断片へ結合していた(2026-07-27)が、それだと
+# 「Ex1. It was so dark...」のようにラベルごと読み上げられてしまう。除去なら
+# 極小mp3も作られず、読み上げにもラベルが入らない。
 _LABEL_ONLY_RE = re.compile(r"^[A-Za-z]{0,6}\d{1,3}\.$")
+# 1行/1文の先頭に付いた見出しラベル(「Ex1. 本文」の「Ex1. 」の部分)。
+# 後ろに本文が続くときだけ落とす。
+_LEADING_LABEL_RE = re.compile(r"^[A-Za-z]{0,6}\d{1,3}\.\s+(?=\S)")
 
 
-def split_into_sentences(html_text: str) -> list:
-    """フィールドのHTMLを、文ごとの読み上げ単位に分割する。
-    <br>や</div>による改行はそのまま文の区切りとして扱い、
-    1行に複数文が「. 」で連続している場合も追加で分割する。
+def _tts_sentences_from_html(html_text: str) -> list:
+    """フィールドのHTMLを、読み上げ単位の文リストへ正規化する共通処理。
 
-    「Ex1.」「2.」のような短い見出しラベルは、この単純な句点分割だと
-    それ単体で1文として切り出されてしまい、TTS生成時にラベルだけの
-    極小音声ファイルが大量発生してAnkiコレクションを圧迫する原因になる
-    (2026-07-27修正)。そのため、分割結果が`_LABEL_ONLY_RE`にマッチする
-    (英字0〜6文字+数字1〜3文字+句点、のような短いラベルのみ)場合は、
-    次の断片に結合してから返す。"""
-    normalized = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
+    strip_html_for_tts() と split_into_sentences() の**唯一の実体**。
+    片方だけ直して読み上げ内容と文字数見積もりがずれる事故を防ぐため、
+    両者はこの関数を通す(以前は同じ整形を2か所に書いていた)。
+
+    手順:
+      1. 表示のためだけの文字(ex-numラベル・選択肢記号)を落とす
+      2. <br>・</div>を改行に変換し、残りのタグを除去してエンティティを復元
+      3. 行ごとに「. 」区切りでさらに文へ分割し、見出しラベルを取り除く
+    """
+    normalized = strip_display_only_markup(html_text)
+    normalized = re.sub(r"<br\s*/?>", "\n", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"</div>", "\n", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"<[^>]+>", "", normalized)
     normalized = html.unescape(normalized)
@@ -145,18 +208,25 @@ def split_into_sentences(html_text: str) -> list:
         line = line.strip()
         if not line:
             continue
-        raw_parts = re.split(r"(?<=[.!?])\s+", line)
-        parts = [re.sub(r"\s+", " ", p).strip() for p in raw_parts]
-        parts = [p for p in parts if p]
-
-        merged = []
-        for p in parts:
-            if merged and _LABEL_ONLY_RE.match(merged[-1]):
-                merged[-1] = f"{merged[-1]} {p}"
-            else:
-                merged.append(p)
-        sentences.extend(merged)
+        for part in re.split(r"(?<=[.!?])\s+", line):
+            part = re.sub(r"\s+", " ", part).strip()
+            if not part or _LABEL_ONLY_RE.match(part):
+                continue
+            part = _LEADING_LABEL_RE.sub("", part)
+            if part:
+                sentences.append(part)
     return sentences
+
+
+def split_into_sentences(html_text: str) -> list:
+    """フィールドのHTMLを、文ごとの読み上げ単位に分割する。
+    <br>や</div>による改行はそのまま文の区切りとして扱い、
+    1行に複数文が「. 」で連続している場合も追加で分割する。
+
+    「Ex1.」「2.」のような見出しラベルは読み上げから除かれる
+    (_LABEL_ONLY_RE / _LEADING_LABEL_RE のコメントを参照)。
+    """
+    return _tts_sentences_from_html(html_text)
 
 
 def html_to_display_text(raw: str) -> str:

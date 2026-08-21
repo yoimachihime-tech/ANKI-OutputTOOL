@@ -224,6 +224,10 @@
         {
           "anki_name": "WhyNot",
           "item_key": "whynot"
+        },
+        {
+          "anki_name": "ExampleBlank",
+          "item_key": "example_blank"
         }
       ],
       "guid_scheme": {
@@ -238,7 +242,7 @@
         "type": "sequence"
       },
       "anki_model": {
-        "css": "\n.card {\n  font-family: -apple-system, \"Hiragino Sans\", \"Helvetica Neue\", Arial, sans-serif;\n  font-size: 17px;\n  line-height: 1.75;\n  text-align: left;\n  max-width: 640px;\n  margin: 0 auto;\n  padding: 8px 4px 28px 4px;\n\n  --bg: #e7e9ec;\n  --fg: #000000;\n  --sub: #6b7280;\n  --pattern-bg: #eef2ff;\n  --pattern-fg: #4338ca;\n  --question-bg: #ccd1d7;\n  --question-border: #b3b9c1;\n  --choice-bg: #dcdfe3;\n  --choice-border: #b3b9c1;\n  --answer-bg: #ecdca0;\n  --answer-border: #c7a83a;\n  --why-bg: #c9dfc9;\n  --why-border: #3a8f5c;\n  --whynot-bg: #f0c9c9;\n  --whynot-border: #c94a3f;\n  --example-bg: #c7d3e2;\n  --example-border: #5c85cf;\n  --core-bg: #d6cde6;\n  --core-border: #8567bd;\n  color: var(--fg);\n  background: var(--bg);\n}\n\n.night_mode .card {\n  --bg: #1a1c1f;\n  --fg: #f0f1f3;\n  --sub: #9aa1ab;\n  --pattern-bg: #2b2f6b;\n  --pattern-fg: #c7cdff;\n  --question-bg: #212326;\n  --question-border: #34373b;\n  --choice-bg: #24272a;\n  --choice-border: #383c40;\n  --answer-bg: #332b10;\n  --answer-border: #8c7620;\n  --why-bg: #16241b;\n  --why-border: #3a7350;\n  --whynot-bg: #271515;\n  --whynot-border: #96453c;\n  --example-bg: #182130;\n  --example-border: #4d76b3;\n  --core-bg: #201b28;\n  --core-border: #7a5fc0;\n}\n\n@media (prefers-color-scheme: dark) {\n  .card {\n    --bg: #1a1c1f;\n    --fg: #f0f1f3;\n    --sub: #9aa1ab;\n    --pattern-bg: #2b2f6b;\n    --pattern-fg: #c7cdff;\n    --question-bg: #212326;\n    --question-border: #34373b;\n    --choice-bg: #24272a;\n    --choice-border: #383c40;\n    --answer-bg: #332b10;\n    --answer-border: #8c7620;\n    --why-bg: #16241b;\n    --why-border: #3a7350;\n    --whynot-bg: #271515;\n    --whynot-border: #96453c;\n    --example-bg: #182130;\n    --example-border: #4d76b3;\n    --core-bg: #201b28;\n    --core-border: #7a5fc0;\n  }\n}\n\n.pattern-tag {\n  display: inline-block;\n  background: var(--pattern-bg);\n  color: var(--pattern-fg);\n  font-weight: 700;\n  font-size: 14px;\n  padding: 4px 12px;\n  border-radius: 999px;\n  margin-bottom: 12px;\n  letter-spacing: 0.02em;\n}\n\n.block {\n  border-radius: 12px;\n  padding: 14px 16px;\n  margin: 12px 0;\n}\n\n.question-block {\n  background: var(--question-bg);\n  border: 1px solid var(--question-border);\n}\n.question-label { font-size: 12px; color: var(--sub); font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; }\n\n.choices { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }\n.choice {\n  background: var(--choice-bg);\n  border: 1px solid var(--choice-border);\n  border-radius: 8px;\n  padding: 7px 12px;\n  font-family: \"SF Mono\", Menlo, monospace;\n  font-size: 15.5px;\n}\n\n.answer-block {\n  background: var(--answer-bg);\n  border-left: 5px solid var(--answer-border);\n}\n.answer-block .label { font-weight: 700; font-size: 12.5px; color: var(--answer-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;}\n.answer-block .sentence { font-size: 18px; font-weight: 600; }\n\n.example-block { background: var(--example-bg); border-left: 5px solid var(--example-border); }\n.example-block .label { font-weight: 700; font-size: 12.5px; color: var(--example-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.example-item { margin: 0 0 10px 0; }\n.example-item:last-child { margin-bottom: 0; }\n.example-sentence { font-size: 16px; }\n.example-ja { color: var(--sub); font-size: 14.5px; margin-top: 2px; }\n\n.why-block { background: var(--why-bg); border-left: 5px solid var(--why-border); }\n.why-block .label { font-weight: 700; font-size: 12.5px; color: var(--why-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n\n.whynot-block { background: var(--whynot-bg); border-left: 5px solid var(--whynot-border); }\n.whynot-block .label { font-weight: 700; font-size: 12.5px; color: var(--whynot-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.whynot-item { margin: 4px 0; }\n.whynot-item .opt { font-family: \"SF Mono\", Menlo, monospace; font-weight: 700; }\n\n.core-block { background: var(--core-bg); border-left: 5px solid var(--core-border); font-style: italic; font-size: 15.5px; }\n.core-block .label { font-weight: 700; font-size: 12.5px; color: var(--core-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; font-style: normal; }\n\nb { color: inherit; }\nhr.sep { border: none; border-top: 1px solid var(--question-border); margin: 18px 0; }\n\n.masked b {\n  color: transparent;\n  background: var(--sub);\n  border-radius: 4px;\n  padding: 0 2px;\n}\n\n.ex-num { font-weight: 700; }\n\n.blank-hint { color: var(--sub); font-size: 14px; margin-bottom: 10px; }\n",
+        "css": "\n.card {\n  font-family: -apple-system, \"Hiragino Sans\", \"Helvetica Neue\", Arial, sans-serif;\n  font-size: 17px;\n  line-height: 1.75;\n  text-align: left;\n  max-width: 640px;\n  margin: 0 auto;\n  padding: 8px 4px 28px 4px;\n\n  --bg: #e7e9ec;\n  --fg: #000000;\n  --sub: #6b7280;\n  --pattern-bg: #eef2ff;\n  --pattern-fg: #4338ca;\n  --question-bg: #ccd1d7;\n  --question-border: #b3b9c1;\n  --choice-bg: #dcdfe3;\n  --choice-border: #b3b9c1;\n  --answer-bg: #ecdca0;\n  --answer-border: #c7a83a;\n  --why-bg: #c9dfc9;\n  --why-border: #3a8f5c;\n  --whynot-bg: #f0c9c9;\n  --whynot-border: #c94a3f;\n  --example-bg: #c7d3e2;\n  --example-border: #5c85cf;\n  --core-bg: #d6cde6;\n  --core-border: #8567bd;\n  color: var(--fg);\n  background: var(--bg);\n}\n\n.night_mode .card {\n  --bg: #1a1c1f;\n  --fg: #f0f1f3;\n  --sub: #9aa1ab;\n  --pattern-bg: #2b2f6b;\n  --pattern-fg: #c7cdff;\n  --question-bg: #212326;\n  --question-border: #34373b;\n  --choice-bg: #24272a;\n  --choice-border: #383c40;\n  --answer-bg: #332b10;\n  --answer-border: #8c7620;\n  --why-bg: #16241b;\n  --why-border: #3a7350;\n  --whynot-bg: #271515;\n  --whynot-border: #96453c;\n  --example-bg: #182130;\n  --example-border: #4d76b3;\n  --core-bg: #201b28;\n  --core-border: #7a5fc0;\n}\n\n@media (prefers-color-scheme: dark) {\n  .card {\n    --bg: #1a1c1f;\n    --fg: #f0f1f3;\n    --sub: #9aa1ab;\n    --pattern-bg: #2b2f6b;\n    --pattern-fg: #c7cdff;\n    --question-bg: #212326;\n    --question-border: #34373b;\n    --choice-bg: #24272a;\n    --choice-border: #383c40;\n    --answer-bg: #332b10;\n    --answer-border: #8c7620;\n    --why-bg: #16241b;\n    --why-border: #3a7350;\n    --whynot-bg: #271515;\n    --whynot-border: #96453c;\n    --example-bg: #182130;\n    --example-border: #4d76b3;\n    --core-bg: #201b28;\n    --core-border: #7a5fc0;\n  }\n}\n\n.pattern-tag {\n  display: inline-block;\n  background: var(--pattern-bg);\n  color: var(--pattern-fg);\n  font-weight: 700;\n  font-size: 14px;\n  padding: 4px 12px;\n  border-radius: 999px;\n  margin-bottom: 12px;\n  letter-spacing: 0.02em;\n}\n\n.block {\n  border-radius: 12px;\n  padding: 14px 16px;\n  margin: 12px 0;\n}\n\n.question-block {\n  background: var(--question-bg);\n  border: 1px solid var(--question-border);\n}\n.question-label { font-size: 12px; color: var(--sub); font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; }\n\n.choices { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }\n.choice {\n  background: var(--choice-bg);\n  border: 1px solid var(--choice-border);\n  border-radius: 8px;\n  padding: 7px 12px;\n  font-family: \"SF Mono\", Menlo, monospace;\n  font-size: 15.5px;\n}\n\n.answer-block {\n  background: var(--answer-bg);\n  border-left: 5px solid var(--answer-border);\n}\n.answer-block .label { font-weight: 700; font-size: 12.5px; color: var(--answer-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;}\n.answer-block .sentence { font-size: 18px; font-weight: 600; }\n\n.example-block { background: var(--example-bg); border-left: 5px solid var(--example-border); }\n.example-block .label { font-weight: 700; font-size: 12.5px; color: var(--example-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.example-item { margin: 0 0 10px 0; }\n.example-item:last-child { margin-bottom: 0; }\n.example-sentence { font-size: 16px; }\n.example-ja { color: var(--sub); font-size: 14.5px; margin-top: 2px; }\n\n.why-block { background: var(--why-bg); border-left: 5px solid var(--why-border); }\n.why-block .label { font-weight: 700; font-size: 12.5px; color: var(--why-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n\n.whynot-block { background: var(--whynot-bg); border-left: 5px solid var(--whynot-border); }\n.whynot-block .label { font-weight: 700; font-size: 12.5px; color: var(--whynot-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }\n.whynot-item { margin: 4px 0; }\n.whynot-item .opt { font-family: \"SF Mono\", Menlo, monospace; font-weight: 700; }\n\n.core-block { background: var(--core-bg); border-left: 5px solid var(--core-border); font-style: italic; font-size: 15.5px; }\n.core-block .label { font-weight: 700; font-size: 12.5px; color: var(--core-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; font-style: normal; }\n\nb { color: inherit; }\nhr.sep { border: none; border-top: 1px solid var(--question-border); margin: 18px 0; }\n\n.ex-num { font-weight: 700; }\n\n/* 「4. 例文穴埋め」の空所。ExampleBlankフィールドの中身。\n   旧方式(.masked b でExampleの<b>をCSSで透明にする)は、同じフィールドに\n   入っている音声タグが隠した語を読み上げてしまうため廃止した\n   (2026-08-21。ファイル冒頭のコメント参照)。 */\n.blank { font-family: \"SF Mono\", Menlo, monospace; letter-spacing: .05em; color: var(--sub); }\n",
         "did": 1907231458999,
         "flds": [
           {
@@ -312,6 +316,15 @@
             "rtl": false,
             "size": 20,
             "sticky": false
+          },
+          {
+            "name": "ExampleBlank",
+            "ord": 8,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
           }
         ],
         "id": "1907250010123",
@@ -329,6 +342,29 @@
               1,
               2
             ]
+          ],
+          [
+            1,
+            "any",
+            [
+              0,
+              1
+            ]
+          ],
+          [
+            2,
+            "any",
+            [
+              0,
+              3
+            ]
+          ],
+          [
+            3,
+            "all",
+            [
+              8
+            ]
           ]
         ],
         "sortf": 0,
@@ -339,6 +375,39 @@
             "qfmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  {{#Choices}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n  {{/Choices}}\n</div>\n",
             "afmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  {{#Choices}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n  {{/Choices}}\n</div>\n\n<hr class=\"sep\">\n<div class=\"block answer-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n\n{{#Example}}\n<div class=\"block example-block\">\n  <div class=\"label\">Examples</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/Example}}\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
             "ord": 0,
+            "bafmt": "",
+            "bqfmt": "",
+            "bfont": "",
+            "bsize": 0,
+            "did": null
+          },
+          {
+            "name": "2. セルフチェック",
+            "qfmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Self-Check (no options)</div>\n  {{Question}}\n</div>\n",
+            "afmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Self-Check (no options)</div>\n  {{Question}}\n</div>\n\n<hr class=\"sep\">\n<div class=\"block answer-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n\n{{#Example}}\n<div class=\"block example-block\">\n  <div class=\"label\">Examples</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/Example}}\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
+            "ord": 1,
+            "bafmt": "",
+            "bqfmt": "",
+            "bfont": "",
+            "bsize": 0,
+            "did": null
+          },
+          {
+            "name": "3. 理由想起",
+            "qfmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block answer-block\">\n  <div class=\"label\">Sentence</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n<div class=\"question-label\" style=\"margin-top:14px;\">Why is this correct?{{#WhyNot}} Why not the alternatives?{{/WhyNot}}</div>\n",
+            "afmt": "{{FrontSide}}\n\n<hr class=\"sep\">\n<div class=\"block why-block\" id=\"answer-target\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
+            "ord": 2,
+            "bafmt": "",
+            "bqfmt": "",
+            "bfont": "",
+            "bsize": 0,
+            "did": null
+          },
+          {
+            "name": "4. 例文穴埋め",
+            "qfmt": "\n{{#ExampleBlank}}\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Fill in the blank</div>\n  <div class=\"example-sentence\">{{ExampleBlank}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/ExampleBlank}}\n",
+            "afmt": "{{FrontSide}}\n\n<hr class=\"sep\">\n<div class=\"block example-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n</div>\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
+            "ord": 3,
             "bafmt": "",
             "bqfmt": "",
             "bfont": "",

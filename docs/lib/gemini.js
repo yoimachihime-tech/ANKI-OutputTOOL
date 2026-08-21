@@ -391,6 +391,27 @@ function gmExampleJa(pairs) {
   return pairs.map(([, ja]) => `└ ${ja}`).join('<br>');
 }
 
+// build_grammar_multi_v1_updated.py の _BOLD_RE / blank_out() / example_blank()
+// と同一。例文中の学習対象語(プロンプトでGeminiに<b>で囲ませている)を空所に
+// 置き換えた「穴あき版」を作る。**音声タグは付かない**(音声は完全版の
+// Exampleにだけ入れる。同じフィールドに同居させると、Ankiが[sound:]をCSSより
+// 先に処理する仕様のせいで、隠した語が音声で読み上げられてしまう)。
+const GM_BOLD_RE = /<b>([\s\S]*?)<\/b>/gi;
+
+function gmBlankOut(en) {
+  return String(en).replace(GM_BOLD_RE, '<span class="blank">____</span>');
+}
+
+function gmExampleBlank(pairs) {
+  // <b>で囲まれた語が1つも無ければ空文字。穴が開かないのに「Fill in the
+  // blank」を出すと表に答えがそのまま見えてしまうため、カード自体を作らせない。
+  const hasBold = pairs.some(([en]) => /<b>[\s\S]*?<\/b>/i.test(String(en)));
+  if (!hasBold) return '';
+  return pairs
+    .map(([en], i) => `<span class="ex-num">Ex${i + 1}.</span> ${gmBlankOut(en)}`)
+    .join('<br>');
+}
+
 // 日本語の指示文(「〜しなさい。」等)の直後に、改行なしで引用符付き英文が
 // 続く箇所を検出する。Grammar MultiのQuestionフィールドはGeminiが
 // 「指示文+英文」を1つの文字列として返すため、そのままでは
@@ -476,6 +497,7 @@ export async function generateGrammarMultiItems({ question, apiKey, model, promp
       answer: prefixAnswerWithCorrectOpt(note.answer || '', choices, note.correct_opt || ''),
       example: examples.length ? gmExampleEn(examples) : '',
       example_ja: examples.length ? gmExampleJa(examples) : '',
+      example_blank: examples.length ? gmExampleBlank(examples) : '',
       why: note.why || '',
       whynot: whynot.map((w) => gmWhynotItem(w.opt || '', w.reason || '')).join(''),
       topic_key: topicKey,

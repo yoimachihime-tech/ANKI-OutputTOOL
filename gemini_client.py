@@ -527,6 +527,10 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
             ),
             "example": _grammar_multi_canon.example_en(examples) if examples else "",
             "example_ja": _grammar_multi_canon.example_ja(examples) if examples else "",
+            # 穴あき版(2026-08-21追加)。Geminiが例文中の学習対象語を<b>で
+            # 囲んでこなかった場合は空文字になり、4枚目(例文穴埋め)の
+            # カードは作られない。
+            "example_blank": _grammar_multi_canon.example_blank(examples) if examples else "",
             "why": note.get("why", ""),
             "whynot": "".join(
                 _grammar_multi_canon.whynot_item(w.get("opt", ""), w.get("reason", "")) for w in whynot

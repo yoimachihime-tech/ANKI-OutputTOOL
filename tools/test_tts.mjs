@@ -32,7 +32,8 @@ globalThis.document = dom.window.document;
 console.log('lib/tts.js の単体テスト\n');
 
 const {
-  stripHtmlForTts, callGoogleTts, synthesizeFieldWithTags,
+  stripHtmlForTts, splitIntoSentences, stripDisplayOnlyMarkup,
+  stripJapaneseSentences, callGoogleTts, synthesizeFieldWithTags,
   synthesizeExampleAudioTags, TtsError,
   computeWaveformMinMax, computePeakAmplitude, isClipped, CLIPPING_THRESHOLD,
 } = await import(new URL('../docs/lib/tts.js', import.meta.url));
@@ -44,26 +45,127 @@ const {
  * .lengthしか使わないため、配列でもFloat32Arrayでも動作は同一)。 */
 const fakeAudioBuffer = (samples) => ({ getChannelData: () => samples });
 
-// --- stripHtmlForTts ---
-console.log('[1] stripHtmlForTts');
+// --- stripHtmlForTts / splitIntoSentences ---
+//
+// 期待値は tts_core.py の実装から手で導出した固定ケース(このファイルは python
+// が無くても通ること)。実データそのままの文字列を使い、Python側の
+// check(scratchpadの手動確認)と同じ結果になることを確かめてある。
+console.log('[1] stripHtmlForTts / splitIntoSentences');
 
 {
   const got = stripHtmlForTts('She said &quot;hi&quot;.<br>Bye.');
-  const want = 'She said "hi".. Bye.';
-  if (got === want) ok('<br>を". "に変換しHTMLエンティティをデコードする');
+  const want = 'She said "hi". Bye.';
+  if (got === want) ok('<br>を文の区切りにし、HTMLエンティティをデコードする');
   else fail(`stripHtmlForTtsの結果が想定と違う: ${JSON.stringify(got)}`);
 }
 
 {
   const got = stripHtmlForTts('<div>First.</div><div>Second.</div>');
-  const want = 'First.. Second..';
-  if (got === want) ok('</div>も". "に変換する');
+  const want = 'First. Second.';
+  if (got === want) ok('</div>も文の区切りにする');
   else fail(`</div>の変換結果が想定と違う: ${JSON.stringify(got)}`);
+}
+
+{
+  // 2026-08-21の修正。以前は <br> を無条件に ". " へ置換していたため
+  // 「…nothing.. Ex2.」と句点が二重になり、Ex2の直前だけ間が空いていた。
+  const got = stripHtmlForTts('Ends with a period.<br>Next line.');
+  if (!got.includes('..')) ok('直前が「.」で終わる行の後ろに句点を足さない');
+  else fail(`句点が二重になっている: ${JSON.stringify(got)}`);
 }
 
 {
   if (stripHtmlForTts('  ') === '') ok('空白のみの入力は空文字になる');
   else fail('空白のみの入力の処理が想定外');
+}
+
+// --- 表示のためだけの文字を読み上げから外す(2026-08-21追加) ---
+//
+// 【何を守っているか】「AIに質問」タブのExampleフィールドには
+// `<span class="ex-num">Ex1.</span>` という採番ラベルが焼き込まれており、
+// タグだけ落とすと中身の「Ex1.」が読み上げに残る。実測で「Ex1. She avoids
+// eating late at night.」の音声は3.98秒(同じ声で読んだ8語の文は2.09秒)で、
+// 差の約1.9秒がラベルの読み上げだった。Answer先頭の「(B) 」も同様。
+console.log('\n[1b] 表示のためだけの文字を読み上げから外す');
+
+{
+  // 実データ(Grammar Multi の Example)そのままの文字列
+  const raw = '<span class="ex-num">Ex1.</span> It was so dark as to see nothing.<br>'
+    + '<span class="ex-num">Ex2.</span> Hold it gently so as not to break it.';
+  const got = stripHtmlForTts(raw);
+  const want = 'It was so dark as to see nothing. Hold it gently so as not to break it.';
+  if (got === want) ok('ex-numラベル(Ex1./Ex2.)は読み上げに入らない');
+  else fail(`ex-numラベルが残っている: ${JSON.stringify(got)}`);
+}
+
+{
+  const got = stripHtmlForTts('(B) The music was so loud as to wake up the whole neighborhood.');
+  const want = 'The music was so loud as to wake up the whole neighborhood.';
+  if (got === want) ok('Answer先頭の選択肢記号「(B) 」は読み上げに入らない');
+  else fail(`選択肢記号が残っている: ${JSON.stringify(got)}`);
+}
+
+{
+  const got = stripHtmlForTts('<b>(A) Correct answer.</b>');
+  if (got === 'Correct answer.') ok('先頭にタグがあっても選択肢記号だけを落とす');
+  else fail(`先頭タグ付きの選択肢記号の処理が想定外: ${JSON.stringify(got)}`);
+}
+
+{
+  const got = stripHtmlForTts('Ex1. First sentence.<br>2. Second sentence.');
+  if (got === 'First sentence. Second sentence.') ok('spanで囲まれていない素の見出しラベルも落とす');
+  else fail(`素の見出しラベルが残っている: ${JSON.stringify(got)}`);
+}
+
+{
+  // 誤検出の防止。数字を1桁以上要求しているので "Yes." "No." は落ちない。
+  const got = stripHtmlForTts('Yes.<br>No.<br>He said "hi".');
+  if (got === 'Yes. No. He said "hi".') ok('"Yes." "No." のような正当な短文は落とさない');
+  else fail(`正当な短文まで落ちている: ${JSON.stringify(got)}`);
+}
+
+{
+  // 選択肢は(A)〜(D)しか使わないので、"(I)" のような正当な括弧は残す。
+  if (stripHtmlForTts('(I) am here.') === '(I) am here.') ok('(A)〜(D)以外の丸括弧は残す');
+  else fail('(A)〜(D)以外の丸括弧まで落ちている');
+}
+
+{
+  // ラベルしか無いフィールドは空になる → analyze側で「空欄」として飛ばせる。
+  if (stripHtmlForTts('<span class="ex-num">Ex1.</span>') === '') ok('ラベルだけのフィールドは空文字になる');
+  else fail('ラベルだけのフィールドが空にならない');
+}
+
+{
+  const got = splitIntoSentences('<span class="ex-num">Ex1.</span> One.<br><span class="ex-num">Ex2.</span> Two.');
+  if (deepEq(got, ['One.', 'Two.'])) ok('splitIntoSentencesもラベルを除いた文だけを返す');
+  else fail(`splitIntoSentencesの結果が想定と違う: ${JSON.stringify(got)}`);
+}
+
+{
+  // 「ラベルだけの極小mp3」が作られないことの回帰テスト(2026-07-27に結合で
+  // 対処していた問題を、2026-08-21に除去で対処し直した)。
+  const got = splitIntoSentences('Ex1.<br>Ex2.');
+  if (deepEq(got, [])) ok('ラベル単体は文として切り出されない(極小mp3を作らない)');
+  else fail(`ラベル単体が文として残っている: ${JSON.stringify(got)}`);
+}
+
+{
+  // 日本語除外オプションと併用しても、ラベル除去が二重に効いて壊れないこと。
+  const raw = '<span class="ex-num">Ex1.</span> This is English.<br>'
+    + '<span class="ex-num">Ex2.</span> これは日本語です。<br>'
+    + '<span class="ex-num">Ex3.</span> Another English one.';
+  const got = stripHtmlForTts(stripJapaneseSentences(raw));
+  if (got === 'This is English. Another English one.') ok('日本語除外オプションと併用しても壊れない');
+  else fail(`日本語除外との併用結果が想定と違う: ${JSON.stringify(got)}`);
+}
+
+{
+  if (stripDisplayOnlyMarkup('<span class="ex-num">Ex1.</span> Body.') === ' Body.') {
+    ok('stripDisplayOnlyMarkupはタグ除去より前に使う前提でラベルごと落とす');
+  } else {
+    fail('stripDisplayOnlyMarkupの単体挙動が想定外');
+  }
 }
 
 // --- callGoogleTts / エラー分類 ---
@@ -126,7 +228,7 @@ console.log('\n[3] synthesizeFieldWithTags(フィールド全体で1つのMP3・
     media,
   );
   const expectedHtml = 'She likes coffee.<br>He likes tea.<br>[sound:tts_word_0_example.mp3]';
-  if (calls === 1 && deepEq(seenTexts, ['She likes coffee.. He likes tea.'])) {
+  if (calls === 1 && deepEq(seenTexts, ['She likes coffee. He likes tea.'])) {
     ok('複数文を含むフィールドでもTTS呼び出しは1回だけ(文ごとに分割しない)');
   } else {
     fail(`TTS呼び出し回数/テキストが想定外: calls=${calls}, texts=${JSON.stringify(seenTexts)}`);

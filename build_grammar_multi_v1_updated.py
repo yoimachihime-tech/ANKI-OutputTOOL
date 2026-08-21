@@ -3,16 +3,41 @@
 # Grammar Multi (文法・複数出題形式) — 統合版・単一の正典ファイル (v2)
 # model ID: 1907250010123 / deck: 02.単語・MindTips::文法・用法
 #
-# 【重要な変更】
-# 片桐がAnki GUI側でテンプレート2〜4(セルフチェック/理由想起/例文穴埋め)を
-# 削除し、現在は「1. 判断問題」のみが有効なテンプレートとなっている。
-# このファイルはその状態に合わせ、templates を1つだけに削減している。
-# MODEL_ID・フィールド構成・CSSは変更なし(既存ノート/学習履歴と完全互換)。
+# 【テンプレート構成(2026-08-21に実態へ合わせた)】
+# 以前このファイルには「片桐がAnki GUI側でテンプレート2〜4を削除したので
+# templates は1つだけ」と書いてあったが、**実際のコレクションには4つとも
+# 残っていた**(2026-08-21に実データで確認)。その食い違いのせいで、ツールが
+# 作った24ノートは「1. 判断問題」1枚しか生えず、それ以前の131ノートは4枚、
+# という不揃いな状態になっていた。片桐の判断で**実態(4テンプレート)に
+# 合わせる**ことにし、このファイルに4つとも定義している。
+#
+# 【2026-08-21の「例文穴埋め」の作り直し】
+# 旧「4. 例文穴埋め」は、表で `{{Example}}` を `.masked` クラス付きで出し、
+# CSSで `<b>` を透明にして空所に見せる方式だった。しかし**音声タグ
+# `[sound:…]` も同じ Example フィールドに入る**ため、Ankiが `[sound:]` を
+# CSSより先に処理する仕様により、**隠した語が音声で丸聞こえ**になっていた
+# (CLAUDE.mdの「音声が入るフィールドと隠したい答えは物理的に分離すること」
+# に、このテンプレートだけ違反していた)。さらに本ツールが作る Example には
+# `<b>` が1つも入らないため、新しいカードでは**そもそも穴が開かず**、表に
+# 完全な例文と音声がそのまま出ていた。
+#
+# 対策として `ExampleBlank`(穴あき版・音声タグを持たない)フィールドを
+# 追加し、表はそれだけを出す。完全な例文と音声は裏の `{{Example}}` にだけ
+# 置く。`ExampleBlank` が空のノートでは表が空になるので、Ankiは4枚目の
+# カードを作らない(穴が開かないのに出題してしまう事故を構造的に防ぐ)。
+# あわせて、テンプレート3・4にあった
+# `<div id="qb-source" style="display:none">{{Question}}</div>` + JS の
+# ヒント抽出も撤去した(目印 `<b>状況:</b>` は本ツール製ノートに1件も無く、
+# 常に空振りしていた。Questionフィールド全体を非表示でDOMに置くのは、
+# ②でQuestionを読み上げ対象に選んだときに「画面に無いのに読まれる」
+# 事故のもとでもある)。MODEL_IDは不変(既存ノート/学習履歴と互換)。
 #
 # 【1ノート=1カードの運用】
 # 今後、1つの質問に対して複数の練習問題を作る場合も「1ノートから複数
 # カードを生成する」方式は取らず、必ず独立したノートを複数作成すること。
 # ==================================================================
+import re
+
 import genanki
 
 CSS = r"""
@@ -156,16 +181,13 @@ CSS = r"""
 b { color: inherit; }
 hr.sep { border: none; border-top: 1px solid var(--question-border); margin: 18px 0; }
 
-.masked b {
-  color: transparent;
-  background: var(--sub);
-  border-radius: 4px;
-  padding: 0 2px;
-}
-
 .ex-num { font-weight: 700; }
 
-.blank-hint { color: var(--sub); font-size: 14px; margin-bottom: 10px; }
+/* 「4. 例文穴埋め」の空所。ExampleBlankフィールドの中身。
+   旧方式(.masked b でExampleの<b>をCSSで透明にする)は、同じフィールドに
+   入っている音声タグが隠した語を読み上げてしまうため廃止した
+   (2026-08-21。ファイル冒頭のコメント参照)。 */
+.blank { font-family: "SF Mono", Menlo, monospace; letter-spacing: .05em; color: var(--sub); }
 """
 
 SCROLL_SCRIPT = r"""
@@ -221,7 +243,100 @@ QUESTION_TEMPLATE_BACK = QUESTION_TEMPLATE_FRONT + r"""
 {{/WhyNot}}
 """ + SCROLL_SCRIPT
 
-MODEL_ID = 1907250010123  # 既存と同一(フィールド・IDは不変。テンプレートのみ1つに削減)
+SELFCHECK_TEMPLATE_FRONT = r"""
+<div class="pattern-tag">{{Pattern}}</div>
+<div class="block question-block">
+  <div class="question-label">Self-Check (no options)</div>
+  {{Question}}
+</div>
+"""
+
+SELFCHECK_TEMPLATE_BACK = SELFCHECK_TEMPLATE_FRONT + r"""
+<hr class="sep">
+<div class="block answer-block" id="answer-target">
+  <div class="label">Answer</div>
+  <div class="sentence">{{Answer}}</div>
+</div>
+
+{{#Example}}
+<div class="block example-block">
+  <div class="label">Examples</div>
+  <div class="example-sentence">{{Example}}</div>
+  {{#ExampleJA}}<div class="example-ja">{{ExampleJA}}</div>{{/ExampleJA}}
+</div>
+{{/Example}}
+
+<div class="block why-block">
+  <div class="label">Why</div>
+  {{Why}}
+</div>
+
+{{#WhyNot}}
+<div class="block whynot-block">
+  <div class="label">Why not the others?</div>
+  {{WhyNot}}
+</div>
+{{/WhyNot}}
+""" + SCROLL_SCRIPT
+
+# 「3. 理由想起」: 正しい文だけを見せて理由を思い出させる。
+# 裏は{{FrontSide}}を使い、Answerの音声タグが裏でもう一度鳴らないようにする
+# (Ankiは{{FrontSide}}から[sound:]を取り除く)。
+REASON_TEMPLATE_FRONT = r"""
+<div class="pattern-tag">{{Pattern}}</div>
+<div class="block answer-block">
+  <div class="label">Sentence</div>
+  <div class="sentence">{{Answer}}</div>
+</div>
+<div class="question-label" style="margin-top:14px;">Why is this correct?{{#WhyNot}} Why not the alternatives?{{/WhyNot}}</div>
+"""
+
+REASON_TEMPLATE_BACK = r"""{{FrontSide}}
+
+<hr class="sep">
+<div class="block why-block" id="answer-target">
+  <div class="label">Why</div>
+  {{Why}}
+</div>
+
+{{#WhyNot}}
+<div class="block whynot-block">
+  <div class="label">Why not the others?</div>
+  {{WhyNot}}
+</div>
+{{/WhyNot}}
+""" + SCROLL_SCRIPT
+
+# 「4. 例文穴埋め」: 表は穴あき版(ExampleBlank)だけ。**音声タグを持つ
+# Exampleは表に出さない**(隠した語が音声で漏れるのを構造的に防ぐ)。
+# 表全体を{{#ExampleBlank}}で囲んであるので、穴あき版が無いノートでは
+# 表が空になり、Ankiはこのカードを作らない。
+BLANK_TEMPLATE_FRONT = r"""
+{{#ExampleBlank}}
+<div class="pattern-tag">{{Pattern}}</div>
+<div class="block question-block">
+  <div class="question-label">Fill in the blank</div>
+  <div class="example-sentence">{{ExampleBlank}}</div>
+  {{#ExampleJA}}<div class="example-ja">{{ExampleJA}}</div>{{/ExampleJA}}
+</div>
+{{/ExampleBlank}}
+"""
+
+BLANK_TEMPLATE_BACK = r"""{{FrontSide}}
+
+<hr class="sep">
+<div class="block example-block" id="answer-target">
+  <div class="label">Answer</div>
+  <div class="example-sentence">{{Example}}</div>
+</div>
+
+<div class="block why-block">
+  <div class="label">Why</div>
+  {{Why}}
+</div>
+""" + SCROLL_SCRIPT
+
+MODEL_ID = 1907250010123  # 既存と同一(IDは不変。フィールドは末尾に追加のみ)
 GRAMMAR_MODEL = genanki.Model(
     MODEL_ID,
     'Grammar Multi (文法・複数出題形式)',
@@ -234,9 +349,15 @@ GRAMMAR_MODEL = genanki.Model(
         {'name': 'ExampleJA'},
         {'name': 'Why'},
         {'name': 'WhyNot'},
+        # 2026-08-21追加。**必ず末尾に足すこと**(既存ノートのフィールド順が
+        # ずれると、コレクション側の中身が別のフィールドへ移動してしまう)。
+        {'name': 'ExampleBlank'},
     ],
     templates=[
         {'name': '1. 判断問題', 'qfmt': QUESTION_TEMPLATE_FRONT, 'afmt': QUESTION_TEMPLATE_BACK},
+        {'name': '2. セルフチェック', 'qfmt': SELFCHECK_TEMPLATE_FRONT, 'afmt': SELFCHECK_TEMPLATE_BACK},
+        {'name': '3. 理由想起', 'qfmt': REASON_TEMPLATE_FRONT, 'afmt': REASON_TEMPLATE_BACK},
+        {'name': '4. 例文穴埋め', 'qfmt': BLANK_TEMPLATE_FRONT, 'afmt': BLANK_TEMPLATE_BACK},
     ],
     css=CSS,
 )
@@ -255,6 +376,35 @@ def example_en(pairs):
 
 def example_ja(pairs):
     return "<br>".join(f"└ {ja}" for en, ja in pairs)
+
+
+# 例文中の学習対象語(Geminiに<b>で囲ませている)を空所に置き換えるための正規表現。
+_BOLD_RE = re.compile(r"<b>(.*?)</b>", re.IGNORECASE | re.DOTALL)
+
+
+def blank_out(en: str) -> str:
+    """例文1文の <b>…</b> を空所に置き換える。"""
+    return _BOLD_RE.sub('<span class="blank">____</span>', en)
+
+
+def example_blank(pairs):
+    """「4. 例文穴埋め」の表に出す、穴あき版の例文HTMLを返す。
+
+    Exampleと同じ採番ラベルを付けるが、**音声タグは一切付かない**
+    (音声は完全版のExampleにだけ入れる。同じフィールドに同居させると、
+    Ankiが[sound:]をCSSより先に処理する仕様のせいで隠した語が読み上げられて
+    しまう)。
+
+    `<b>`で囲まれた語が1つも無い場合は**空文字を返す**。穴が開かないのに
+    「Fill in the blank」を出すと、表に答えがそのまま見えてしまうため。
+    空を返すとテンプレート4の表が空になり、Ankiはそのカードを作らない。
+    """
+    if not any(_BOLD_RE.search(str(p[0])) for p in pairs):
+        return ""
+    return "<br>".join(
+        f'<span class="ex-num">Ex{i}.</span> {blank_out(str(p[0]))}'
+        for i, p in enumerate(pairs, start=1)
+    )
 
 # notes_data はこのファイルを流用する各バッチスクリプト側で定義し、
 # genanki.Note(model=GRAMMAR_MODEL, ...) で1ノート=1カードとして追加すること。

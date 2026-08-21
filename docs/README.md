@@ -459,9 +459,9 @@ npm test        # 下記8つをまとめて実行
 | コマンド | 内容 |
 | --- | --- |
 | `npm run verify` | 同じ入力からデスクトップ版(genanki)と Web 版それぞれで `.apkg` を作り(word・grammar_multi・shuujuku・daily の4カード種別)、guid・フィールド・タグ・カード構成・ノートタイプ定義を突き合わせる |
-| `npm run verify:grammar-multi` | Grammar Multi 固有の後処理(日本語指示文と英文の間の改行整形、選択問題の正解記号 `(B)` の付与、choices/whynot/example の HTML 化)が Python 版と一致するかを、生の Gemini 応答 JSON を固定して突き合わせる |
+| `npm run verify:grammar-multi` | Grammar Multi 固有の後処理(日本語指示文と英文の間の改行整形、選択問題の正解記号 `(B)` の付与、choices/whynot/example の HTML 化、および例文の `<b>` から作る穴あき版 `example_blank`)が Python 版と一致するかを、生の Gemini 応答 JSON を固定して突き合わせる |
 | `npm run test:ui` | jsdom 上で `index.html` + `app.js` を実際に動かし、単語・AIに質問(3問+習熟用4問目)・習熟用(音読)・DailyConversation の各タブで通し動作を確認する(Gemini API・Sheets API・Googleログインはすべてモックするので、キー・割り当て・実データを消費しない) |
-| `npm run test:tts` | `lib/tts.js`(Cloud Text-to-Speech 呼び出し・文分割・エラー分類・音声埋め込み)を fetch モックで単体テストする(Text-to-Speech API キー・割り当ては消費しない) |
+| `npm run test:tts` | `lib/tts.js`(Cloud Text-to-Speech 呼び出し・読み上げテキストの組み立て・文分割・エラー分類・音声埋め込み)を fetch モックで単体テストする(Text-to-Speech API キー・割り当ては消費しない)。「表示のためだけの文字」(例文の採番ラベル `Ex1.`、Answer 先頭の `(B) `)を読み上げに入れないことの回帰テストを含む。デスクトップ版の同じ検証は `test_tts_core.py` にある |
 | `npm run test:gemini` | `lib/gemini.js` の `callGemini()` のエラー処理・リトライ挙動(503 の自動リトライ、429 の既存挙動の回帰確認)を fetch モックで単体テストする |
 | `npm run test:sheets` | `lib/sheets.js`(未出力行の取得・添削結果の追記・「Anki出力済み」列のマーク・エラー分類、認可コードフロー: PKCE/state の照合・`access_type=offline`+`prompt=consent`・リフレッシュ・`invalid_grant` 時のトークン破棄、および 401 時のアクセストークン自動リトライ)と `lib/dailyconv.js` のローカル除外リストを fetch モックで単体テストする(実際のスプレッドシートにも Worker にもアクセスしない) |
 | `npm run test:sync` | `lib/sync.js`(id 単位の和集合マージ・打ち消し記録・セル容量の判定)と、`lib/sheets.js` の同期用関数(隠しタブ `_AppSync` の自動作成、A列のキー名での読み取り)を fetch モックで単体テストする |

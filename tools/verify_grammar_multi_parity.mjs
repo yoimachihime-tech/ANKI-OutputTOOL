@@ -23,7 +23,8 @@ const RAW_NOTES = [
     choices: [{ opt: 'A', text: 'patient' }, { opt: 'B', text: 'patience' }, { opt: 'C', text: 'patiently' }],
     answer: 'patience',
     correct_opt: 'B',
-    examples: [['She has a lot of patience.', '彼女は忍耐力がある。']],
+    // 2026-08-21: 学習対象語を <b> で囲む形式(穴埋めカードの空所になる)。
+    examples: [['She has a lot of <b>patience</b>.', '彼女は忍耐力がある。']],
     why: '空所は名詞が入る位置です。',
     whynot: [{ opt: 'A', reason: 'patient は形容詞または名詞(患者)。' }, { opt: 'C', reason: 'patiently は副詞。' }],
   },
@@ -89,6 +90,7 @@ for i, note in enumerate(notes):
         ),
         'example': gc._grammar_multi_canon.example_en(examples) if examples else '',
         'example_ja': gc._grammar_multi_canon.example_ja(examples) if examples else '',
+        'example_blank': gc._grammar_multi_canon.example_blank(examples) if examples else '',
         'why': note.get('why', ''),
         'whynot': ''.join(
             gc._grammar_multi_canon.whynot_item(w.get('opt', ''), w.get('reason', '')) for w in whynot
@@ -127,7 +129,8 @@ const actual = await generateGrammarMultiItems({
 });
 
 let failures = 0;
-const FIELD_KEYS = ['pattern', 'question', 'choices', 'answer', 'example', 'example_ja', 'why', 'whynot', 'topic_key', 'note_index'];
+const FIELD_KEYS = ['pattern', 'question', 'choices', 'answer', 'example',
+  'example_ja', 'example_blank', 'why', 'whynot', 'topic_key', 'note_index'];
 
 if (actual.length !== expected.length) {
   console.error(`❌ 件数不一致: web=${actual.length} / python=${expected.length}`);

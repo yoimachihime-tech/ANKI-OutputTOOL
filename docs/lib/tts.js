@@ -305,25 +305,45 @@ function htmlUnescape(text) {
   return el.value;
 }
 
-/** tts_core.strip_html_for_tts() と同一。TTSに渡す平文を作る。 */
-export function stripHtmlForTts(raw) {
-  let text = raw;
-  text = text.replace(/<br\s*\/?>/gi, '. ');
-  text = text.replace(/<\/div>/gi, '. ');
-  text = text.replace(/<[^>]+>/g, '');
-  text = htmlUnescape(text);
-  text = text.replace(/\s+/g, ' ').trim();
-  return text;
+// --- 「表示のためだけの文字」を読み上げから外す(2026-08-21追加) ------------
+//
+// tts_core.py の _EX_NUM_SPAN_RE / _LEADING_OPTION_RE / strip_display_only_markup
+// と同一。カードの見た目のためにフィールドへ焼き込まれている文字(例文の採番
+// ラベル `<span class="ex-num">Ex1.</span>` と、Answer 先頭の選択肢記号
+// 「(B) 」)は、そのままTTSに渡すと音声にも入ってしまう。実測で「Ex1. She
+// avoids eating late at night.」の音声は3.98秒あり、より語数の多い8語の文
+// (2.09秒)より長かった。差の約1.9秒が「Ex1.」の読み上げだった。
+//
+// **タグを消すだけでは足りない**点が肝で、`<[^>]+>` の除去では `<span>` は
+// 消えても中身の「Ex1.」は残る。ラベルの除去はタグ除去より前に行うこと。
+const EX_NUM_SPAN_RE = /<span\b[^>]*\bclass\s*=\s*["'][^"']*\bex-num\b[^"']*["'][^>]*>[\s\S]*?<\/span>/gi;
+// 先頭のタグ(あれば)は温存したまま「(B) 」だけを落とす。選択肢は(A)〜(D)しか
+// 使っていないので、"(I) am ..." のような正当な文を巻き込まないよう範囲を絞る。
+const LEADING_OPTION_RE = /^(\s*(?:<[^>]+>\s*)*)\(\s*[A-Da-d]\s*\)\s*/;
+
+/** tts_core.strip_display_only_markup() と同一。 */
+export function stripDisplayOnlyMarkup(raw) {
+  return String(raw).replace(EX_NUM_SPAN_RE, '').replace(LEADING_OPTION_RE, '$1');
 }
 
-// tts_core._LABEL_ONLY_RE と同一(英字0〜6文字+数字1〜3文字+句点)。
-// 「Ex1.」「2.」のような見出しラベル単体が1文として切り出されるのを防ぐため、
-// 次の断片へ結合する。
+// tts_core._LABEL_ONLY_RE / _LEADING_LABEL_RE と同一(英字0〜6文字+数字1〜3
+// 文字+句点)。少なくとも1桁の数字を要求することで、"Yes." "No." のような
+// 正当な短文をラベルと誤認しないようにしている。
+//
+// 2026-08-21に**結合から除去へ変更**した。以前は「ラベルだけの極小mp3が
+// 大量にできるのを防ぐ」ために次の断片へ結合していたが、それだと「Ex1. It
+// was so dark...」のようにラベルごと読み上げられてしまう。
 const LABEL_ONLY_RE = /^[A-Za-z]{0,6}\d{1,3}\.$/;
+const LEADING_LABEL_RE = /^[A-Za-z]{0,6}\d{1,3}\.\s+(?=\S)/;
 
-/** tts_core.split_into_sentences() と同一のロジック。 */
-export function splitIntoSentences(htmlText) {
-  let normalized = htmlText.replace(/<br\s*\/?>/gi, '\n');
+/**
+ * tts_core._tts_sentences_from_html() と同一。フィールドのHTMLを、読み上げ
+ * 単位の文リストへ正規化する。stripHtmlForTts と splitIntoSentences の
+ * 唯一の実体で、片方だけ直して読み上げ内容と文字数見積もりがずれるのを防ぐ。
+ */
+function ttsSentencesFromHtml(htmlText) {
+  let normalized = stripDisplayOnlyMarkup(htmlText);
+  normalized = normalized.replace(/<br\s*\/?>/gi, '\n');
   normalized = normalized.replace(/<\/div>/gi, '\n');
   normalized = normalized.replace(/<[^>]+>/g, '');
   normalized = htmlUnescape(normalized);
@@ -332,20 +352,37 @@ export function splitIntoSentences(htmlText) {
   for (const rawLine of normalized.split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
-    const rawParts = line.split(/(?<=[.!?])\s+/);
-    const parts = rawParts.map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
-
-    const merged = [];
-    for (const p of parts) {
-      if (merged.length > 0 && LABEL_ONLY_RE.test(merged[merged.length - 1])) {
-        merged[merged.length - 1] = `${merged[merged.length - 1]} ${p}`;
-      } else {
-        merged.push(p);
-      }
+    for (const rawPart of line.split(/(?<=[.!?])\s+/)) {
+      const part = rawPart.replace(/\s+/g, ' ').trim();
+      if (!part || LABEL_ONLY_RE.test(part)) continue;
+      const stripped = part.replace(LEADING_LABEL_RE, '');
+      if (stripped) sentences.push(stripped);
     }
-    sentences.push(...merged);
   }
   return sentences;
+}
+
+/**
+ * tts_core.strip_html_for_tts() と同一。TTSに渡す平文を作る。
+ *
+ * `<br>`・`</div>` は文の区切りとして扱うが、**直前が既に「.」「!」「?」で
+ * 終わっている場合は句点を足さない**。以前は無条件に ". " へ置換していたため、
+ * 「…best.<br><span class="ex-num">Ex2.</span>…」が「…best.. Ex2.…」となり、
+ * Ex2の直前だけ余分な間が空いていた(2026-08-21修正)。
+ */
+export function stripHtmlForTts(raw) {
+  let out = '';
+  for (const sentence of ttsSentencesFromHtml(raw)) {
+    if (!out) out = sentence;
+    else if (/[.!?]$/.test(out)) out += ` ${sentence}`;
+    else out += `. ${sentence}`;
+  }
+  return out;
+}
+
+/** tts_core.split_into_sentences() と同一のロジック。 */
+export function splitIntoSentences(htmlText) {
+  return ttsSentencesFromHtml(htmlText);
 }
 
 // tts_core._JAPANESE_CHAR_RE と同一の範囲
