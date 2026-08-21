@@ -290,6 +290,46 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 
 #settings hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 
+/* 設定画面の見やすさ(2026-08-20)
+   -------------------------------------------------------------------------
+   「文字が全体的に多く、どの項目がどこまで続いているのか分かりづらい」との
+   指摘への対応。**説明文の中身は減らさず、見た目の優先度だけを下げて
+   グループの切れ目をはっきりさせる**方針(デスクトップ版の
+   _settings_section/_settings_hint と同じ考え方)。
+     - h3 をグループ見出しとしてアクセント色+太字にし、上に余白と区切り線を置く
+     - .hint は一段下げて(左に余白)、直前の項目にぶら下がって見えるようにする
+   区切り線を h3 自身に持たせたので、既存の <hr> は無くても切れ目が分かる
+   (残っていても二重線にはならないよう、h3 の直後の hr は消す)。 */
+#settings h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 28px 0 2px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+#settings h3:first-of-type { margin-top: 8px; padding-top: 0; border-top: 0; }
+#settings hr + h3 { margin-top: 0; padding-top: 0; border-top: 0; }
+#settings .hint { padding-left: 12px; }
+/* 版表示とグループ直下の総論は字下げしない(特定の項目の注釈ではないため) */
+#settings .version-line { padding-left: 0; }
+
+/* 一括出力タブの内訳リスト(2026-08-20追加)。件数の桁が揃って見えるよう
+   行頭記号は付けず、種別名と件数だけを並べる。 */
+.bulk-summary { list-style: none; margin: 4px 0 12px; padding: 0; }
+.bulk-summary li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: .92rem;
+}
+.bulk-summary li:last-child { border-bottom: 0; }
+.bulk-summary .bulk-count { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bulk-summary .bulk-note { color: var(--sub); font-size: .85rem; }
+.bulk-summary li.bulk-total { font-weight: 700; border-top: 2px solid var(--border); border-bottom: 0; }
+
 /* a.button-like は、ボタンに見せたいリンク(ローカルツールへの導線)用。
    fetchではなくトップレベル遷移させる必要があるため、button ではなく a を使う。 */
 button,

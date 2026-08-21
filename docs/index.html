@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260820a">
+<link rel="stylesheet" href="./style.css?v=20260821a">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -124,6 +124,8 @@
     それぞれ実行してください。
   </p>
 
+  <h3>Gemini APIキーとモデル</h3>
+
   <label for="api-key">Gemini APIキー</label>
   <div class="row">
     <input type="password" id="api-key" autocomplete="off" spellcheck="false"
@@ -172,6 +174,8 @@
   </div>
 
   <hr>
+
+  <h3>TTS音声(Cloud Text-to-Speech)</h3>
 
   <label for="tts-api-key">Cloud Text-to-Speech APIキー(任意)</label>
   <p class="hint">
@@ -403,12 +407,13 @@
      表示状態か分かりにくいという指摘への対応。 -->
 <div id="main-content">
 
-<!-- 入力元タブ(単語 / AIに質問 / 習熟用 / DailyConversation) -->
+<!-- 入力元タブ(単語 / AIに質問 / 習熟用 / DailyConversation / 一括出力) -->
 <nav class="tabbar" role="tablist">
   <button type="button" class="tab-btn active" data-tab="word" role="tab" aria-selected="true">単語</button>
   <button type="button" class="tab-btn" data-tab="ai_ask" role="tab" aria-selected="false">AIに質問</button>
   <button type="button" class="tab-btn" data-tab="shuujuku" role="tab" aria-selected="false">習熟用(音読)</button>
   <button type="button" class="tab-btn" data-tab="daily" role="tab" aria-selected="false">DailyConversation</button>
+  <button type="button" class="tab-btn" data-tab="bulk" role="tab" aria-selected="false">一括出力</button>
 </nav>
 
 <!-- ============================= 単語タブ ============================= -->
@@ -696,6 +701,41 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
 
 </div>
 
+<!-- ============================ 一括出力タブ ============================ -->
+<!-- 各タブの未出力カードを1回の操作で1つの.apkgにまとめる(2026-08-20追加)。
+     デッキ・ノートタイプは種別ごとに分かれたままなので、Anki側では今まで
+     どおり別々のデッキに入る。 -->
+<div id="tab-bulk" class="tab-panel" hidden role="tabpanel">
+
+  <section class="card">
+    <h2>① 出力対象</h2>
+    <p class="hint">
+      各タブの<b>まだ出力していないカード</b>を集めます。重複としてマークされている
+      カードは、どちらを残すべきか判断できないため対象から外します
+      (元のタブで整理してから出力してください)。
+    </p>
+    <ul id="bulk-summary" class="bulk-summary"></ul>
+    <button type="button" id="bulk-refresh" class="ghost">件数を数え直す</button>
+  </section>
+
+  <section class="card">
+    <h2>② Ankiに取り込む</h2>
+    <p class="hint">
+      .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
+      ⚙設定でTTS APIキーを設定していれば、各タブと同じ対象フィールドに音声も
+      合成して埋め込みます(件数が多いと時間がかかります)。
+      番号(Numや出題順)の採番は、各タブから個別に出力したときとまったく同じです。
+    </p>
+    <label class="checkbox">
+      <input type="checkbox" id="bulk-include-daily" checked>
+      DailyConversationも含める(DailyConversationタブの②で読み込み済みの行が対象)
+    </label>
+    <button type="button" id="bulk-export" class="primary">まとめて .apkg をダウンロード</button>
+    <p id="bulk-export-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+</div>
+
 </div><!-- /#main-content -->
 
 <!-- カードプレビュー(全タブ共通) -->
@@ -711,6 +751,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260820a"></script>
+<script type="module" src="./app.js?v=20260821a"></script>
 </body>
 </html>

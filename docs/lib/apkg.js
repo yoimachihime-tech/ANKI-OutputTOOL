@@ -116,17 +116,28 @@ export function fieldsFromItem(cardDef, item) {
 /**
  * .apkg を組み立てて Blob で返す。
  *
+ * 1種類のカードを出す通常の使い方と、**複数のカード種別を1つの.apkgへ
+ * まとめる**使い方(「一括出力」タブ、2026-08-20追加)の両方に対応する。
+ * まとめた場合もデッキ・ノートタイプは種別ごとに分かれたままなので、
+ * Anki側では今までどおり別々のデッキに取り込まれる。
+ *
  * @param {object}   opts
- * @param {object}   opts.cardDef     docs/shared/card_defs.json の 1 定義
+ * @param {object}   [opts.cardDef]   docs/shared/card_defs.json の 1 定義
  * @param {object}   opts.ankiSchema  docs/shared/anki_schema.json
- * @param {object[]} opts.items       出力する item の配列
+ * @param {object[]} [opts.items]     出力する item の配列
  * @param {Map<string, Uint8Array>} [opts.media] メディア(ファイル名 → 中身)
  * @param {number}   [opts.startDue=1] due_scheme.type="sequence" のときの開始番号
  *   (dueCounter.getNextDue(キー) の値を呼び出し側から渡す)
+ * @param {{cardDef: object, items: object[], startDue?: number}[]} [opts.groups]
+ *   複数種別をまとめる場合の指定。渡した場合 cardDef/items/startDue は無視される。
  * @returns {Promise<Blob>}
  */
-export async function buildApkg({ cardDef, ankiSchema, items, media, startDue = 1 }) {
-  if (!items || items.length === 0) {
+export async function buildApkg({ cardDef, ankiSchema, items, media, startDue = 1, groups }) {
+  // 単体指定(cardDef/items)は「1件だけのgroups」として正規化し、以降の処理を
+  // 一本化する(既存の呼び出し側と tools/verify_web_parity.mjs は無変更で動く)。
+  const groupList = (groups && groups.length ? groups : [{ cardDef, items, startDue }])
+    .filter((g) => g && g.cardDef && g.items && g.items.length > 0);
+  if (groupList.length === 0) {
     throw new Error('出力するカードがありません。');
   }
 
@@ -136,82 +147,92 @@ export async function buildApkg({ cardDef, ankiSchema, items, media, startDue = 
     db.run(ankiSchema.schema_sql);
     db.run(ankiSchema.col_insert_sql);
 
-    // --- デッキを col.decks へ追加(genanki Deck.to_json() と同じ形) ---
-    const decks = JSON.parse(selectOne(db, 'SELECT decks FROM col'));
-    decks[String(cardDef.deck_id)] = {
-      collapsed: false,
-      conf: 1,
-      desc: '',
-      dyn: 0,
-      extendNew: 0,
-      extendRev: 50,
-      id: cardDef.deck_id,
-      lrnToday: [163, 2],
-      mod: 1425278051,
-      name: cardDef.deck_name,
-      newToday: [163, 2],
-      revToday: [163, 0],
-      timeToday: [163, 23598],
-      usn: -1,
-    };
-    db.run('UPDATE col SET decks = ?', [JSON.stringify(decks)]);
-
     // genanki は id を「書き出し時刻(ミリ秒)からの連番」で採番する。
+    // **複数種別をまとめる場合も通し番号にすること**(種別ごとに振り直すと
+    // ノートIDが衝突する)。
     const timestampMs = Date.now();
     const timestampSec = Math.floor(timestampMs / 1000);
     let nextId = timestampMs;
 
-    // --- ノートタイプを col.models へ追加(Python が書き出したものをそのまま) ---
-    // mod だけは genanki が書き出し時刻で埋める値なので、ここで入れ直す
-    // (共有 JSON に固定値で持たせると、更新時刻が常に同じになってしまう)。
+    const decks = JSON.parse(selectOne(db, 'SELECT decks FROM col'));
     const models = JSON.parse(selectOne(db, 'SELECT models FROM col'));
-    models[String(cardDef.model_id)] = { ...cardDef.anki_model, mod: timestampSec };
-    db.run('UPDATE col SET models = ?', [JSON.stringify(models)]);
 
-    // --- ノートとカードを挿入 ---
+    for (const group of groupList) {
+      const def = group.cardDef;
+      const groupItems = group.items;
+      const groupStartDue = group.startDue === undefined ? 1 : group.startDue;
 
-    const sortFieldIndex = cardDef.anki_model.sortf || 0;
-    const tagsField = tagsFieldFor(cardDef);
+      // --- デッキを col.decks へ追加(genanki Deck.to_json() と同じ形) ---
+      decks[String(def.deck_id)] = {
+        collapsed: false,
+        conf: 1,
+        desc: '',
+        dyn: 0,
+        extendNew: 0,
+        extendRev: 50,
+        id: def.deck_id,
+        lrnToday: [163, 2],
+        mod: 1425278051,
+        name: def.deck_name,
+        newToday: [163, 2],
+        revToday: [163, 0],
+        timeToday: [163, 23598],
+        usn: -1,
+      };
 
-    for (let i = 0; i < items.length; i += 1) {
-      const item = items[i];
-      const fields = fieldsFromItem(cardDef, item);
-      const guid = await buildItemGuid(cardDef, item);
-      const due = dueFor(cardDef.due_scheme, item, i, startDue);
-      const noteId = nextId;
-      nextId += 1;
+      // --- ノートタイプを col.models へ追加(Python が書き出したものをそのまま) ---
+      // mod だけは genanki が書き出し時刻で埋める値なので、ここで入れ直す
+      // (共有 JSON に固定値で持たせると、更新時刻が常に同じになってしまう)。
+      models[String(def.model_id)] = { ...def.anki_model, mod: timestampSec };
 
-      db.run('INSERT INTO notes VALUES(?,?,?,?,?,?,?,?,?,?,?)', [
-        noteId,                       // id
-        guid,                         // guid
-        cardDef.model_id,             // mid
-        timestampSec,                 // mod
-        -1,                           // usn
-        tagsField,                    // tags(genanki: ' ' + join + ' ')
-        fields.join('\x1f'),          // flds
-        fields[sortFieldIndex] || '', // sfld
-        0,                            // csum(Anki 側が再計算するので 0 でよい)
-        0,                            // flags
-        '',                           // data
-      ]);
+      // --- ノートとカードを挿入 ---
 
-      for (const ord of cardOrdsFor(cardDef.anki_model, fields)) {
-        db.run('INSERT INTO cards VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
-          nextId,           // id
-          noteId,           // nid
-          cardDef.deck_id,  // did
-          ord,              // ord
-          timestampSec,     // mod
-          -1,               // usn
-          0,                // type
-          0,                // queue
-          due,              // due(card_def.due_schemeに従う。dueFor()参照)
-          0, 0, 0, 0, 0, 0, 0, 0, // ivl factor reps lapses left odue odid flags
-          '',               // data
-        ]);
+      const sortFieldIndex = def.anki_model.sortf || 0;
+      const tagsField = tagsFieldFor(def);
+
+      for (let i = 0; i < groupItems.length; i += 1) {
+        const item = groupItems[i];
+        const fields = fieldsFromItem(def, item);
+        const guid = await buildItemGuid(def, item);
+        const due = dueFor(def.due_scheme, item, i, groupStartDue);
+        const noteId = nextId;
         nextId += 1;
+
+        db.run('INSERT INTO notes VALUES(?,?,?,?,?,?,?,?,?,?,?)', [
+          noteId,                       // id
+          guid,                         // guid
+          def.model_id,                 // mid
+          timestampSec,                 // mod
+          -1,                           // usn
+          tagsField,                    // tags(genanki: ' ' + join + ' ')
+          fields.join('\x1f'),          // flds
+          fields[sortFieldIndex] || '', // sfld
+          0,                            // csum(Anki 側が再計算するので 0 でよい)
+          0,                            // flags
+          '',                           // data
+        ]);
+
+        for (const ord of cardOrdsFor(def.anki_model, fields)) {
+          db.run('INSERT INTO cards VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+            nextId,           // id
+            noteId,           // nid
+            def.deck_id,      // did
+            ord,              // ord
+            timestampSec,     // mod
+            -1,               // usn
+            0,                // type
+            0,                // queue
+            due,              // due(card_def.due_schemeに従う。dueFor()参照)
+            0, 0, 0, 0, 0, 0, 0, 0, // ivl factor reps lapses left odue odid flags
+            '',               // data
+          ]);
+          nextId += 1;
+        }
       }
     }
+
+    db.run('UPDATE col SET decks = ?', [JSON.stringify(decks)]);
+    db.run('UPDATE col SET models = ?', [JSON.stringify(models)]);
 
     const dbBytes = db.export();
     return await zipApkg(dbBytes, media);

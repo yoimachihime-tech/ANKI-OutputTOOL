@@ -2022,12 +2022,126 @@ if (!$('shuujuku-generate-status').textContent.includes('すべて大文字')) {
   fail('直していないのに通知が出ている');
 }
 
+// ===========================================================================
+// 一括出力タブ(2026-08-20追加)
+// ===========================================================================
+console.log('\n[19] 一括出力: buildApkg({groups}) が複数種別を1つの.apkgにまとめる');
+{
+  // UIを通さず buildApkg を直接呼んで、複数デッキ・複数ノートタイプが
+  // 1つの.apkgに入ることを確かめる(一括出力タブの中核)。
+  const { buildApkg: buildApkgDirect } = await import('../docs/lib/apkg.js');
+  const defs = JSON.parse(readFileSync(join(DOCS, 'shared/card_defs.json'), 'utf8')).defs;
+  const schema = JSON.parse(readFileSync(join(DOCS, 'shared/anki_schema.json'), 'utf8'));
+  const blob = await buildApkgDirect({
+    ankiSchema: schema,
+    groups: [
+      {
+        cardDef: defs.word,
+        startDue: 500,
+        items: [{
+          word: 'bulktest', reading: '', pos: 'adj.', meaning: 'テスト',
+          example: 'A bulktest word.', example_ja: 'テスト。', example_blank: '', note: '',
+        }],
+      },
+      {
+        cardDef: defs.shuujuku,
+        items: [{
+          deck_title: '習熟用', num: '007', badge: '007',
+          pattern_en: 'It is <mark>形容詞</mark> to do', pattern_jp: '〜するのは形容詞だ',
+          ex1_en: 'It is fun to study.', ex1_jp: '勉強は楽しい。',
+          ex2_en: '', ex2_jp: '', ex3_en: '', ex3_jp: '', ex4_en: '', ex4_jp: '',
+          tip: '', source: '', all_audio: '',
+          source_kind: 'chat', source_topic: 'bulk-test',
+        }],
+      },
+    ],
+  });
+  const zip = await window.JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
+  const { DatabaseSync } = await import('node:sqlite');
+  const { writeFileSync, unlinkSync } = await import('node:fs');
+  const tmp = join(HERE, '.uitest_bulk_direct.anki2');
+  writeFileSync(tmp, await zip.file('collection.anki2').async('nodebuffer'));
+  try {
+    const db = new DatabaseSync(tmp);
+    const col = db.prepare('SELECT decks, models FROM col').get();
+    const deckNames = Object.values(JSON.parse(col.decks)).map((d) => d.name).sort();
+    const modelNames = Object.values(JSON.parse(col.models)).map((m) => m.name).sort();
+    const notes = db.prepare('SELECT mid FROM notes').all();
+    const cards = db.prepare('SELECT COUNT(*) AS n FROM cards').get();
+    if (deckNames.includes('02.単語・MindTips::単語') && deckNames.includes('02.単語・MindTips::習熟用')) {
+      ok(`デッキが種別ごとに分かれて入っている: ${deckNames.join(' / ')}`);
+    } else {
+      fail(`デッキが想定外: ${deckNames.join(' / ')}`);
+    }
+    if (modelNames.includes('Vocab (単語 v1)') && modelNames.includes('ATSU方式 (音読用・TTS対応)')) {
+      ok('ノートタイプが2種類とも入っている');
+    } else {
+      fail(`ノートタイプが想定外: ${modelNames.join(' / ')}`);
+    }
+    if (notes.length === 2) ok('ノートが2件(種別ごとに1件ずつ)');
+    else fail(`ノート数: ${notes.length}(期待:2)`);
+    // 単語は2テンプレート、習熟用は1テンプレートなので 2+1=3 枚
+    if (cards.n === 3) ok('カードが3枚(単語2枚 + 習熟用1枚)');
+    else fail(`カード枚数: ${cards.n}(期待:3)`);
+    if (new Set(notes.map((n) => n.mid)).size === 2) ok('ノートが別々のノートタイプに割り当たっている');
+    else fail('ノートのmidが1種類しかない');
+    db.close();
+  } finally {
+    try { unlinkSync(tmp); } catch { /* 残っても検証結果に影響しない */ }
+  }
+}
+
+console.log('\n[20] 一括出力タブ: 内訳の表示と書き出し');
+document.querySelector('[data-tab="bulk"]').click();
+if ($('tab-bulk').hidden === false) ok('一括出力タブに切り替わった');
+else fail('一括出力タブに切り替わらない');
+
+// DailyConversation は前のセクションで読み込んだ行が残っているため、
+// この検証では対象から外して習熟用の1件だけに絞る。
+$('bulk-include-daily').checked = false;
+$('bulk-refresh').click();
+{
+  const rows = Array.from($('bulk-summary').children).map((li) => li.textContent);
+  // 単語/AIに質問/習熟用/DailyConversation + 合計 の5行
+  if (rows.length === 5) ok('内訳が5行(4種別 + 合計)で描画された');
+  else fail(`内訳の行数: ${rows.length}(期待:5)`);
+  if (rows[2].includes('習熟用') && rows[2].includes('1 件')) {
+    ok('習熟用の未出力が1件と数えられている');
+  } else {
+    fail(`習熟用の行: ${rows[2]}`);
+  }
+  if (rows[3].includes('含めない設定です')) ok('DailyConversationを外した理由が表示される');
+  else fail(`DailyConversationの行: ${rows[3]}`);
+  if (rows[4].includes('合計') && rows[4].includes('1 件')) ok('合計が1件');
+  else fail(`合計の行: ${rows[4]}`);
+}
+
+downloaded = null;
+$('bulk-export').click();
+for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+if (!downloaded) {
+  fail('.apkg が生成されなかった');
+} else {
+  await dumpApkgAndCheck(downloaded, {
+    expectedNoteCount: 1,
+    expectedCardCount: 1,
+    firstFieldEquals: '習熟用',
+    tmpName: '.uitest_bulk.anki2',
+  });
+  const afterStock = JSON.parse(localStorage.getItem('anki_tool_shuujuku_stock') || '[]');
+  if (afterStock.length === 0) ok('出力成功後、習熟用ストックが空になった');
+  else fail(`出力後の習熟用ストック件数: ${afterStock.length}(期待:0)`);
+  const summaryAfter = Array.from($('bulk-summary').children).map((li) => li.textContent);
+  if (summaryAfter[4].includes('0 件')) ok('出力後に内訳が数え直されている');
+  else fail(`出力後の合計: ${summaryAfter[4]}`);
+}
+
 $('shuujuku-clear-stock').click();
 $('shuujuku-input').value = '';
 await sleep(20);
 
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
-  : '\n✅ Web版UIの通し動作(単語・AIに質問・習熟用(音読)・DailyConversationの'
-    + '各タブ)はすべて正常です。');
+  : '\n✅ Web版UIの通し動作(単語・AIに質問・習熟用(音読)・DailyConversation・'
+    + '一括出力の各タブ)はすべて正常です。');
 process.exit(failures ? 1 : 0);

@@ -22,14 +22,18 @@ import {
   phraseExampleCount, phraseExamplesMayOmit, MAX_PHRASE_EXAMPLES,
   correctEnglishText, consolidateNoErrorCorrections, listModels,
 } from './lib/gemini.js';
-import { buildApkg, fieldsFromItem } from './lib/apkg.js';
+// `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
+// (2026-08-21: 一括出力タブのために buildApkg を複数種別対応にしたため、
+// 古い apkg.js が使われると groups 指定が無視されてしまう)。
+// apkg.js は app.js からしか import されていない。
+import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20260821a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-20: 習熟用のフィールド構成をv2へ変えた際、ここが無かったために
 // ブラウザが古い lib/shuujuku.js を読み続け、旧Num/Content形式のカードが
 // 出力され続けた)。shuujuku.js は app.js からしか import されていない。
 import {
   buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum,
-} from './lib/shuujuku.js?v=20260820a';
+} from './lib/shuujuku.js?v=20260821a';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
 } from './lib/dueCounter.js';
@@ -201,7 +205,7 @@ const TTS_FIELD_KEYS = {
 // 「操作できない」と正しく伝わり、かつ理由を読み上げられる。
 // ---------------------------------------------------------------------------
 let apkgExportInProgress = false;
-const EXPORT_BUTTON_IDS = ['word-export', 'ai-ask-export', 'shuujuku-export', 'daily-export'];
+const EXPORT_BUTTON_IDS = ['word-export', 'ai-ask-export', 'shuujuku-export', 'daily-export', 'bulk-export'];
 const EXPORT_BUSY_MESSAGE = '.apkg の出力が進行中です。完了してからもう一度実行してください。\n'
   + '(同時にダウンロードするとブラウザ側で片方が破棄され、出力できていないのに'
   + '「出力済み」になってしまうことがあるため、1つずつ実行します)';
@@ -320,6 +324,7 @@ async function init() {
   renderWordStock();
   renderAiAskStock();
   renderShuujukuStock();
+  renderBulkSummary();
   renderDailyPending();
 
   // Googleの同意画面から `?code=...` を付けて戻ってきた直後なら、ここで
@@ -598,6 +603,10 @@ function bindEvents() {
   on('daily-reset-exported', 'click', onDailyResetExported);
   on('daily-export', 'click', onDailyExport);
 
+  on('bulk-refresh', 'click', renderBulkSummary);
+  on('bulk-include-daily', 'change', renderBulkSummary);
+  on('bulk-export', 'click', onExportBulk);
+
   // プレビュー(共通)
   on('preview-close', 'click', () => $('preview-dialog').close());
 }
@@ -611,6 +620,9 @@ function switchTab(key) {
   document.querySelectorAll('.tab-panel').forEach((panel) => {
     panel.hidden = panel.id !== `tab-${key}`;
   });
+  // 他のタブでカードを増減した後に開かれることが多いので、表示のたびに
+  // 数え直す(2026-08-20追加)。
+  if (key === 'bulk') renderBulkSummary();
 }
 
 /**
@@ -3536,6 +3548,272 @@ function buildStockRow({ isDuplicate, tags, title, subtitle, meta, rowId, onPrev
 
   li.append(cb, body, preview);
   return li;
+}
+
+// ---------------------------------------------------------------------------
+// 一括出力タブ(2026-08-20追加)
+//
+// 各タブの「.apkg をダウンロード」を1回で済ませるためのタブ。集める対象は
+// 「まだ出力していないカード」から「重複としてマークされているもの」を除いた
+// もので、**重複クラスタは片方だけ残さず丸ごと対象外にする**(どちらを残す
+// べきかはアプリには判断できず、勝手に選ぶと意図しない方が出力されるため。
+// 各タブの一覧で警告色になっているものと完全に同じ集合なので、そのタブで
+// 整理してから出力すればよい)。
+//
+// デッキ・ノートタイプは種別ごとに分かれたまま1つの.apkgへ入る
+// (lib/apkg.js の buildApkg({groups}) を参照)。Num・cards.due の採番、
+// 出力済みの記録の付き方は、各タブから個別に出力したときとまったく同じ。
+//
+// DailyConversationだけは候補の実体がスプレッドシートなので、**このタブから
+// シートを読みには行かない**(ネットワークアクセスと再ログインを一括出力の
+// 副作用にしたくないため)。DailyConversationタブの②で読み込み済みの行だけを
+// 対象にする。
+// ---------------------------------------------------------------------------
+
+/** 一括出力の対象を数える(ネットワークアクセスはしない)。 */
+function collectBulkSources() {
+  const wordDup = wordDuplicateIndices();
+  const aiDup = aiAskDuplicateIndices();
+  const sjDup = shuujukuDuplicateIndices();
+
+  const word = wordStock.filter((item, i) => !item.exported_at && !wordDup.has(i));
+  const aiAsk = aiAskStock.filter((item, i) => !item.exported_at && !aiDup.has(i));
+  // 習熟用は出力するとストックから消える方式なので exported_at は持たない。
+  const shuujuku = shuujukuStock.filter((item, i) => !sjDup.has(i));
+
+  const wordSkipped = wordStock.filter((item, i) => !item.exported_at && wordDup.has(i)).length;
+  const aiSkipped = aiAskStock.filter((item, i) => !item.exported_at && aiDup.has(i)).length;
+  const sjSkipped = sjDup.size;
+
+  let dailyRows = [];
+  let dailyNote = '';
+  const includeDaily = $('bulk-include-daily')?.checked;
+  if (!includeDaily) {
+    dailyNote = '含めない設定です';
+  } else if (dailyPendingRows.length === 0) {
+    dailyNote = 'DailyConversationタブの②で読み込むと対象になります';
+  } else {
+    const exportedIds = dailyconv.loadExportedIds();
+    const notExported = dailyPendingRows.filter((row) => !exportedIds.has(row.id));
+    // 「誤りなし」の行・ID重複行の除外はデスクトップ版と同じ processSheetRows に任せる。
+    const processed = dailyconv.processSheetRows(notExported);
+    dailyRows = processed.rows;
+    const skipped = dailyPendingRows.length - notExported.length;
+    const notes = [];
+    if (skipped > 0) notes.push(`出力済み ${skipped} 件は対象外`);
+    const dropped = notExported.length - dailyRows.length;
+    if (dropped > 0) notes.push(`誤りなし/ID重複 ${dropped} 件は対象外`);
+    dailyNote = notes.join(' / ');
+  }
+
+  return {
+    word: { items: word, skipped: wordSkipped },
+    aiAsk: { items: aiAsk, skipped: aiSkipped },
+    shuujuku: { items: shuujuku, skipped: sjSkipped },
+    daily: { items: dailyRows, note: dailyNote },
+  };
+}
+
+/** 一括出力タブの内訳リストを描画する。 */
+function renderBulkSummary() {
+  const list = $('bulk-summary');
+  if (!list) return;
+  const src = collectBulkSources();
+  const rows = [
+    ['単語', src.word.items.length, src.word.skipped ? `重複 ${src.word.skipped} 件は対象外` : ''],
+    ['AIに質問', src.aiAsk.items.length, src.aiAsk.skipped ? `重複 ${src.aiAsk.skipped} 件は対象外` : ''],
+    ['習熟用(音読)', src.shuujuku.items.length, src.shuujuku.skipped ? `重複 ${src.shuujuku.skipped} 件は対象外` : ''],
+    ['DailyConversation', src.daily.items.length, src.daily.note],
+  ];
+  const total = rows.reduce((sum, r) => sum + r[1], 0);
+  list.textContent = '';
+  for (const [label, count, note] of rows) {
+    const li = document.createElement('li');
+    const left = document.createElement('span');
+    left.textContent = label;
+    if (note) {
+      const noteEl = document.createElement('span');
+      noteEl.className = 'bulk-note';
+      noteEl.textContent = ` (${note})`;
+      left.appendChild(noteEl);
+    }
+    const right = document.createElement('span');
+    right.className = 'bulk-count';
+    right.textContent = `${count} 件`;
+    li.appendChild(left);
+    li.appendChild(right);
+    list.appendChild(li);
+  }
+  const li = document.createElement('li');
+  li.className = 'bulk-total';
+  const left = document.createElement('span');
+  left.textContent = '合計';
+  const right = document.createElement('span');
+  right.className = 'bulk-count';
+  right.textContent = `${total} 件`;
+  li.appendChild(left);
+  li.appendChild(right);
+  list.appendChild(li);
+}
+
+/** 生成した音声を1つのMapへ集める(ファイル名はタブごとの接頭辞で衝突しない)。 */
+function mergeMedia(target, source) {
+  if (!source) return target;
+  for (const [name, bytes] of source) target.set(name, bytes);
+  return target;
+}
+
+async function onExportBulk() {
+  const status = $('bulk-export-status');
+  if (rejectWhileExporting(status)) return;
+
+  const src = collectBulkSources();
+  const total = src.word.items.length + src.aiAsk.items.length
+    + src.shuujuku.items.length + src.daily.items.length;
+  if (total === 0) {
+    setStatus(status, '出力できる未出力のカードがありません。', true);
+    return;
+  }
+  if (!shared.cardDefs || !shared.ankiSchema) {
+    setStatus(status, 'カード定義の読み込みが完了していません。少し待って再試行してください。', true);
+    return;
+  }
+
+  // **出力対象を開始時点で固定する。** 習熟用ストックは「AIに質問」の4問目
+  // 生成やDailyConversationの添削から非同期に増えるため、TTS付きの生成に
+  // 数分かかっている間に増えた分まで出力済みにしてしまわないようにする
+  // (onExportShuujuku と同じ理由)。
+  const wordTargets = src.word.items.slice();
+  const aiTargets = src.aiAsk.items.slice();
+  const shuujukuTargets = src.shuujuku.items.slice();
+  const dailyRows = src.daily.items.slice();
+
+  if (!beginApkgExport(status)) return;
+  let counts = null;
+  try {
+    setStatus(status, '.apkg を生成中...');
+    const media = new Map();
+    const groups = [];
+    // 種別ごとの続き番号は、各タブから単独で出力したときとまったく同じ採番。
+    let shuujukuStartNum = 0;
+
+    if (shuujukuTargets.length > 0) {
+      shuujukuStartNum = getNextNum();
+      const embedded = await embedShuujukuTtsAudio(shuujukuTargets, status);
+      mergeMedia(media, embedded.media);
+      groups.push({
+        cardDef: shared.cardDefs.shuujuku,
+        items: buildFieldsReadyItems(shuujukuTargets, shuujukuStartNum, embedded.audioTagsByItem),
+      });
+    }
+    if (aiTargets.length > 0) {
+      const embedded = await embedTtsAudioIntoItems(
+        aiTargets, TTS_FIELD_KEYS.ai_ask, 'ai_ask', status,
+      );
+      mergeMedia(media, embedded.media);
+      groups.push({
+        cardDef: shared.cardDefs.grammar_multi,
+        items: embedded.items,
+        startDue: getNextDue('grammar_multi'),
+      });
+    }
+    if (wordTargets.length > 0) {
+      const embedded = await embedTtsAudioIntoItems(
+        wordTargets, TTS_FIELD_KEYS.word, 'word', status,
+      );
+      mergeMedia(media, embedded.media);
+      groups.push({
+        cardDef: shared.cardDefs.word,
+        items: embedded.items,
+        startDue: getNextDue('word'),
+      });
+    }
+    if (dailyRows.length > 0) {
+      const readyItems = dailyconv.buildFieldsReadyItems(dailyRows);
+      const embedded = await embedTtsAudioIntoItems(
+        readyItems, TTS_FIELD_KEYS.daily, 'daily', status,
+      );
+      mergeMedia(media, embedded.media);
+      groups.push({
+        cardDef: shared.cardDefs.daily,
+        items: embedded.items,
+        startDue: getNextDue('daily'),
+      });
+    }
+
+    const blob = await buildApkg({ ankiSchema: shared.ankiSchema, groups, media });
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadBlob(blob, `bulk_${stamp}.apkg`);
+    hideLoading(status);
+
+    // --- ここから後処理(ダウンロードに成功してから) ---
+    // 各タブから単独で出力したときと同じ記録の付け方をする。
+    counts = [];
+    if (shuujukuTargets.length > 0) {
+      addTombstoneIds(STORAGE.shuujukuTombstones, shuujukuTargets.map((item) => item.id));
+      advanceNextNum(shuujukuTargets.length);
+      const exportedSet = new Set(shuujukuTargets);
+      shuujukuStock = shuujukuStock.filter((item) => !exportedSet.has(item));
+      localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
+      renderShuujukuStock();
+      counts.push(`習熟用 ${shuujukuTargets.length} 件`);
+    }
+    const exportedAt = new Date().toISOString();
+    if (aiTargets.length > 0) {
+      advanceNextDue('grammar_multi', aiTargets.length);
+      const exportedSet = new Set(aiTargets);
+      aiAskStock = aiAskStock.map((item) => (
+        exportedSet.has(item) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
+      ));
+      localStorage.setItem(STORAGE.aiAskStock, JSON.stringify(aiAskStock));
+      renderAiAskStock();
+      counts.push(`AIに質問 ${aiTargets.length} 件`);
+    }
+    if (wordTargets.length > 0) {
+      advanceNextDue('word', wordTargets.length);
+      const exportedSet = new Set(wordTargets);
+      wordStock = wordStock.map((item) => (
+        exportedSet.has(item) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
+      ));
+      localStorage.setItem(STORAGE.wordStock, JSON.stringify(wordStock));
+      renderWordStock();
+      counts.push(`単語 ${wordTargets.length} 件`);
+    }
+    if (dailyRows.length > 0) {
+      advanceNextDue('daily', dailyRows.length);
+      // シート側の「Anki出力済み」列とは独立に、この端末で出力したことを記録する
+      // (onDailyExport と同じ。マークし忘れ・書き込み失敗時の保険)。
+      dailyconv.addExportedIds(dailyRows.map((r) => r.id));
+      renderDailyPending();
+      counts.push(`DailyConversation ${dailyRows.length} 件`);
+    }
+    renderBulkSummary();
+
+    setStatus(
+      status,
+      `${counts.join(' / ')} を1つの .apkg に書き出しました。`
+      + 'ダウンロードした .apkg を Anki で開いてください。'
+      + (dailyRows.length > 0
+        ? '\nDailyConversationのシートの「Anki出力済み」列にはマークしていません'
+          + '(必要ならDailyConversationタブから行ってください)。'
+        : ''),
+    );
+  } catch (e) {
+    hideLoading(status);
+    if (counts) {
+      // .apkg は既に手元にある。後処理で失敗した場合に「生成に失敗」と読ませない。
+      setStatus(
+        status,
+        `.apkg は出力済みです(ダウンロード済みのファイルをAnkiで開いてください)。\n`
+        + `ただし出力済みの記録に失敗しました: ${e.message}`,
+        true,
+      );
+    } else {
+      setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
+    }
+  } finally {
+    endApkgExport();
+  }
 }
 
 const TAB_CONFIG = {
