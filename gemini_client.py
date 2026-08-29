@@ -495,7 +495,7 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
 
     戻り値の各dictは、build_grammar_multi_v1_updated.GRAMMAR_MODELの
     フィールド(pattern, question, choices, answer, example, example_ja,
-    why, whynot)に対応する値(choices/whynot/exampleはcanon側のヘルパー
+    why, whynot, example_blank, answer_plain)に対応する値(choices/whynot/exampleはcanon側のヘルパー
     関数でHTML化済み)に加え、guid計算・重複検出用のtopic_key/note_index/
     source_keyを持つ。
     """
@@ -525,6 +525,12 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
             "answer": _prefix_answer_with_correct_opt(
                 note.get("answer", ""), choices, note.get("correct_opt", "")
             ),
+            # 「3. 理由想起」の表に出す正解文(2026-08-29追加)。answerと違い
+            # **正解の選択肢ラベル「(A) 」を付けない**。TTS対象からも外して
+            # あるので[sound:]タグも入らない(「AIに質問」タブのTTS対象は
+            # Answer+Exampleのみ)。表で正解が読み上げられてしまうのを
+            # 構造的に防ぐためのフィールド。
+            "answer_plain": note.get("answer", ""),
             "example": _grammar_multi_canon.example_en(examples) if examples else "",
             "example_ja": _grammar_multi_canon.example_ja(examples) if examples else "",
             # 穴あき版(2026-08-21追加)。Geminiが例文中の学習対象語を<b>で

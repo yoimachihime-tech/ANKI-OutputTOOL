@@ -44,8 +44,9 @@ def build_deck(items: list, start_num: int = 1) -> genanki.Deck:
     (deck.write_to_file())。
 
     item dictのキー: pattern, question, choices, answer, example, example_ja,
-    why, whynot, example_blank(いずれもcanon.GRAMMAR_MODELのフィールド値として
-    渡すHTML/テキスト文字列)、topic_key, note_index(guid計算用)。
+    why, whynot, example_blank, answer_plain(いずれもcanon.GRAMMAR_MODELの
+    フィールド値として渡すHTML/テキスト文字列)、topic_key, note_index
+    (guid計算用)。
 
     start_num: cards.due(Ankiの新規カードの位置)の開始番号(既定1、呼び出し元が
     省略した場合は1始まりの通し番号)。以前は`enumerate(items)`の0始まりの
@@ -73,6 +74,9 @@ def build_deck(items: list, start_num: int = 1) -> genanki.Deck:
                 # 2026-08-21追加。穴あき版の例文(音声タグを持たない)。
                 # canon.GRAMMAR_MODELのフィールド順の末尾に対応する。
                 item.get("example_blank", ""),
+                # 2026-08-29追加。「3. 理由想起」の表に出す正解文
+                # (選択肢ラベル「(A) 」も音声タグも持たない)。
+                item.get("answer_plain", ""),
             ],
             guid=build_guid(item["topic_key"], item["note_index"]),
             due=due,

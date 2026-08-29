@@ -56,13 +56,20 @@ const RAW_NOTES = [
   },
 ];
 
+// 実行するPythonコマンド。既定は `python3` だが、その名前で起動できる
+// Pythonが無い環境(片桐のWindows実機ではWindowsAppsのスタブが先に見つかり、
+// genankiの入った C:\Python314\python.exe とは別物になる)では、環境変数
+// ANKI_TOOL_PYTHON で実際に使えるコマンド・フルパスを指定できる。
+//   例: ANKI_TOOL_PYTHON=/c/Python314/python.exe npm test
+const PYTHON = process.env.ANKI_TOOL_PYTHON || 'python3';
+
 const QUESTION = 'patience と patient の使い分けを教えて';
 
 console.log('Grammar Multi 後処理の一致検証(gemini_client.py ⇔ docs/lib/gemini.js)\n');
 
 // --- Python 側: gemini_client.py の内部処理をそのまま流用して期待値を作る ---
 const pyStdout = execFileSync(
-  'python3',
+  PYTHON,
   ['-c', `
 import sys, json
 sys.stdin.reconfigure(encoding='utf-8')
@@ -91,6 +98,11 @@ for i, note in enumerate(notes):
         'example': gc._grammar_multi_canon.example_en(examples) if examples else '',
         'example_ja': gc._grammar_multi_canon.example_ja(examples) if examples else '',
         'example_blank': gc._grammar_multi_canon.example_blank(examples) if examples else '',
+        # 2026-08-29追加。「3. 理由想起」の表に出す正解文。answerと違い
+        # **正解の選択肢ラベル「(A) 」を付けない**(1問目のフィクスチャは
+        # answer='patience' / correct_opt='B' なので、answer='(B) patience'
+        # に対し answer_plain='patience' となり、両者の違いが固定される)。
+        'answer_plain': note.get('answer', ''),
         'why': note.get('why', ''),
         'whynot': ''.join(
             gc._grammar_multi_canon.whynot_item(w.get('opt', ''), w.get('reason', '')) for w in whynot
@@ -129,7 +141,7 @@ const actual = await generateGrammarMultiItems({
 });
 
 let failures = 0;
-const FIELD_KEYS = ['pattern', 'question', 'choices', 'answer', 'example',
+const FIELD_KEYS = ['pattern', 'question', 'choices', 'answer', 'answer_plain', 'example',
   'example_ja', 'example_blank', 'why', 'whynot', 'topic_key', 'note_index'];
 
 if (actual.length !== expected.length) {

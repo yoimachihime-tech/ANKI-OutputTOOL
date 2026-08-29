@@ -474,8 +474,9 @@ function prefixAnswerWithCorrectOpt(answer, choices, correctOpt) {
  * 質問文から、Grammar Multi(文法・複数出題形式)の独立ノート3件分の
  * item を生成する(gemini_client.generate_grammar_multi_items_from_question
  * に対応)。戻り値の各itemはdocs/shared/card_defs.jsonの"grammar_multi"定義の
- * fields(pattern/question/choices/answer/example/example_ja/why/whynot)に
- * 加え、guid計算・重複検出用のtopic_key/note_indexを持つ。
+ * fields(pattern/question/choices/answer/example/example_ja/why/whynot/
+ * example_blank/answer_plain)に加え、guid計算・重複検出用の
+ * topic_key/note_indexを持つ。
  */
 export async function generateGrammarMultiItems({ question, apiKey, model, promptTemplate }) {
   const prompt = fillPlaceholders(promptTemplate, { question });
@@ -495,6 +496,11 @@ export async function generateGrammarMultiItems({ question, apiKey, model, promp
       question: formatQuestionHtml(note.question || ''),
       choices: choices.map((c) => gmChoice(c.opt || '', c.text || '')).join(''),
       answer: prefixAnswerWithCorrectOpt(note.answer || '', choices, note.correct_opt || ''),
+      // 「3. 理由想起」の表に出す正解文(2026-08-29追加)。answerと違い
+      // **正解の選択肢ラベル「(A) 」を付けない**。TTS対象(TTS_FIELD_KEYS.ai_ask
+      // = ['answer', 'example'])にも入れていないので [sound:] タグも付かない
+      // ——表で正解が読み上げられてしまうのを構造的に防ぐためのフィールド。
+      answer_plain: note.answer || '',
       example: examples.length ? gmExampleEn(examples) : '',
       example_ja: examples.length ? gmExampleJa(examples) : '',
       example_blank: examples.length ? gmExampleBlank(examples) : '',

@@ -59,6 +59,13 @@ function ok(message) {
   console.log(`  ✅ ${message}`);
 }
 
+// 実行するPythonコマンド。既定は `python3` だが、その名前で起動できる
+// Pythonが無い環境(片桐のWindows実機ではWindowsAppsのスタブが先に見つかり、
+// genankiの入った C:\Python314\python.exe とは別物になる)では、環境変数
+// ANKI_TOOL_PYTHON で実際に使えるコマンド・フルパスを指定できる。
+//   例: ANKI_TOOL_PYTHON=/c/Python314/python.exe npm test
+const PYTHON = process.env.ANKI_TOOL_PYTHON || 'python3';
+
 // cards.due(新規カードの位置)の開始番号。**1以外の値**にしてあるのは、
 // 「開始番号 + 並び順」という採番式そのものがPython版とWeb版で一致することを
 // 確かめるため(1のままだと、片方が0始まりのインデックスに戻っても
@@ -70,7 +77,7 @@ function dumpPython(cardDefKey, items) {
   // 入出力とも UTF-8 を明示する(日本語Windowsでは既定が cp932 になり、
   // items の日本語が壊れて Python 側が UnicodeEncodeError になるため)。
   const stdout = execFileSync(
-    'python3',
+    PYTHON,
     [
       join(HERE, 'dump_python_apkg.py'),
       '--card-def', cardDefKey,

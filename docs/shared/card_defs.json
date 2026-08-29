@@ -228,6 +228,10 @@
         {
           "anki_name": "ExampleBlank",
           "item_key": "example_blank"
+        },
+        {
+          "anki_name": "AnswerPlain",
+          "item_key": "answer_plain"
         }
       ],
       "guid_scheme": {
@@ -325,6 +329,15 @@
             "rtl": false,
             "size": 20,
             "sticky": false
+          },
+          {
+            "name": "AnswerPlain",
+            "ord": 9,
+            "font": "Liberation Sans",
+            "media": [],
+            "rtl": false,
+            "size": 20,
+            "sticky": false
           }
         ],
         "id": "1907250010123",
@@ -345,18 +358,16 @@
           ],
           [
             1,
-            "any",
+            "all",
             [
-              0,
-              1
+              2
             ]
           ],
           [
             2,
-            "any",
+            "all",
             [
-              0,
-              3
+              9
             ]
           ],
           [
@@ -383,8 +394,8 @@
           },
           {
             "name": "2. セルフチェック",
-            "qfmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Self-Check (no options)</div>\n  {{Question}}\n</div>\n",
-            "afmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Self-Check (no options)</div>\n  {{Question}}\n</div>\n\n<hr class=\"sep\">\n<div class=\"block answer-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n\n{{#Example}}\n<div class=\"block example-block\">\n  <div class=\"label\">Examples</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/Example}}\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
+            "qfmt": "\n{{#Choices}}\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">選択肢を見ずに答える</div>\n  {{Question}}\n</div>\n{{/Choices}}\n",
+            "afmt": "{{FrontSide}}\n\n<hr class=\"sep\">\n<div class=\"block question-block\">\n  <div class=\"question-label\">Choices</div>\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n</div>\n\n<div class=\"block answer-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n\n{{#Example}}\n<div class=\"block example-block\">\n  <div class=\"label\">Examples</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/Example}}\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
             "ord": 1,
             "bafmt": "",
             "bqfmt": "",
@@ -394,7 +405,7 @@
           },
           {
             "name": "3. 理由想起",
-            "qfmt": "\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block answer-block\">\n  <div class=\"label\">Sentence</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n<div class=\"question-label\" style=\"margin-top:14px;\">Why is this correct?{{#WhyNot}} Why not the alternatives?{{/WhyNot}}</div>\n",
+            "qfmt": "\n{{#AnswerPlain}}\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  {{#Choices}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n  {{/Choices}}\n</div>\n<div class=\"block answer-block\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{AnswerPlain}}</div>\n</div>\n<div class=\"question-label\" style=\"margin-top:14px;\">なぜこの答えになるのか説明できますか?{{#WhyNot}} 他の選択肢がなぜ誤りかも。{{/WhyNot}}</div>\n{{/AnswerPlain}}\n",
             "afmt": "{{FrontSide}}\n\n<hr class=\"sep\">\n<div class=\"block why-block\" id=\"answer-target\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
             "ord": 2,
             "bafmt": "",

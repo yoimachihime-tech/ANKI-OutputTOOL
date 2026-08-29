@@ -31,11 +31,22 @@
    短い場合も、指示文の部分は必ず日本語にすること)。
 5. questionフィールドの本文も、選択肢が示される前に正解を示唆・特定できる
    書き方をしないこと。
-6. answerは正解の英文(または訂正後の英文・組み立てた英文)を1つ。
-7. examplesは、そのポイントを使った例文を1〜2個(英文と日本語訳のペア)。
-   不要なら空配列でよい。英文中の**学習対象となる語句は必ず <b>...</b> で
-   囲むこと**(穴埋めカードの空所になる)。囲むのは対象の語句だけにし、
-   文全体を囲まないこと。囲み忘れると穴埋めカードは作られない。
+6. answerは**必ず完全な英文を1文**にすること(選択問題であっても、
+   空所に入る語だけを返すのは禁止。正解の語を空所に入れて完成させた文全体を
+   書くこと)。誤り訂正問題では訂正後の英文、記述式では組み立てた英文を書く。
+   例: 空所補充で正解が "patience" なら、answerは "patience" ではなく
+   "She showed great patience when dealing with the difficult customers."
+   とする。語句だけを返すと、カードの表に文脈のない語句だけが並んで
+   学習できなくなる。
+7. examplesは、そのポイントを使った例文を**必ず1〜2個**入れること
+   (英文と日本語訳のペア)。空配列にしないこと。
+   **英文中の学習対象となる語句は、1文につき必ず1箇所以上 <b>...</b> で
+   囲むこと**。これは任意ではなく必須で、囲んだ語句がそのまま穴埋めカードの
+   空所になる。**<b> が1つも無いと穴埋めカードは作られない**ため、
+   囲み忘れは学習カードが1枚減ることを意味する。
+   囲むのは今回の文法ポイントに直接関わる語句だけにし、文全体や文の大半を
+   囲まないこと(空所が大きすぎて問題として成立しなくなる)。
+   例: "She showed great <b>patience</b> with the customers."
    日本語訳の側には <b> を入れないこと。
 8. whyには、正解の理由・文法解説を日本語で。
 9. whynotは選択問題の場合のみ、各誤答について
@@ -53,8 +64,8 @@ questionフィールドの書き方は例を参考に、日本語の指示文+�
   {
     "pattern": "選択問題",
     "question": "空所に入る最も適切な語を選択肢から選びなさい。'She showed great ___ when dealing with the difficult customers.'",
-    "choices": [{"opt": "A", "text": "..."}, {"opt": "B", "text": "..."}, {"opt": "C", "text": "..."}],
-    "answer": "...",
+    "choices": [{"opt": "A", "text": "..."}, {"opt": "B", "text": "patience"}, {"opt": "C", "text": "..."}],
+    "answer": "She showed great patience when dealing with the difficult customers.",
     "correct_opt": "B",
     "examples": [["She showed great <b>patience</b> with the customers.", "日本語訳。"]],
     "why": "...",
@@ -66,7 +77,7 @@ questionフィールドの書き方は例を参考に、日本語の指示文+�
     "choices": [],
     "answer": "...",
     "correct_opt": "",
-    "examples": [],
+    "examples": [["I <b>went</b> to school yesterday.", "私は昨日学校へ行きました。"]],
     "why": "...",
     "whynot": []
   },
@@ -76,7 +87,7 @@ questionフィールドの書き方は例を参考に、日本語の指示文+�
     "choices": [],
     "answer": "...",
     "correct_opt": "",
-    "examples": [],
+    "examples": [["Good lighting <b>makes</b> the room look spacious.", "良い照明は部屋を広く見せます。"]],
     "why": "...",
     "whynot": []
   }

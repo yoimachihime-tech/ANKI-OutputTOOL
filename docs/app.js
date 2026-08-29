@@ -25,19 +25,19 @@ import {
 // (2026-08-21に付けた。穴あき例文 example_blank の生成を足したため、古い
 //  gemini.js を掴んだままだと ExampleBlank が空のカードが出力される。
 //  gemini.js を import しているのはこの app.js だけ)
-} from './lib/gemini.js?v=20260821c';
+} from './lib/gemini.js?v=20260829a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21: 一括出力タブのために buildApkg を複数種別対応にしたため、
 // 古い apkg.js が使われると groups 指定が無視されてしまう)。
 // apkg.js は app.js からしか import されていない。
-import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20260821c';
+import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20260829a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-20: 習熟用のフィールド構成をv2へ変えた際、ここが無かったために
 // ブラウザが古い lib/shuujuku.js を読み続け、旧Num/Content形式のカードが
 // 出力され続けた)。shuujuku.js は app.js からしか import されていない。
 import {
   buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum,
-} from './lib/shuujuku.js?v=20260821c';
+} from './lib/shuujuku.js?v=20260829a';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
 } from './lib/dueCounter.js';
@@ -48,7 +48,7 @@ import {
 import {
   synthesizeFieldWithTags, synthesizeExampleAudioTags, synthesizeTestSample,
   decodeAudioSamples, computeWaveformMinMax, computePeakAmplitude, isClipped, findSafeVolumeGainDb,
-} from './lib/tts.js?v=20260821c';
+} from './lib/tts.js?v=20260829a';
 import {
   getAccessToken, clearAccessToken, signOut, isSignedIn,
   beginAuthCodeFlow, completeAuthCodeFlowIfReturning,

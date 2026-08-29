@@ -873,11 +873,17 @@ if (!downloaded) {
   await dumpApkgAndCheck(downloaded, {
     expectedNoteCount: 3,
     // 2026-08-21: ノートタイプ定義を実態(4テンプレート)に合わせた。
-    // 1〜3枚目は3ノートとも生えるが、「4. 例文穴埋め」は ExampleBlank が
-    // 空でないノートにだけ生える(req = all[ExampleBlank])。モックの3件のうち
-    // examples に <b> があるのは1件目だけなので 3+3+3+1 = 10 枚になる。
-    expectedCardCount: 10,
-    expectedOrdCounts: { 0: 3, 1: 3, 2: 3, 3: 1 },
+    // 2026-08-29: テンプレートごとに生成条件が付いたので枚数が変わった。
+    //   ord0「1. 判断問題」  : 3件とも生える
+    //   ord1「2. セルフチェック」: req = all[Choices]。**選択肢を持つノートだけ**
+    //        (囲む前は選択肢なしノートにも生え、Choicesが空だとord0と表・裏が
+    //         完全に同一のカードが2枚できていた)。モックでは1件目だけ → 1枚
+    //   ord2「3. 理由想起」  : req = all[AnswerPlain]。3件とも answer があるので3枚
+    //   ord3「4. 例文穴埋め」: req = all[ExampleBlank]。examples に <b> があるのは
+    //        1件目だけ → 1枚
+    // 合計 3+1+3+1 = 8 枚。
+    expectedCardCount: 8,
+    expectedOrdCounts: { 0: 3, 1: 1, 2: 3, 3: 1 },
     firstFieldEquals: '選択問題',
     tmpName: '.uitest_ai_ask.anki2',
   });

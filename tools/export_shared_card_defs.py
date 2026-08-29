@@ -102,6 +102,7 @@ def build_grammar_multi_def() -> dict:
             {"anki_name": "Why", "item_key": "why"},
             {"anki_name": "WhyNot", "item_key": "whynot"},
             {"anki_name": "ExampleBlank", "item_key": "example_blank"},
+            {"anki_name": "AnswerPlain", "item_key": "answer_plain"},
         ],
         # word用のdedup_key方式(genanki.guid_for(key, 正規化した1フィールド))
         # では表現できないため、guidの組み立て方をWeb側へ明示的に伝える。

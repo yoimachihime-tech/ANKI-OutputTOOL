@@ -4470,6 +4470,13 @@ class AnkiTTSApp(_BaseTk):
                         "ExampleJA": item.get("example_ja", ""),
                         "Why": item.get("why", ""),
                         "WhyNot": item.get("whynot", ""),
+                        # プレビューするのは templates[0]「1. 判断問題」だけなので
+                        # この2つは実際には使われないが、ノートタイプの
+                        # フィールドを網羅しておく(将来プレビュー対象の
+                        # テンプレートを変えたときに、未展開の {{...}} が
+                        # そのまま表示されるのを防ぐため)。
+                        "ExampleBlank": item.get("example_blank", ""),
+                        "AnswerPlain": item.get("answer_plain", ""),
                     },
                     template["qfmt"],
                     template["afmt"],

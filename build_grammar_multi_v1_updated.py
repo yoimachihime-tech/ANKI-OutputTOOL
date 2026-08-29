@@ -32,6 +32,20 @@
 # ②でQuestionを読み上げ対象に選んだときに「画面に無いのに読まれる」
 # 事故のもとでもある)。MODEL_IDは不変(既存ノート/学習履歴と互換)。
 #
+# 【2026-08-29のカード2・3の作り直し】
+# 片桐から「AIに質問タブで生成したカードの2〜3枚目が、答えが最初から出て
+# いたり選択肢がそもそも出てこなかったりで勉強に支障がある」と報告を受けた。
+# 実データ(170ノート)を調べたところ、テンプレート2・3は**旧・手書きノート
+# 向けの設計のまま**で、ツールが作るノートには合っていなかった:
+#   ・旧ノートのQuestionは「指示: … 状況: …」という自己完結した長文(65件)で、
+#     選択肢が無くても自力で答えられた。ツール製のQuestionは
+#     「選択肢から選びなさい」という選択肢前提の設問文。
+#   ・ツール製のAnswerには正解ラベル「(A) 」と [sound:] タグが入る。
+# 2026-08-21に「テンプレート構成を実態(4本)に統一」した際、テンプレートの
+# **中身がツール製データに合うかまでは検証していなかった**のが原因。
+# 対策は各テンプレート直前のコメントを参照。AnswerPlainフィールドを
+# 末尾に追加している(MODEL_IDは不変)。
+#
 # 【1ノート=1カードの運用】
 # 今後、1つの質問に対して複数の練習問題を作る場合も「1ノートから複数
 # カードを生成する」方式は取らず、必ず独立したノートを複数作成すること。
@@ -243,16 +257,42 @@ QUESTION_TEMPLATE_BACK = QUESTION_TEMPLATE_FRONT + r"""
 {{/WhyNot}}
 """ + SCROLL_SCRIPT
 
+# 「2. セルフチェック」: 選択肢を伏せて自力で答えさせる。
+#
+# 【2026-08-29の作り直し】旧版は qfmt を条件式で囲んでいなかったため、
+# **選択肢を持たないノート(誤り訂正・記述式)でもこのカードが生えていた**。
+# Choicesが空だとカード1側の {{#Choices}} ブロックも消えるので、
+# **カード1と表・裏がまったく同一のカードが2枚**できていた(2026-08-29に
+# 実データで確認: 170ノート中76ノートが該当)。qfmt全体を {{#Choices}} で
+# 囲むことで、選択肢のあるノートにだけ生えるようにしてある
+# (req が all[Choices] になる。「4. 例文穴埋め」と同じ考え方)。
+#
+# 見出しも日本語にした。Questionの指示文は「選択肢から選びなさい」と書かれて
+# いることが多く、旧見出しの "Self-Check (no options)" では
+# 「選択肢が出ないのは仕様である」ことが伝わらず、答えようがないカードに
+# 見えていたため。
 SELFCHECK_TEMPLATE_FRONT = r"""
+{{#Choices}}
 <div class="pattern-tag">{{Pattern}}</div>
 <div class="block question-block">
-  <div class="question-label">Self-Check (no options)</div>
+  <div class="question-label">選択肢を見ずに答える</div>
   {{Question}}
 </div>
+{{/Choices}}
 """
 
-SELFCHECK_TEMPLATE_BACK = SELFCHECK_TEMPLATE_FRONT + r"""
+# 裏では選択肢も見せる。でないと「Why not the others?」が、学習者が一度も
+# 見ていない選択肢について語ることになる(旧版はここが抜けていた)。
+SELFCHECK_TEMPLATE_BACK = r"""{{FrontSide}}
+
 <hr class="sep">
+<div class="block question-block">
+  <div class="question-label">Choices</div>
+  <div class="choices">
+  {{Choices}}
+  </div>
+</div>
+
 <div class="block answer-block" id="answer-target">
   <div class="label">Answer</div>
   <div class="sentence">{{Answer}}</div>
@@ -279,16 +319,47 @@ SELFCHECK_TEMPLATE_BACK = SELFCHECK_TEMPLATE_FRONT + r"""
 {{/WhyNot}}
 """ + SCROLL_SCRIPT
 
-# 「3. 理由想起」: 正しい文だけを見せて理由を思い出させる。
-# 裏は{{FrontSide}}を使い、Answerの音声タグが裏でもう一度鳴らないようにする
-# (Ankiは{{FrontSide}}から[sound:]を取り除く)。
+# 「3. 理由想起」: 問題と正解を両方見せて、**理由**を答えさせる。
+#
+# 【2026-08-29の作り直し】旧版は表が {{Answer}} だけで、ツール製ノートに
+# 対して3つの意味で壊れていた(いずれも2026-08-29に実データで確認):
+#   (a) Questionを一切出さないので**何の問題だったか分からない**。Answerが
+#       「(A) of」のように語句だけのノートでは、表が「選択問題 / (A) of /
+#       Why is this correct?」だけになっていた(選択肢ありノート10件が該当)。
+#   (b) Answerの先頭には正解の選択肢ラベル「(A) 」が付く
+#       (gemini_client._prefix_answer_with_correct_opt。170件中93件が該当)。
+#   (c) **Answerには [sound:] タグが入る**(「AIに質問」タブのTTS対象が
+#       Answer+Example)ため、**表を開いた瞬間に正解が読み上げられていた**
+#       (170件すべてが該当)。裏は {{FrontSide}} なのでAnkiが音声を除去し、
+#       音声だけが表にあるという逆転が起きていた。
+#
+# 対策として AnswerPlain(**正解ラベルも音声タグも持たない**正解文)を
+# フィールド末尾に追加し、表には Question と AnswerPlain を出す。
+# **音声の入る Answer は表に出さない**(隠したいものと音声を物理的に分離する、
+# というCLAUDE.mdの原則に従う)。
+#
+# qfmt全体を {{#AnswerPlain}} で囲んであるので、AnswerPlainが空のノートでは
+# このカードは作られない(「4. 例文穴埋め」と同じ考え方)。**そのため、
+# 既存コレクションには先に tools/migrate_grammar_multi_answerplain.py を
+# 当てること**(当てないと既存155枚が空カードになる)。
 REASON_TEMPLATE_FRONT = r"""
+{{#AnswerPlain}}
 <div class="pattern-tag">{{Pattern}}</div>
-<div class="block answer-block">
-  <div class="label">Sentence</div>
-  <div class="sentence">{{Answer}}</div>
+<div class="block question-block">
+  <div class="question-label">Question</div>
+  {{Question}}
+  {{#Choices}}
+  <div class="choices">
+  {{Choices}}
+  </div>
+  {{/Choices}}
 </div>
-<div class="question-label" style="margin-top:14px;">Why is this correct?{{#WhyNot}} Why not the alternatives?{{/WhyNot}}</div>
+<div class="block answer-block">
+  <div class="label">Answer</div>
+  <div class="sentence">{{AnswerPlain}}</div>
+</div>
+<div class="question-label" style="margin-top:14px;">なぜこの答えになるのか説明できますか?{{#WhyNot}} 他の選択肢がなぜ誤りかも。{{/WhyNot}}</div>
+{{/AnswerPlain}}
 """
 
 REASON_TEMPLATE_BACK = r"""{{FrontSide}}
@@ -352,6 +423,12 @@ GRAMMAR_MODEL = genanki.Model(
         # 2026-08-21追加。**必ず末尾に足すこと**(既存ノートのフィールド順が
         # ずれると、コレクション側の中身が別のフィールドへ移動してしまう)。
         {'name': 'ExampleBlank'},
+        # 2026-08-29追加。「3. 理由想起」の表に出す正解文。Answerと違い
+        # **正解の選択肢ラベル「(A) 」も [sound:] タグも持たない**
+        # (表で正解を読み上げてしまうのを構造的に防ぐ)。
+        # **必ず末尾に足すこと**(既存ノートのフィールド順がずれると、
+        # コレクション側の中身が別のフィールドへ移動してしまう)。
+        {'name': 'AnswerPlain'},
     ],
     templates=[
         {'name': '1. 判断問題', 'qfmt': QUESTION_TEMPLATE_FRONT, 'afmt': QUESTION_TEMPLATE_BACK},
