@@ -240,6 +240,9 @@
         "item_keys": [
           "topic_key",
           "note_index"
+        ],
+        "optional_item_keys": [
+          "batch_key"
         ]
       },
       "due_scheme": {

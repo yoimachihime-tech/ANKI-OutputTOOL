@@ -34,8 +34,28 @@ DECK_ID = 1907231458999
 DECK_NAME = '02.単語・MindTips::文法・用法'
 
 
-def build_guid(topic_key: str, note_index: int) -> str:
-    return genanki.guid_for("grammar-multi-v1", topic_key, str(note_index))
+def build_guid(topic_key: str, note_index: int, batch_key: str = None) -> str:
+    """ノートのguidを返す。
+
+    `batch_key`(2026-08-29追加)は**値が入っているときだけ**末尾に足す。
+    空・Noneなら足さないので、このキーを持たない既存ノートのguidは1ビットも
+    変わらない(足してしまうと genanki.guid_for は要素を "__" で連結するため
+    "…__0" と "…__0__" が別のハッシュになり、Anki側で既存ノートの更新では
+    なく新規追加になって重複が量産される)。
+    Web側 docs/lib/guid.js の guidByCompoundKeys() と同じ条件にすること。
+
+    【なぜbatch_keyが要るか】以前は guid が「質問文 + 問題番号」だけで
+    決まっていた。同じ質問を投げ直しても重複カードを作らないための設計
+    だったが、Geminiは毎回**違う問題**を生成するため、実際には
+    「同じもの」ではなく「違うものが同じ番地に来る」状態になっていた。
+    その結果、後から生成した問題を別のapkgで取り込むと**既存ノートと同じ
+    guidと判定されて取り込まれず、黙って捨てられていた**(2026-08-29に、
+    まっさらなコレクションへ順に取り込む実験で確認)。
+    """
+    values = ["grammar-multi-v1", topic_key, str(note_index)]
+    if batch_key:
+        values.append(str(batch_key))
+    return genanki.guid_for(*values)
 
 
 def build_deck(items: list, start_num: int = 1) -> genanki.Deck:
@@ -78,7 +98,9 @@ def build_deck(items: list, start_num: int = 1) -> genanki.Deck:
                 # (選択肢ラベル「(A) 」も音声タグも持たない)。
                 item.get("answer_plain", ""),
             ],
-            guid=build_guid(item["topic_key"], item["note_index"]),
+            guid=build_guid(
+                item["topic_key"], item["note_index"], item.get("batch_key")
+            ),
             due=due,
         )
         deck.add_note(note)

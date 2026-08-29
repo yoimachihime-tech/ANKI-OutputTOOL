@@ -412,6 +412,18 @@ function gmExampleBlank(pairs) {
     .join('<br>');
 }
 
+/**
+ * 生成1回ぶんを識別する値を作る。Python側 gemini_client の
+ * `uuid.uuid4().hex[:12]` に対応する(値そのものは両者で一致する必要は無い。
+ * それぞれの実行環境で独立に採番され、itemに保存されて以後変わらない)。
+ * crypto.randomUUID が無い環境でも動くようフォールバックを持つ。
+ */
+function newBatchKey() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid.replace(/-/g, '').slice(0, 12);
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 12);
+}
+
 // 日本語の指示文(「〜しなさい。」等)の直後に、改行なしで引用符付き英文が
 // 続く箇所を検出する。Grammar MultiのQuestionフィールドはGeminiが
 // 「指示文+英文」を1つの文字列として返すため、そのままでは
@@ -476,9 +488,18 @@ function prefixAnswerWithCorrectOpt(answer, choices, correctOpt) {
  * に対応)。戻り値の各itemはdocs/shared/card_defs.jsonの"grammar_multi"定義の
  * fields(pattern/question/choices/answer/example/example_ja/why/whynot/
  * example_blank/answer_plain)に加え、guid計算・重複検出用の
- * topic_key/note_indexを持つ。
+ * topic_key/note_index/batch_keyを持つ。
+ *
+ * batch_key(2026-08-29追加)は**この1回の生成を識別する値**で、guidの末尾に
+ * 足される。同じ質問を投げ直すとGeminiは毎回違う問題を作るのに、以前は
+ * guidが「質問文+問題番号」だけで決まっていたため、後から生成した問題を
+ * 別のapkgで取り込むと既存ノートと同じguidと判定されて**取り込まれず黙って
+ * 捨てられていた**。省略すると新しい値を採番する(テストから固定値を渡せる
+ * ようにするための引数で、通常の呼び出しでは指定しない)。
  */
-export async function generateGrammarMultiItems({ question, apiKey, model, promptTemplate }) {
+export async function generateGrammarMultiItems({
+  question, apiKey, model, promptTemplate, batchKey,
+}) {
   const prompt = fillPlaceholders(promptTemplate, { question });
   const text = await callGemini(prompt, apiKey, model);
   const parsed = extractJsonArray(text);
@@ -487,6 +508,9 @@ export async function generateGrammarMultiItems({ question, apiKey, model, promp
   }
 
   const topicKey = question.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  // このバッチを識別する値。itemに保存され、以後変わらない(guidの安定性は
+  // これに依存するので、あとから振り直さないこと)。
+  const batch = batchKey || newBatchKey();
   return parsed.map((note, i) => {
     const choices = note.choices || [];
     const whynot = note.whynot || [];
@@ -508,6 +532,7 @@ export async function generateGrammarMultiItems({ question, apiKey, model, promp
       whynot: whynot.map((w) => gmWhynotItem(w.opt || '', w.reason || '')).join(''),
       topic_key: topicKey,
       note_index: i,
+      batch_key: batch,
     };
   });
 }

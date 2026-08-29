@@ -44,7 +44,19 @@ STOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grammar_m
 
 
 def _item_key(item: dict) -> str:
-    return f"{item.get('topic_key', '')}::{item.get('note_index', '')}"
+    """重複判定・出力済み記録に使うキー。
+
+    `batch_key`(2026-08-29追加)は**値が入っているときだけ**末尾に足す。
+    空なら足さないので、このキーを持たない既存itemのキーは従来と完全に同じ
+    文字列になる(変えてしまうと、既に記録済みの exported_keys と一致せず、
+    出力済みの候補が未出力として復活する)。guidの組み立て
+    (grammar_multi_builder.build_guid)と同じ条件にすること。
+    """
+    key = f"{item.get('topic_key', '')}::{item.get('note_index', '')}"
+    batch_key = item.get("batch_key")
+    if batch_key:
+        key = f"{key}::{batch_key}"
+    return key
 
 
 def load_stock(path: str = None) -> dict:

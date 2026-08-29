@@ -110,6 +110,10 @@ def build_grammar_multi_def() -> dict:
             "type": "compound",
             "prefix": "grammar-multi-v1",
             "item_keys": ["topic_key", "note_index"],
+            # 2026-08-29追加。値が入っているときだけ末尾に足す(空なら足さない)。
+            # 同じ質問を投げ直しても、生成バッチごとに別ノートとして扱うため。
+            # このキーを持たない既存itemのguidは従来と1ビットも変わらない。
+            "optional_item_keys": ["batch_key"],
         },
         # grammar_multi_builder.build_deck()のdue=start_num+offset。
         # 開始番号はdue_counter.py(Web版はdocs/lib/dueCounter.js)が

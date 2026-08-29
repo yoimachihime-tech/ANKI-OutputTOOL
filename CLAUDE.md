@@ -1389,17 +1389,22 @@ Ankiの新規カードは「位置」(`cards.due`)の順に出題される。こ
   `choices`/`whynot`/`examples`は`build_grammar_multi_v1_updated`の
   `choice()`/`whynot_item()`/`example_en()`/`example_ja()`でHTML化してから
   item dictに詰める。各itemは`topic_key`(質問文を正規化したもの)・
-  `note_index`(0始まりの通し番号)・`source_key`(`("chat_grammar", f"{topic_key}::{note_index}")`)を持ち、同じ質問を再度送信すると3件とも
-  同じキーになるため重複検出にかかる(`Pattern`フィールドは出題形式ラベルに
-  過ぎず内容の識別に使えないため、`shuujuku_stock.py`のようなpattern類似度に
-  よる重複検出はここでは行わない。詳細は`grammar_multi_stock.py`の項を参照)。
+  `note_index`(0始まりの通し番号)・`batch_key`(この1回の生成を識別する値、
+  2026-08-29追加)・`source_key`
+  (`("chat_grammar", f"{topic_key}::{note_index}::{batch_key}")`)を持つ
+  (`Pattern`フィールドは出題形式ラベルに過ぎず内容の識別に使えないため、
+  `shuujuku_stock.py`のようなpattern類似度による重複検出はここでは行わない。
+  詳細は`grammar_multi_stock.py`の項を参照)。
 - `grammar_multi_stock.py`: word_stock.py/shuujuku_stock.pyと全く同じ設計
   (2段階の出力フロー、`path`引数の遅延解決パターン、重複していても常に追加し
-  ハイライト+手動削除で対応する方式)。重複判定キーは`topic_key::note_index`。
+  ハイライト+手動削除で対応する方式)。重複判定キーは
+  `topic_key::note_index[::batch_key]`。
 - `grammar_multi_builder.py`: `build_grammar_multi_v1_updated.GRAMMAR_MODEL`と
   DECK_ID/DECK_NAMEから`genanki.Deck`を組み立てる橋渡し役
   (`deck_builder.py`/`build_shuujuku_v1.build_deck()`と同じ位置づけ)。
-  guidは`genanki.guid_for("grammar-multi-v1", topic_key, str(note_index))`。
+  guidは`genanki.guid_for("grammar-multi-v1", topic_key, str(note_index))`
+  (`batch_key`があればその後ろに足す。下記「同じ質問を投げ直すと、後から
+  生成した問題が取り込まれなかった件」を参照)。
   `due`は`start_num + itemsのリスト順`。**2026-08-20より前は0始まりの
   インデックスをそのまま使っていた**が、出力のたびに0から振り直されるため
   別バッチのカードとAnki側で位置が衝突していた(詳細は下記「新規カードの位置
@@ -1448,6 +1453,73 @@ Ankiの新規カードは「位置」(`cards.due`)の順に出題される。こ
   (`verify_grammar_multi_parity.mjs`は固定の生JSONで後処理だけを検証して
   いるため、プロンプトの文面自体はテスト対象外。実際にGeminiがこの新しい
   指示に従って改善された出力を返すかは実機での確認が必要)。
+
+### 同じ質問を投げ直すと、後から生成した問題が取り込まれなかった件(2026-08-29)
+
+片桐から**「中身が違うはずなのに重複扱いになってしまう」**と報告を受けた
+(「AIに質問」タブの一覧で4件が⚠重複になっていた)。調査した結果、
+**警告は正しく、その裏でカードが黙って捨てられていた**。
+
+同期シート(`_AppSync`)の実データで確認したところ、原因は
+**まったく同じ質問を2回投げていた**ことだった:
+
+| 生成時刻(JST) | Geminiが返した問題数 |
+| --- | --- |
+| 10:44 | 2問(選択・誤り訂正) |
+| 12:17 | 3問(選択・誤り訂正・記述式) |
+
+重複キーもguidも`質問文 + 問題番号`から決まるため、`Q::0`と`Q::1`が2回ずつ
+現れて4件がフラグされ、12:17の`Q::2`(記述式)だけ単独なのでフラグされて
+いなかった——報告された画面と完全に一致する。
+
+**本当の問題はguidの衝突のほう**。空のコレクションへ順に取り込む実験で、
+次のことを確認した:
+
+```text
+① 10:44分のapkgを取り込む  → ノート1件(10:44の内容)
+② 12:17分のapkgを取り込む  → ノート1件のまま。中身も10:44のまま
+```
+
+つまり**後から生成した問題は、既存ノートと同じguidと判定されて取り込まれず、
+エラーも出ずに捨てられていた**(同一apkg内に両方を入れた場合は2件とも残る
+ので、「別々に出力して取り込む」という通常の使い方でだけ起きる)。
+
+**なぜこうなっていたか**: guidを「質問文+問題番号」にしたのは*同じ質問を
+投げ直しても重複カードを作らない*ためだった。しかしGeminiは毎回**違う問題**を
+生成するので、その前提が成り立っていなかった——「同じもの」ではなく
+「違うものが同じ番地に来る」状態になっていた。
+
+**対策**: itemに`batch_key`(生成1回ぶんを識別する値。Python版は
+`uuid.uuid4().hex[:12]`、Web版は`crypto.randomUUID()`ベース)を持たせ、
+guidの末尾に足す。
+
+- **`batch_key`は値が入っているときだけ足す**(`grammar_multi_builder.build_guid`
+  / `docs/lib/guid.js`の`guidByCompoundKeys`)。空・未設定なら足さないので、
+  **このキーを持たない既存itemのguidは1ビットも変わらない**。
+  `genanki.guid_for`は要素を`__`で連結するため、無条件に足すと`…__0`と
+  `…__0__`が別のハッシュになり、既存ノートの更新ではなく新規追加になって
+  Anki側で重複が量産される。**この条件はPython版とWeb版で必ず揃えること。**
+- 共有定義では`guid_scheme.optional_item_keys`という新しい項目で表す
+  (`item_keys`と違い、空の要素は計算に含めない)。カード種別ごとの分岐を
+  JS側に持ち込まない、という既存の方針どおり。
+- `grammar_multi_stock._item_key()`と`app.js`の`aiAskDuplicateIndices()`も
+  同じ条件で足す。**キーの形を無条件に変えると、既に記録済みの
+  `exported_keys`と一致せず、出力済みの候補が未出力として復活する。**
+- `batch_key`はitemに保存され、以後変わらない(guidの安定性がこれに依存する
+  ので、**あとから振り直さないこと**)。同期のバックアップ復元がidを振り直す
+  のとは別物なので、`id`を流用してはいけない。
+
+**Ankiコレクションの移行は不要**(既存ノートのguidが変わらないため)。
+報告時点の5件はすべて未出力でAnkiにも入っていなかったので、実害は出て
+いない(10:44の2件を手で削除して整理した)。
+
+**回帰テスト**: `verify_web_parity.mjs`のgrammar_multiフィクスチャに、
+`topic_key`と`note_index`が1件目とまったく同じで`batch_key`だけ違うitemを
+足してある。上の2件は`batch_key`を持たないので、**1回の実行で
+「従来どおりの3要素guid」と「batch_key入りの4要素guid」の両方**をPython版と
+突き合わせる。`verify_grammar_multi_parity.mjs`は固定の`batch_key`を両側へ
+渡して照合する(値そのものは実行環境ごとに独立採番されるため、テストからは
+固定値を渡さないと突き合わせられない)。
 
 ## 一括出力タブ(2026-08-20追加)
 

@@ -37,6 +37,7 @@ import json
 import os
 import re
 import time
+import uuid
 import urllib.error
 import urllib.request
 
@@ -488,7 +489,9 @@ def _prefix_answer_with_correct_opt(answer: str, choices: list, correct_opt: str
     return f"({opt}) {answer}"
 
 
-def generate_grammar_multi_items_from_question(question: str, api_key: str, model: str) -> list:
+def generate_grammar_multi_items_from_question(
+    question: str, api_key: str, model: str, batch_key: str = None
+) -> list:
     """「AIに質問」タブの質問文から、Grammar Multi(文法・複数出題形式)の
     独立ノート3件分のitem dictを生成する(grammar_multi_builder.build_deck()
     にそのまま渡せる形式)。
@@ -497,7 +500,14 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
     フィールド(pattern, question, choices, answer, example, example_ja,
     why, whynot, example_blank, answer_plain)に対応する値(choices/whynot/exampleはcanon側のヘルパー
     関数でHTML化済み)に加え、guid計算・重複検出用のtopic_key/note_index/
-    source_keyを持つ。
+    batch_key/source_keyを持つ。
+
+    batch_key(2026-08-29追加)は**この1回の生成を識別する値**で、guidの末尾に
+    足される。同じ質問を投げ直すとGeminiは毎回違う問題を作るのに、以前は
+    guidが「質問文+問題番号」だけで決まっていたため、後から生成した問題を
+    別のapkgで取り込むと既存ノートと同じguidと判定されて**取り込まれず黙って
+    捨てられていた**。省略すると新しい値を採番する(テストから固定値を渡せる
+    ようにするための引数で、通常の呼び出しでは指定しない)。
     """
     if not GRAMMAR_MULTI_CANON_AVAILABLE:
         raise GeminiClientError(
@@ -511,6 +521,10 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
         raise GeminiClientError(f"Gemini応答が空、または配列ではありません: {text[:300]}")
 
     topic_key = " ".join(question.strip().casefold().split())
+    # このバッチを識別する値。itemに保存され、以後変わらない(guidの安定性は
+    # これに依存するので、あとから振り直さないこと)。
+    if not batch_key:
+        batch_key = uuid.uuid4().hex[:12]
     items = []
     for i, note in enumerate(parsed):
         choices = note.get("choices") or []
@@ -543,7 +557,8 @@ def generate_grammar_multi_items_from_question(question: str, api_key: str, mode
             ),
             "topic_key": topic_key,
             "note_index": i,
-            "source_key": ("chat_grammar", f"{topic_key}::{i}"),
+            "batch_key": batch_key,
+            "source_key": ("chat_grammar", f"{topic_key}::{i}::{batch_key}"),
             "source_label": "由来: AIに質問",
         })
     return items

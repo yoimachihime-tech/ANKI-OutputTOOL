@@ -64,6 +64,9 @@ const RAW_NOTES = [
 const PYTHON = process.env.ANKI_TOOL_PYTHON || 'python3';
 
 const QUESTION = 'patience と patient の使い分けを教えて';
+// 生成1回ぶんを識別する値。通常は実装側が採番するが、Python版とWeb版で同じ値に
+// ならないと突き合わせられないので、テストからは固定値を渡す(2026-08-29追加)。
+const BATCH_KEY = 'testbatch001';
 
 console.log('Grammar Multi 後処理の一致検証(gemini_client.py ⇔ docs/lib/gemini.js)\n');
 
@@ -80,6 +83,7 @@ import gemini_client as gc
 raw = json.load(sys.stdin)
 question = raw['question']
 notes = raw['notes']
+batch_key = raw['batch_key']
 topic_key = " ".join(question.strip().casefold().split())
 items = []
 for i, note in enumerate(notes):
@@ -109,11 +113,12 @@ for i, note in enumerate(notes):
         ),
         'topic_key': topic_key,
         'note_index': i,
+        'batch_key': batch_key,
     })
 json.dump(items, sys.stdout, ensure_ascii=False)
 `],
   {
-    input: Buffer.from(JSON.stringify({ question: QUESTION, notes: RAW_NOTES }), 'utf8'),
+    input: Buffer.from(JSON.stringify({ question: QUESTION, notes: RAW_NOTES, batch_key: BATCH_KEY }), 'utf8'),
     env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     maxBuffer: 8 * 1024 * 1024,
   },
@@ -138,11 +143,12 @@ const actual = await generateGrammarMultiItems({
   apiKey: 'DUMMY',
   model: 'gemini-2.0-flash',
   promptTemplate,
+  batchKey: BATCH_KEY,
 });
 
 let failures = 0;
 const FIELD_KEYS = ['pattern', 'question', 'choices', 'answer', 'answer_plain', 'example',
-  'example_ja', 'example_blank', 'why', 'whynot', 'topic_key', 'note_index'];
+  'example_ja', 'example_blank', 'why', 'whynot', 'topic_key', 'note_index', 'batch_key'];
 
 if (actual.length !== expected.length) {
   console.error(`❌ 件数不一致: web=${actual.length} / python=${expected.length}`);

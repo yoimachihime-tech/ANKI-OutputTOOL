@@ -266,6 +266,25 @@ const GRAMMAR_MULTI_ITEMS = [
     topic_key: 'patience と patient の使い分け',
     note_index: 1,
   },
+  // 2026-08-29追加。`batch_key` を持つ item(同じ質問を投げ直したときの2回目の
+  // 生成に相当)。**topic_key と note_index は1件目とまったく同じ**にしてあり、
+  // batch_key が guid に効いていなければ1件目と衝突する。上の2件は batch_key を
+  // 持たないので、**同じ実行の中で「従来どおりの3要素guid」と「batch_key入りの
+  // 4要素guid」の両方**を Python 版と突き合わせることになる。
+  {
+    pattern: '選択問題',
+    question: "空所に最も適切な語を選びなさい。<br><br>'She showed great ___.'",
+    choices: '<div class="choice">(A) patient</div><div class="choice">(B) patience</div>',
+    answer: '(B) patience',
+    answer_plain: 'patience',
+    example: '<span class="ex-num">Ex1.</span> She has patience.',
+    example_ja: '└ 彼女には忍耐力がある。',
+    why: '2回目の生成なので内容が違う。',
+    whynot: '<div class="whynot-item"><span class="opt">(A)</span> patient は形容詞。</div>',
+    topic_key: 'patience と patient の使い分け',
+    note_index: 0,
+    batch_key: 'testbatch002',
+  },
 ];
 
 const wordGuidCases = await verifyCardDef('word', WORD_ITEMS, (item) => item.word);

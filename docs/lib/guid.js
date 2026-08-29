@@ -66,6 +66,17 @@ async function guidByDedupKey(scheme, item) {
  */
 async function guidByCompoundKeys(scheme, item) {
   const values = scheme.item_keys.map((k) => (item[k] === undefined || item[k] === null ? '' : item[k]));
+  // `optional_item_keys`(2026-08-29追加)は**値が入っているときだけ**末尾に足す。
+  // 空・未設定なら足さないので、そのキーを持たない既存itemのguidは
+  // 1ビットも変わらない(足してしまうと genanki.guid_for は要素を "__" で
+  // 連結するため "…__0" と "…__0__" が別のハッシュになり、Anki側で
+  // 既存ノートの更新ではなく新規追加になって重複が量産される)。
+  // Python側 grammar_multi_builder.build_guid() の分岐と同じ条件にすること。
+  for (const key of scheme.optional_item_keys || []) {
+    const raw = item[key];
+    const value = raw === undefined || raw === null ? '' : String(raw);
+    if (value !== '') values.push(value);
+  }
   return guidFor(scheme.prefix, ...values);
 }
 
