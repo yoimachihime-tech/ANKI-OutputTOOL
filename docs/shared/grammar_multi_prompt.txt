@@ -38,7 +38,16 @@
    "She showed great patience when dealing with the difficult customers."
    とする。語句だけを返すと、カードの表に文脈のない語句だけが並んで
    学習できなくなる。
-7. examplesは、そのポイントを使った例文を**必ず1〜2個**入れること
+7. answer_jaには、answerの英文の**自然な日本語訳**を必ず入れること
+   (空文字にしないこと)。これは選択肢を伏せて出題するカードの表に出る
+   唯一の手がかりで、これが無いと「空所に入る語の候補が絞れず答えられない
+   カード」になる。文全体を訳すこと。答えの語だけを抜き出したり、
+   「〜が入る」のような解説を書いたりしないこと。<b> などのHTMLタグも
+   入れないこと。
+   例: answerが "She showed great patience when dealing with the difficult
+   customers." なら、answer_jaは
+   "彼女は難しい客に対応する際、非常に辛抱強く振る舞った。" とする。
+8. examplesは、そのポイントを使った例文を**必ず1〜2個**入れること
    (英文と日本語訳のペア)。空配列にしないこと。
    **英文中の学習対象となる語句は、1文につき必ず1箇所以上 <b>...</b> で
    囲むこと**。これは任意ではなく必須で、囲んだ語句がそのまま穴埋めカードの
@@ -48,13 +57,13 @@
    囲まないこと(空所が大きすぎて問題として成立しなくなる)。
    例: "She showed great <b>patience</b> with the customers."
    日本語訳の側には <b> を入れないこと。
-8. whyには、正解の理由・文法解説を日本語で。
-9. whynotは選択問題の場合のみ、各誤答について
+9. whyには、正解の理由・文法解説を日本語で。
+10. whynotは選択問題の場合のみ、各誤答について
    {"opt": "A", "reason": "..."} 形式のオブジェクトの配列。
    選択問題以外では空配列にすること。
-10. choicesは選択問題の場合のみ {"opt": "A", "text": "..."} 形式の
+11. choicesは選択問題の場合のみ {"opt": "A", "text": "..."} 形式の
     オブジェクトの配列(3択)。選択問題以外では空配列にすること。
-11. correct_optは選択問題の場合のみ、正解の選択肢のopt(例: "B")を
+12. correct_optは選択問題の場合のみ、正解の選択肢のopt(例: "B")を
     入れること。選択問題以外では空文字""にすること。
 
 以下のJSON形式で、JSON以外の文字を含めずに出力してください(必ず3要素の配列。
@@ -66,6 +75,7 @@ questionフィールドの書き方は例を参考に、日本語の指示文+�
     "question": "空所に入る最も適切な語を選択肢から選びなさい。'She showed great ___ when dealing with the difficult customers.'",
     "choices": [{"opt": "A", "text": "..."}, {"opt": "B", "text": "patience"}, {"opt": "C", "text": "..."}],
     "answer": "She showed great patience when dealing with the difficult customers.",
+    "answer_ja": "彼女は難しい客に対応する際、非常に辛抱強く振る舞った。",
     "correct_opt": "B",
     "examples": [["She showed great <b>patience</b> with the customers.", "日本語訳。"]],
     "why": "...",
@@ -75,7 +85,8 @@ questionフィールドの書き方は例を参考に、日本語の指示文+�
     "pattern": "誤り訂正問題",
     "question": "次の英文を訂正してください。'I go to school yesterday. I very like it.'",
     "choices": [],
-    "answer": "...",
+    "answer": "I went to school yesterday. I like it very much.",
+    "answer_ja": "私は昨日学校へ行きました。とても気に入っています。",
     "correct_opt": "",
     "examples": [["I <b>went</b> to school yesterday.", "私は昨日学校へ行きました。"]],
     "why": "...",
@@ -85,7 +96,8 @@ questionフィールドの書き方は例を参考に、日本語の指示文+�
     "pattern": "記述式・書き換え問題",
     "question": "以下の2つの文を1文にまとめなさい。 (1) Good lighting helps. (2) It makes the room look spacious.",
     "choices": [],
-    "answer": "...",
+    "answer": "Good lighting helps make the room look spacious.",
+    "answer_ja": "良い照明は部屋を広く見せるのに役立ちます。",
     "correct_opt": "",
     "examples": [["Good lighting <b>makes</b> the room look spacious.", "良い照明は部屋を広く見せます。"]],
     "why": "...",

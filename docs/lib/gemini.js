@@ -487,7 +487,7 @@ function prefixAnswerWithCorrectOpt(answer, choices, correctOpt) {
  * item を生成する(gemini_client.generate_grammar_multi_items_from_question
  * に対応)。戻り値の各itemはdocs/shared/card_defs.jsonの"grammar_multi"定義の
  * fields(pattern/question/choices/answer/example/example_ja/why/whynot/
- * example_blank/answer_plain)に加え、guid計算・重複検出用の
+ * example_blank/answer_plain/answer_ja)に加え、guid計算・重複検出用の
  * topic_key/note_index/batch_keyを持つ。
  *
  * batch_key(2026-08-29追加)は**この1回の生成を識別する値**で、guidの末尾に
@@ -520,11 +520,17 @@ export async function generateGrammarMultiItems({
       question: formatQuestionHtml(note.question || ''),
       choices: choices.map((c) => gmChoice(c.opt || '', c.text || '')).join(''),
       answer: prefixAnswerWithCorrectOpt(note.answer || '', choices, note.correct_opt || ''),
-      // 「3. 理由想起」の表に出す正解文(2026-08-29追加)。answerと違い
-      // **正解の選択肢ラベル「(A) 」を付けない**。TTS対象(TTS_FIELD_KEYS.ai_ask
-      // = ['answer', 'example'])にも入れていないので [sound:] タグも付かない
-      // ——表で正解が読み上げられてしまうのを構造的に防ぐためのフィールド。
+      // 選択肢ラベル「(A) 」を付けない正解文(2026-08-29追加)。TTS対象
+      // (TTS_FIELD_KEYS.ai_ask = ['answer', 'example'])にも入れていないので
+      // [sound:] タグも付かない。2026-09-08に ord=2 を
+      // 「3. 誤答理由の想起」へ作り直して以降テンプレートからは参照されて
+      // いないが、フィールドの並びを崩さないため出力し続ける。
       answer_plain: note.answer || '',
+      // 正解文の日本語訳(2026-09-08追加)。「2. セルフチェック」は選択肢を
+      // 伏せるため、これが空所の候補を絞る唯一の手がかりになる。Geminiが
+      // 返してこなかった場合は空文字になり、そのカードの表は従来どおり
+      // 日本語訳なしになる(カード自体は作られる)。
+      answer_ja: note.answer_ja || '',
       example: examples.length ? gmExampleEn(examples) : '',
       example_ja: examples.length ? gmExampleJa(examples) : '',
       example_blank: examples.length ? gmExampleBlank(examples) : '',

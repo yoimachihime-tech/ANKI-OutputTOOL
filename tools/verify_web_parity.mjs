@@ -277,6 +277,7 @@ const GRAMMAR_MULTI_ITEMS = [
     choices: '<div class="choice">(A) patient</div><div class="choice">(B) patience</div>',
     answer: '(B) patience',
     answer_plain: 'patience',
+    answer_ja: '2回目の生成の日本語訳。',
     example: '<span class="ex-num">Ex1.</span> She has patience.',
     example_ja: '└ 彼女には忍耐力がある。',
     why: '2回目の生成なので内容が違う。',

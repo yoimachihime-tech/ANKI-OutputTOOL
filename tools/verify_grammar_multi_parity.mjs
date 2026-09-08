@@ -22,6 +22,7 @@ const RAW_NOTES = [
     question: "空所に入る最も適切な語を選択肢から選びなさい。'She showed great ___ when dealing with the difficult customers.'",
     choices: [{ opt: 'A', text: 'patient' }, { opt: 'B', text: 'patience' }, { opt: 'C', text: 'patiently' }],
     answer: 'patience',
+    answer_ja: '彼女はとても辛抱強かった。',
     correct_opt: 'B',
     // 2026-08-21: 学習対象語を <b> で囲む形式(穴埋めカードの空所になる)。
     examples: [['She has a lot of <b>patience</b>.', '彼女は忍耐力がある。']],
@@ -33,6 +34,7 @@ const RAW_NOTES = [
     question: "次の英文を訂正してください。'I go to school yesterday. I very like it.'",
     choices: [],
     answer: 'I went to school yesterday. I liked it very much.',
+    answer_ja: '私は昨日学校へ行きました。とても気に入りました。',
     correct_opt: '',
     examples: [],
     why: '過去の出来事なので過去形にする必要があります。',
@@ -49,6 +51,7 @@ const RAW_NOTES = [
     choices: [],
     // correct_opt無しでも choices が空ならそのまま answer が使われることを確認
     answer: 'It was raining, but we went out anyway.',
+    answer_ja: '雨が降っていたが、私たちはとにかく出かけた。',
     correct_opt: '',
     examples: [],
     why: '逆接の接続詞butで2文を結びます。',
@@ -107,6 +110,10 @@ for i, note in enumerate(notes):
         # answer='patience' / correct_opt='B' なので、answer='(B) patience'
         # に対し answer_plain='patience' となり、両者の違いが固定される)。
         'answer_plain': note.get('answer', ''),
+        # 2026-09-08追加。「2. セルフチェック」の表に出す正解文の日本語訳。
+        # 後処理は掛けず素通しするだけなので、ここではPython版とWeb版で
+        # 同じ値が同じフィールドへ入ることだけを固定する。
+        'answer_ja': note.get('answer_ja', ''),
         'why': note.get('why', ''),
         'whynot': ''.join(
             gc._grammar_multi_canon.whynot_item(w.get('opt', ''), w.get('reason', '')) for w in whynot
@@ -147,7 +154,7 @@ const actual = await generateGrammarMultiItems({
 });
 
 let failures = 0;
-const FIELD_KEYS = ['pattern', 'question', 'choices', 'answer', 'answer_plain', 'example',
+const FIELD_KEYS = ['pattern', 'question', 'choices', 'answer', 'answer_plain', 'answer_ja', 'example',
   'example_ja', 'example_blank', 'why', 'whynot', 'topic_key', 'note_index', 'batch_key'];
 
 if (actual.length !== expected.length) {

@@ -878,12 +878,18 @@ if (!downloaded) {
     //   ord1「2. セルフチェック」: req = all[Choices]。**選択肢を持つノートだけ**
     //        (囲む前は選択肢なしノートにも生え、Choicesが空だとord0と表・裏が
     //         完全に同一のカードが2枚できていた)。モックでは1件目だけ → 1枚
-    //   ord2「3. 理由想起」  : req = all[AnswerPlain]。3件とも answer があるので3枚
+    //   ord2「3. 誤答理由の想起」: req = all[Choices]。**選択肢を持つノートだけ**
+    //        → 1枚。2026-09-08にこのスロットを「3. 理由想起」から作り直した
+    //        (旧版は req = all[AnswerPlain] で3件とも生え、表に正解文を
+    //         出していた。「選択問題の表面に答えが出てきてしまっている」と
+    //         報告され、表から答えを外すとord0と同一になるため出題形式ごと
+    //         差し替えた)。ここが3に戻っていたら、答えを表に出す旧版へ
+    //        退行している。
     //   ord3「4. 例文穴埋め」: req = all[ExampleBlank]。examples に <b> があるのは
     //        1件目だけ → 1枚
-    // 合計 3+1+3+1 = 8 枚。
-    expectedCardCount: 8,
-    expectedOrdCounts: { 0: 3, 1: 1, 2: 3, 3: 1 },
+    // 合計 3+1+1+1 = 6 枚。
+    expectedCardCount: 6,
+    expectedOrdCounts: { 0: 3, 1: 1, 2: 1, 3: 1 },
     firstFieldEquals: '選択問題',
     tmpName: '.uitest_ai_ask.anki2',
   });

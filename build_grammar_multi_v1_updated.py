@@ -181,6 +181,12 @@ CSS = r"""
 .example-sentence { font-size: 16px; }
 .example-ja { color: var(--sub); font-size: 14.5px; margin-top: 2px; }
 
+/* 「2. セルフチェック」の表に出す、正解文の日本語訳(AnswerJA)。選択肢が
+   出ないカードで空所の候補を絞る唯一の手がかりなので、指示文と地続きに
+   見えないよう区切り線を入れてある。 */
+.answer-ja { color: var(--sub); font-size: 14.5px; margin-top: 10px;
+  padding-top: 8px; border-top: 1px dashed var(--line); }
+
 .why-block { background: var(--why-bg); border-left: 5px solid var(--why-border); }
 .why-block .label { font-weight: 700; font-size: 12.5px; color: var(--why-border); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
 
@@ -271,12 +277,22 @@ QUESTION_TEMPLATE_BACK = QUESTION_TEMPLATE_FRONT + r"""
 # いることが多く、旧見出しの "Self-Check (no options)" では
 # 「選択肢が出ないのは仕様である」ことが伝わらず、答えようがないカードに
 # 見えていたため。
+#
+# 【2026-09-08の追加】表に AnswerJA(正解文の日本語訳)を出す。選択肢を伏せる
+# ため、空所に入る語の候補が文脈だけでは絞れなかった(片桐の報告:
+# 「答えの候補がない状態で答える問題形式の場合、空白に入る単語の候補が
+# 多すぎで絞れない。最低限日本語訳を載せて貰えれば想定出来る状態」)。
+# 実データでは、このカードのうち片桐が目にした27枚中15枚が**一度も回答せずに
+# 保留**されており、15枚すべてが選択問題だった。
+# **ExampleJA を流用してはいけない** —— あれは Example(別の例文)の訳であり、
+# 問題文の訳ではないので、別の文の意味をヒントとして見せることになる。
 SELFCHECK_TEMPLATE_FRONT = r"""
 {{#Choices}}
 <div class="pattern-tag">{{Pattern}}</div>
 <div class="block question-block">
   <div class="question-label">選択肢を見ずに答える</div>
   {{Question}}
+  {{#AnswerJA}}<div class="answer-ja">{{AnswerJA}}</div>{{/AnswerJA}}
 </div>
 {{/Choices}}
 """
@@ -318,56 +334,55 @@ SELFCHECK_TEMPLATE_BACK = r"""{{FrontSide}}
 </div>
 {{/WhyNot}}
 """ + SCROLL_SCRIPT
-
-# 「3. 理由想起」: 問題と正解を両方見せて、**理由**を答えさせる。
+# 「3. 誤答理由の想起」: 正解を選び、**他の選択肢がなぜ誤りかを言えるか**を
+# 問う。選択肢のあるノート(選択問題)にだけ生える(req が all[Choices])。
 #
-# 【2026-08-29の作り直し】旧版は表が {{Answer}} だけで、ツール製ノートに
-# 対して3つの意味で壊れていた(いずれも2026-08-29に実データで確認):
-#   (a) Questionを一切出さないので**何の問題だったか分からない**。Answerが
-#       「(A) of」のように語句だけのノートでは、表が「選択問題 / (A) of /
-#       Why is this correct?」だけになっていた(選択肢ありノート10件が該当)。
-#   (b) Answerの先頭には正解の選択肢ラベル「(A) 」が付く
-#       (gemini_client._prefix_answer_with_correct_opt。170件中93件が該当)。
-#   (c) **Answerには [sound:] タグが入る**(「AIに質問」タブのTTS対象が
-#       Answer+Example)ため、**表を開いた瞬間に正解が読み上げられていた**
-#       (170件すべてが該当)。裏は {{FrontSide}} なのでAnkiが音声を除去し、
-#       音声だけが表にあるという逆転が起きていた。
+# 【2026-09-08の作り直し】このスロットは元々「3. 理由想起」で、表に
+# Question + Choices + AnswerPlain(正解文)を出し「なぜこの答えになるのか
+# 説明できますか?」と問う設計だった。答えを見せるのは意図どおりだったが、
+# 片桐から**「選択問題の表面に答えが出てきてしまっている」**と報告された。
+# 実データでも、このカードのうち目にした61枚中47枚が保留され、しかも
+# **46枚は一度も回答せずに保留**されていた(見た瞬間に問題として成立して
+# いないと判断されていた)。
 #
-# 対策として AnswerPlain(**正解ラベルも音声タグも持たない**正解文)を
-# フィールド末尾に追加し、表には Question と AnswerPlain を出す。
-# **音声の入る Answer は表に出さない**(隠したいものと音声を物理的に分離する、
-# というCLAUDE.mdの原則に従う)。
+# 表から答えを外すと「1. 判断問題」と同一内容になるため、答えを外すのではなく
+# **出題形式そのものを差し替えた**(片桐の選択: 「削除して他の出題方法を検討」)。
+# 「誤答がなぜ誤りかを説明する」技能は他の3枚のどれもテストしていないので、
+# 重複にならない。
 #
-# qfmt全体を {{#AnswerPlain}} で囲んであるので、AnswerPlainが空のノートでは
-# このカードは作られない(「4. 例文穴埋め」と同じ考え方)。**そのため、
-# 既存コレクションには先に tools/migrate_grammar_multi_answerplain.py を
-# 当てること**(当てないと既存155枚が空カードになる)。
-REASON_TEMPLATE_FRONT = r"""
-{{#AnswerPlain}}
+# **テンプレートを削除せずスロットを作り直しているのは意図的**。削除して
+# 別のテンプレートを足すと ord がずれ、既存175枚のカードIDと復習履歴を
+# 捨てることになる。作り直しなら、選択問題の87枚はIDのまま新しい出題形式に
+# 変わり、履歴も残る(残る9枚は復習済み)。
+#
+# なお req が all[Choices] になるため、**選択肢を持たない88枚(誤り訂正・
+# 記述式)はこのカードが空になる**。移行スクリプトを当てた後、Ankiの
+# [ツール]→[空のカードを削除] で消すこと(このうち復習履歴があるのは6枚)。
+#
+# 表に出すのは Question と Choices だけで、**Answer も AnswerPlain も
+# 出さない**。Answer には [sound:] タグが入るため、表に置くと正解が
+# 読み上げられてしまう(隠したいものと音声を物理的に分離する、という
+# CLAUDE.mdの原則)。
+WHYNOT_TEMPLATE_FRONT = r"""
+{{#Choices}}
 <div class="pattern-tag">{{Pattern}}</div>
 <div class="block question-block">
   <div class="question-label">Question</div>
   {{Question}}
-  {{#Choices}}
   <div class="choices">
   {{Choices}}
   </div>
-  {{/Choices}}
 </div>
-<div class="block answer-block">
-  <div class="label">Answer</div>
-  <div class="sentence">{{AnswerPlain}}</div>
-</div>
-<div class="question-label" style="margin-top:14px;">なぜこの答えになるのか説明できますか?{{#WhyNot}} 他の選択肢がなぜ誤りかも。{{/WhyNot}}</div>
-{{/AnswerPlain}}
+<div class="question-label" style="margin-top:14px;">正解を選び、他の選択肢がなぜ誤りかを説明できますか?</div>
+{{/Choices}}
 """
 
-REASON_TEMPLATE_BACK = r"""{{FrontSide}}
+WHYNOT_TEMPLATE_BACK = r"""{{FrontSide}}
 
 <hr class="sep">
-<div class="block why-block" id="answer-target">
-  <div class="label">Why</div>
-  {{Why}}
+<div class="block answer-block" id="answer-target">
+  <div class="label">Answer</div>
+  <div class="sentence">{{Answer}}</div>
 </div>
 
 {{#WhyNot}}
@@ -376,6 +391,11 @@ REASON_TEMPLATE_BACK = r"""{{FrontSide}}
   {{WhyNot}}
 </div>
 {{/WhyNot}}
+
+<div class="block why-block">
+  <div class="label">Why</div>
+  {{Why}}
+</div>
 """ + SCROLL_SCRIPT
 
 # 「4. 例文穴埋め」: 表は穴あき版(ExampleBlank)だけ。**音声タグを持つ
@@ -429,11 +449,17 @@ GRAMMAR_MODEL = genanki.Model(
         # **必ず末尾に足すこと**(既存ノートのフィールド順がずれると、
         # コレクション側の中身が別のフィールドへ移動してしまう)。
         {'name': 'AnswerPlain'},
+        # 2026-09-08追加。正解文(AnswerPlain相当)の日本語訳。
+        # 「2. セルフチェック」の表に出す唯一の手がかりで、選択肢を伏せた
+        # 状態で空所の候補を絞るために使う。**必ず末尾に足すこと**
+        # (既存ノートのフィールド順がずれると、コレクション側の中身が
+        # 別のフィールドへ移動してしまう)。
+        {'name': 'AnswerJA'},
     ],
     templates=[
         {'name': '1. 判断問題', 'qfmt': QUESTION_TEMPLATE_FRONT, 'afmt': QUESTION_TEMPLATE_BACK},
         {'name': '2. セルフチェック', 'qfmt': SELFCHECK_TEMPLATE_FRONT, 'afmt': SELFCHECK_TEMPLATE_BACK},
-        {'name': '3. 理由想起', 'qfmt': REASON_TEMPLATE_FRONT, 'afmt': REASON_TEMPLATE_BACK},
+        {'name': '3. 誤答理由の想起', 'qfmt': WHYNOT_TEMPLATE_FRONT, 'afmt': WHYNOT_TEMPLATE_BACK},
         {'name': '4. 例文穴埋め', 'qfmt': BLANK_TEMPLATE_FRONT, 'afmt': BLANK_TEMPLATE_BACK},
     ],
     css=CSS,

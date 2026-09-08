@@ -234,6 +234,77 @@ def call_gemini(prompt: str, api_key: str, model: str, timeout: int = 60) -> str
         raise GeminiClientError(f"Gemini APIの応答形式が想定と異なります: {result}") from e
 
 
+def translate_to_japanese(
+    sentences: list, api_key: str, model: str, timeout: int = 120,
+    batch_size: int = 30,
+) -> list:
+    """英文のリストを日本語訳のリストにして返す(入力と同じ長さ、同じ順序)。
+
+    既存ノートの `AnswerJA`(「2. セルフチェック」の表に出す正解文の日本語訳)を
+    後から埋めるための移行用ヘルパー。`tools/migrate_grammar_multi_answerja.py`
+    が使う。**カード生成の経路では使わない**(新しいカードの answer_ja は
+    Geminiが問題と一緒に返すもので、共有プロンプトのルール7が担当する)。
+
+    訳せなかった要素はNone(呼び出し側がどれが落ちたかを表示できるように、
+    詰めずに位置を保つ)。generate_vocab_cards_from_words等と同じ設計。
+
+    `index`(1始まり)で対応付けるのは、モデルが1件飛ばす・順序を入れ替える
+    ことがあり、配列の位置をそのまま信じると**別の英文の訳が付いたカードが
+    静かに出来上がる**ため(字面だけでは気づきにくい)。
+
+    batch_sizeが他のバッチ処理(BATCH_SIZE=10)より大きいのは、1件あたりの
+    出力が1文の訳だけで短く、出力トークン上限に当たりにくいため。件数分の
+    呼び出し回数を減らすほうが、無料枠の1日あたり上限に対して有利。
+    """
+    if not api_key:
+        raise GeminiClientError("Gemini APIキーが設定されていません。")
+
+    results: list = [None] * len(sentences)
+    for chunk in _chunk_for_batch(list(enumerate(sentences)), batch_size):
+        numbered = "\n".join(
+            "[%d] %s" % (i + 1, text) for i, (_, text) in enumerate(chunk)
+        )
+        prompt = (
+            "次の英文それぞれに、自然な日本語訳を付けてください。\n"
+            "・文全体を訳すこと。語句だけを抜き出したり、文法の解説を"
+            "書いたりしないこと。\n"
+            "・HTMLタグ(<b>など)は訳文に含めないこと。入力に含まれて"
+            "いても、訳文からは取り除くこと。\n"
+            "・indexは入力の番号をそのまま返すこと。\n\n"
+            + numbered
+        )
+        url = GEMINI_ENDPOINT_TMPL.format(model=model)
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "index": {"type": "INTEGER"},
+                            "ja": {"type": "STRING"},
+                        },
+                        "required": ["index", "ja"],
+                    },
+                },
+            },
+        }
+        result = _post_gemini_request(url, body, api_key, timeout)
+        try:
+            text = result["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError) as e:
+            raise GeminiClientError(
+                f"Gemini APIの応答形式が想定と異なります: {result}") from e
+        parsed = json.loads(text)
+        aligned = _align_batch_results(parsed, len(chunk))
+        for (orig_idx, _), entry in zip(chunk, aligned):
+            if isinstance(entry, dict) and entry.get("ja"):
+                results[orig_idx] = str(entry["ja"]).strip()
+    return results
+
+
 def list_gemini_models(api_key: str, timeout: int = 30) -> list:
     """generateContentに対応しているGeminiモデルの名前一覧を取得する
     (例: "gemini-2.0-flash")。"""
@@ -498,7 +569,8 @@ def generate_grammar_multi_items_from_question(
 
     戻り値の各dictは、build_grammar_multi_v1_updated.GRAMMAR_MODELの
     フィールド(pattern, question, choices, answer, example, example_ja,
-    why, whynot, example_blank, answer_plain)に対応する値(choices/whynot/exampleはcanon側のヘルパー
+    why, whynot, example_blank, answer_plain, answer_ja)に対応する値
+    (choices/whynot/exampleはcanon側のヘルパー
     関数でHTML化済み)に加え、guid計算・重複検出用のtopic_key/note_index/
     batch_key/source_keyを持つ。
 
@@ -539,12 +611,17 @@ def generate_grammar_multi_items_from_question(
             "answer": _prefix_answer_with_correct_opt(
                 note.get("answer", ""), choices, note.get("correct_opt", "")
             ),
-            # 「3. 理由想起」の表に出す正解文(2026-08-29追加)。answerと違い
-            # **正解の選択肢ラベル「(A) 」を付けない**。TTS対象からも外して
-            # あるので[sound:]タグも入らない(「AIに質問」タブのTTS対象は
-            # Answer+Exampleのみ)。表で正解が読み上げられてしまうのを
-            # 構造的に防ぐためのフィールド。
+            # 選択肢ラベル「(A) 」を付けない正解文(2026-08-29追加)。TTS対象
+            # からも外してあるので[sound:]タグも入らない(「AIに質問」タブの
+            # TTS対象はAnswer+Exampleのみ)。2026-09-08にord=2を
+            # 「3. 誤答理由の想起」へ作り直して以降テンプレートからは
+            # 参照されていないが、フィールドの並びを崩さないため出力し続ける。
             "answer_plain": note.get("answer", ""),
+            # 正解文の日本語訳(2026-09-08追加)。「2. セルフチェック」は
+            # 選択肢を伏せるため、これが空所の候補を絞る唯一の手がかりになる。
+            # Geminiが返してこなかった場合は空文字になり、そのカードの表は
+            # 従来どおり日本語訳なしになる(カード自体は作られる)。
+            "answer_ja": note.get("answer_ja", ""),
             "example": _grammar_multi_canon.example_en(examples) if examples else "",
             "example_ja": _grammar_multi_canon.example_ja(examples) if examples else "",
             # 穴あき版(2026-08-21追加)。Geminiが例文中の学習対象語を<b>で
