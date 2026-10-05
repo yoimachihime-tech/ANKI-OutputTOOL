@@ -2498,6 +2498,74 @@ console.log('\n[33] プレビューで、ノートから作られるすべての
   await sleep(20);
 }
 
+console.log('\n[34] 「🔊 TTS」(ankitts:)を押しても起動しないとき、登録の方法を案内する');
+// 2026-10-05: 「一番上のTTSボタンを押しても何も起こらない」と報告された。
+// 原因はそのPCに ankitts: が登録されていなかったことで、ブラウザは登録の無い
+// スキームを何も言わずに無視する。押した後にページからフォーカスが外れなければ
+// (= 確認ダイアログも新しいタブも出なければ)案内を出すことを固定する。
+{
+  globalThis.localToolLaunchWaitMs = 80;
+  const prevented = [];
+  // jsdom に ankitts: への遷移をさせない(app.js のハンドラの後に走る)
+  const stopNavigation = (e) => {
+    if (e.target.closest && e.target.closest('a[href^="ankitts:"]')) {
+      prevented.push(e.defaultPrevented);
+      e.preventDefault();
+    }
+  };
+  document.addEventListener('click', stopNavigation);
+  const notice = $('app-notice');
+  // a.click() はダウンロードを捕まえるため先頭で空にしてあるので、
+  // クリックイベントを直接送る
+  const clickLink = (el) => el.dispatchEvent(
+    new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  const launch = $('header-launch-tts');
+
+  clickLink(launch);
+  if (/起動しています/.test(notice.textContent) && !notice.hidden) {
+    ok('押した直後に「起動しています」と出る(数秒何も起きないように見えないように)');
+  } else {
+    fail(`押した直後の表示: ${notice.textContent}`);
+  }
+  await sleep(200);
+  if (notice.textContent.includes('TTSボタンを使えるようにする.bat')
+      && notice.classList.contains('error')) {
+    ok('フォーカスが外れないまま時間が過ぎると、登録用のバッチを案内する(自動で消えない)');
+  } else {
+    fail(`未登録のときの案内が出ない: ${notice.textContent}`);
+  }
+
+  // 登録済み: ブラウザの確認ダイアログやツールの新しいタブでフォーカスが外れる
+  clickLink(launch);
+  window.dispatchEvent(new window.Event('blur'));
+  await sleep(200);
+  if (!notice.textContent.includes('.bat')) {
+    ok('起動してページからフォーカスが外れたら、案内は出さない');
+  } else {
+    fail('起動できているのに未登録の案内が出た');
+  }
+
+  // 起動を待っている間の押し直しは止める(2つ目が同じポートを取り合うため)
+  prevented.length = 0;
+  clickLink(launch);
+  clickLink(launch);
+  window.dispatchEvent(new window.Event('blur'));
+  if (prevented[0] === false && prevented[1] === true) {
+    ok('起動を待っている間に押し直しても、2つ目は起動しない');
+  } else {
+    fail(`押し直しの扱いがおかしい: ${JSON.stringify(prevented)}`);
+  }
+  // ⚙設定の中の起動リンクにも同じ処理が付いている
+  const settingsLink = [...document.querySelectorAll('#set-pc a[href^="ankitts:"]')][0];
+  clickLink(settingsLink);
+  if (/起動しています/.test(notice.textContent)) ok('⚙設定の中の起動リンクにも同じ案内が付いている');
+  else fail('⚙設定の中の起動リンクに案内が付いていない');
+  window.dispatchEvent(new window.Event('blur'));
+
+  document.removeEventListener('click', stopNavigation);
+  delete globalThis.localToolLaunchWaitMs;
+}
+
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`
   : '\n✅ Web版UIの通し動作(単語・AIに質問・習熟用(音読)・DailyConversation・'

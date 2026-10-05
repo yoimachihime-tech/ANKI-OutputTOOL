@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20261005a">
+<link rel="stylesheet" href="./style.css?v=20261005b">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -446,8 +446,9 @@
     </p>
     <p class="hint">
       初回はブラウザが「このサイトは ankitts を開こうとしています」と確認するので許可してください。
-      <strong>押しても何も起きない場合は、そのPCで一度だけ
-      <code>python tools\register_local_tts_protocol.py</code> を実行してください</strong>。
+      <strong>押しても起動しない場合は、そのPCで一度だけ、ツールのフォルダにある
+      「TTSボタンを使えるようにする.bat」をダブルクリックしてください</strong>
+      (ボタンから起動するための登録です。管理者権限は要りません)。
     </p>
   </div>
 
@@ -833,6 +834,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20261005a"></script>
+<script type="module" src="./app.js?v=20261005b"></script>
 </body>
 </html>

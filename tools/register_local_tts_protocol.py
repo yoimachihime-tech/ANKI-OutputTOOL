@@ -61,7 +61,7 @@ def register():
     print("  スキーム: %s://" % SCHEME)
     print("  実行内容: %s" % command)
     print()
-    print("Web版の⚙設定にある「🔊 PCのTTSツールを起動する」から起動できます。")
+    print("Web版の上部にある「🔊 TTS」ボタン(⚙設定の「🔊 PCのTTSツールを起動する」も同じ)から起動できます。")
     print("(初回はブラウザが確認を出します。「常に許可」にすると次回から出ません)")
 
 

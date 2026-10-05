@@ -253,6 +253,55 @@ function isMobileBrowser() {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 }
 
+// ---------------------------------------------------------------------------
+// PC上のTTSツールの起動(ankitts:、2026-10-05追加)
+//
+// 「一番上のTTSボタンを押しても何も起こらない」と報告された。原因はそのPCに
+// ankitts: が登録されていなかったことで、**登録の無いURLスキームはブラウザが
+// 何も言わずに無視する**ため、押した側からは壊れているようにしか見えなかった。
+// 登録済みでも、ツールが起動して新しいタブを開くまで4秒ほど何も起きない。
+//
+// ブラウザには登録の有無を調べるAPIが無いので、押した後にこのページから
+// フォーカスが外れたか(ブラウザの確認ダイアログ・ツールが開く新しいタブ)で
+// 判断する。一定時間たっても外れなければ、登録の方法を案内する。
+// ---------------------------------------------------------------------------
+// 実測の起動時間は約4秒(Googleドライブ上のファイルを読むので、初回はもっと
+// かかりうる)。遅いだけのときに「起動しない」と言い切らないよう余裕を持たせる。
+const LOCAL_TOOL_LAUNCH_WAIT_MS = 10000;
+const LOCAL_TOOL_NOT_REGISTERED_MESSAGE =
+  'PCのTTSツールが起動しないようです。このPCでは、ボタンから起動するための登録がまだかもしれません。'
+  + 'ツールのフォルダにある「TTSボタンを使えるようにする.bat」を一度だけダブルクリックしてから、'
+  + 'もう一度押してください(「apkgにTTS音声を付ける.bat」から直接起動することもできます)。';
+let localToolLaunchPending = null;
+
+function onLaunchLocalTool(event) {
+  if (localToolLaunchPending) {
+    // 起動を待っている間に押し直すと、2つ目のツールが同じポートを取り合う
+    event.preventDefault();
+    notify('PCのTTSツールを起動しています。新しいタブが開くまでお待ちください。');
+    return;
+  }
+  notify('PCのTTSツールを起動しています(新しいタブが開くまで数秒かかります)...');
+  const finish = () => {
+    clearTimeout(localToolLaunchPending.timer);
+    window.removeEventListener('blur', finish);
+    document.removeEventListener('visibilitychange', onVisibility);
+    localToolLaunchPending = null;
+  };
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') finish();
+  };
+  // テストでは globalThis.localToolLaunchWaitMs で待ち時間を短くする
+  const waitMs = Number(globalThis.localToolLaunchWaitMs) || LOCAL_TOOL_LAUNCH_WAIT_MS;
+  const timer = setTimeout(() => {
+    finish();
+    notify(LOCAL_TOOL_NOT_REGISTERED_MESSAGE, true);
+  }, waitMs);
+  localToolLaunchPending = { timer };
+  window.addEventListener('blur', finish);
+  document.addEventListener('visibilitychange', onVisibility);
+}
+
 /** 共有アセット(プロンプト・カード定義・スキーマ)。起動時に読み込む。 */
 const shared = {
   wordPrompt: null,
@@ -590,6 +639,11 @@ function bindEvents() {
   // 下までスクロールした位置からでも閉じられるようにするためのもの。
   on('settings-close', 'click', toggleSettings);
   on('settings-nav', 'click', onSettingsNavClick);
+  // PC上のTTSツールの起動(ヘッダーと⚙設定の2か所)。未登録のPCで押しても
+  // 何も起きないことがあるため、起動したかどうかを見て案内する。
+  document.querySelectorAll('a[href^="ankitts:"]').forEach((a) => {
+    a.addEventListener('click', onLaunchLocalTool);
+  });
   // Esc で設定を閉じる(プレビューのダイアログが開いているときは、そちらが
   // 先に閉じるのでここには来ない)。
   document.addEventListener('keydown', (e) => {
