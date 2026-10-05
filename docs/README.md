@@ -18,7 +18,8 @@ docs/
   app.js                UI・タブ切り替え・ストック管理(localStorage)
   lib/
     gemini.js           Gemini API 呼び出し(gemini_client.py の Web 版)
-    tts.js               Cloud Text-to-Speech 呼び出し + 文分割(tts_core.py の Web 版)
+    tts.js               TTS 呼び出し(Cloud TTS / Gemini TTS)+ 文分割 + WAV 処理
+                         (tts_core.py の Web 版)
     guid.js             genanki.guid_for() と同一の guid 生成
     apkg.js             .apkg の組み立て(sql.js + JSZip、mediaも埋め込み可能)
     shuujuku.js          習熟用(音読)のContentフィールド組み立て + 続き番号管理
@@ -131,7 +132,30 @@ OFFにして出力した場合やシート書き込みが失敗した場合で�
 `bindPersistentCheckbox()`、localStorageキー`anki_tool_filter_<チェックボックスの
 id>`)。タブ切り替えやページの再読み込みをまたいでON/OFFが保持される。
 
-## TTS音声の自動埋め込み(2026-07-28追加)
+## TTS音声の自動埋め込み(2026-07-28追加、2026-10-05に音声エンジンを2種類に)
+
+### 音声エンジン(2026-10-05追加)
+
+⚙設定「TTS音声」で、音声エンジンを2つから選べる。
+
+| エンジン | 使うキー | 音声 | .apkg に入る形式 |
+| --- | --- | --- | --- |
+| Cloud TTS(既定) | Cloud Text-to-Speech APIキー | Chirp 3: HD の30種(「一覧を取得」で Neural2 等も) | MP3(Googleが直接返す) |
+| Gemini TTS | Gemini APIキー(カード生成と同じ) | Gemini 3.8 Flash TTS / Flash-Lite TTS 等 × 30種 | MP3(lamejs で変換。読めなければ WAV) |
+
+- Gemini TTS は2026年9月公開の Gemini 3.8 Flash TTS など。**Cloud
+  Text-to-Speech API ではなく Gemini API の generateContent** から使う
+  (`lib/gemini.js` の `generateSpeech`)。応答は WAV(24kHz・モノラル・16bit)。
+- 呼び出し回数は「Gemini APIの使用状況」に数えられる(1フィールド=1回)。
+- 読み方の指示(`speechMetadata.style`)は Gemini 3.8 以降だけに送る
+  (古いモデルに送ると400になりうる)。
+- Gemini TTS には音量の指定が無いので、音量ゲインは `lib/tts.js` の
+  `applyGainToWav` で PCM に直接掛ける。上げすぎて音割れする分は自動で抑える。
+- Cloud 側の音声一覧からは、言語コードの付いていない名前("Kore" 等)を除く。
+  これは Cloud 経由の Gemini 用で、APIキーだけでは合成できない。
+- Cloud の言語コードは**音声名の先頭(en-GB-…)を優先**する(食い違うと400)。
+- 「.apkg を出力するときに音声を埋め込む」をOFFにすれば、キーがあっても
+  音声無しで出力する。各タブの③に「いまの設定で音声が付くか」を1行で出す。
 
 「⚙ 設定」の「Cloud Text-to-Speech APIキー」を設定すると、各タブの `.apkg`
 出力時に対象フィールドの音声を自動で合成し、`[sound:...]`タグを埋め込む。
@@ -187,10 +211,12 @@ id>`)。タブ切り替えやページの再読み込みをまたいでON/OFFが
 デスクトップ版の「テスト再生」が持つ波形表示・0dBクリッピング検出・音量の
 自動調整をWeb版にも追加した。
 
-- **波形表示**: テスト再生を押すと、合成したMP3をWeb Audio APIの
-  `AudioContext.decodeAudioData()`でデコードし(デスクトップ版はCloud TTSから
-  直接WAVを取得するが、Web版はMP3合成のみのためデコードで代用)、
-  再生前にバケットごとの最小値・最大値を計算しておく
+- **波形表示**: テスト再生では音声を最初から WAV で受け取り(Cloud TTS は
+  LINEAR16、Gemini TTS はもともと WAV)、`lib/tts.js` の `parseWav()` で PCM を
+  直接読んで、再生前にバケットごとの最小値・最大値を計算しておく
+  (2026-10-05までは MP3 を Web Audio API の `decodeAudioData()` でデコードして
+  いたが、iOS では AudioContext が `<audio>` の再生と干渉しうるため、
+  **Web Audio API は使わない形に作り直した**)
   (`lib/tts.js`の`computeWaveformMinMax()`、`tts_core.compute_waveform_minmax`
   に対応)。**再生自体は`<audio>`要素で行う**(`AudioContext`は生成直後
   suspended状態になることがあり、クリックから再生開始までの間にawaitを

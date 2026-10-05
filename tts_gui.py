@@ -321,7 +321,7 @@ class AnkiTTSApp(_BaseTk):
         # 起動時、保存済みの音声一覧キャッシュがあれば即座にプルダウンへ反映する
         cached = self.voices_cache.get(self.lang_var.get())
         if cached:
-            self.voice_combo["values"] = cached
+            self.voice_combo["values"] = tts_core.voice_choices(cached)
 
         # APIキーが既にあれば、起動直後にバックグラウンドで音声一覧を自動取得
         # (エラーが出てもポップアップは出さず、ログにのみ記録する)
@@ -2454,21 +2454,47 @@ class AnkiTTSApp(_BaseTk):
         self.log(f"カード定義「{key}」を保存しました。")
         messagebox.showinfo("保存しました", f"カード定義「{key}」を保存しました。")
 
+    # --- 音声に合わせたAPIキー(2026-10-05追加) ------------------------------
+    # Gemini TTS の音声("gemini:<モデル>:<音声>"、tts_core.parse_gemini_voice)は
+    # Cloud TTS ではなく Gemini API で合成するため、Gemini のAPIキーを使う。
+    def _tts_api_key(self, voice: str = None) -> str:
+        voice = self.voice_var.get().strip() if voice is None else voice
+        if tts_core.parse_gemini_voice(voice):
+            return self.gemini_api_key_var.get().strip()
+        return self.api_key_var.get().strip()
+
+    def _tts_key_missing_message(self, voice: str = None) -> str:
+        """必要なキーが無ければ説明を返す(あれば空文字)。"""
+        voice = self.voice_var.get().strip() if voice is None else voice
+        if self._tts_api_key(voice):
+            return ""
+        if tts_core.parse_gemini_voice(voice):
+            return "Gemini TTS の音声を使うには、⚙設定「Gemini API」タブでAPIキーを入力してください。"
+        return "先にGoogle Cloud APIキーを入力してください。"
+
+    def _voice_lang_mismatch(self, voice_name: str, lang: str) -> bool:
+        """音声名が言語コードで始まっていないか(Gemini TTS の音声は言語を自動判定
+        するので対象外)。"""
+        if tts_core.parse_gemini_voice(voice_name):
+            return False
+        return not voice_name.lower().startswith(lang.lower() + "-")
+
     def on_auto_gain_clicked(self):
         """0dBFS(音割れ)を超えない範囲でできるだけ音量が大きくなるよう、
         音量ゲインを自動計算してself.volume_gain_db_varにセットする
         (`tts_core.find_safe_volume_gain_db`)。実際にGoogle Cloud TTSへの
         テスト合成を複数回行うため、API呼び出しが必要(数秒かかることがある)。"""
-        if not self.api_key_var.get():
-            messagebox.showwarning("入力不足", "先にGoogle Cloud APIキーを入力してください。")
-            return
         voice = self.voice_var.get().strip()
         lang = self.lang_var.get().strip()
         if not voice:
             messagebox.showwarning("入力不足", "音声名(voice)を選択してください。")
             return
+        missing = self._tts_key_missing_message(voice)
+        if missing:
+            messagebox.showwarning("入力不足", missing)
+            return
 
-        api_key = self.api_key_var.get()
+        api_key = self._tts_api_key(voice)
         gap_seconds = self.sentence_gap_var.get()
 
         self.auto_gain_btn.configure(state="disabled")
@@ -2516,16 +2542,17 @@ class AnkiTTSApp(_BaseTk):
         機能で使っているos.startfileでの外部プレイヤー起動には出来ない)。"""
         if not WINSOUND_AVAILABLE:
             return
-        if not self.api_key_var.get():
-            messagebox.showwarning("入力不足", "先にGoogle Cloud APIキーを入力してください。")
-            return
         voice = self.voice_var.get().strip()
         lang = self.lang_var.get().strip()
         if not voice:
             messagebox.showwarning("入力不足", "音声名(voice)を選択してください。")
             return
+        missing = self._tts_key_missing_message(voice)
+        if missing:
+            messagebox.showwarning("入力不足", missing)
+            return
 
-        api_key = self.api_key_var.get()
+        api_key = self._tts_api_key(voice)
         gap_seconds = self.sentence_gap_var.get()
         volume_gain_db = self.volume_gain_db_var.get()
 
@@ -4600,8 +4627,14 @@ class AnkiTTSApp(_BaseTk):
                 if not names:
                     self.log(f"'{lang}' に該当する音声が見つかりませんでした。")
                     return
-                self.voice_combo["values"] = names
-                if self.voice_var.get() not in names:
+                # Gemini TTS の新しい音声(Gemini 3.8 など)も選べるよう後ろに足す
+                # (2026-10-05。Gemini のAPIキーで合成する)。
+                choices = tts_core.voice_choices(names)
+                self.voice_combo["values"] = choices
+                # 選んでいる音声が一覧に無いときだけ選び直す(Gemini の音声を
+                # 選んでいる場合に、起動時の自動取得で Cloud の音声へ戻さないため、
+                # Cloud の一覧ではなく Gemini を含めた一覧で判定する)。
+                if self.voice_var.get() not in choices:
                     self.voice_var.set(names[0])
                 self.voices_cache[lang] = names
                 self._save_current_config()
@@ -4805,12 +4838,13 @@ class AnkiTTSApp(_BaseTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def on_preview_play_clicked(self):
-        if not self.api_key_var.get():
-            messagebox.showwarning("入力不足", "先にGoogle Cloud APIキーを入力してください。")
+        missing = self._tts_key_missing_message()
+        if missing:
+            messagebox.showwarning("入力不足", missing)
             return
         voice_name = self.voice_var.get().strip()
         lang_check = self.lang_var.get().strip()
-        if not voice_name.lower().startswith(lang_check.lower() + "-"):
+        if self._voice_lang_mismatch(voice_name, lang_check):
             messagebox.showwarning(
                 "音声名が不正な可能性があります",
                 f"音声名「{voice_name}」が言語コード「{lang_check}」から始まっていません。\n"
@@ -4844,7 +4878,7 @@ class AnkiTTSApp(_BaseTk):
 
         voice = self.voice_var.get()
         lang = self.lang_var.get()
-        api_key = self.api_key_var.get()
+        api_key = self._tts_api_key(voice)
         gap_seconds = self.sentence_gap_var.get()
         bitrate = int(self.mp3_bitrate_var.get())
 
@@ -4874,15 +4908,16 @@ class AnkiTTSApp(_BaseTk):
         if not self.apkg_path.get():
             messagebox.showwarning("入力不足", "apkgファイルを選択してください。")
             return
-        if not self.api_key_var.get():
-            messagebox.showwarning("入力不足", "Google Cloud APIキーを入力してください。")
+        missing = self._tts_key_missing_message()
+        if missing:
+            messagebox.showwarning("入力不足", missing)
             return
         if not self.output_path.get():
             messagebox.showwarning("入力不足", "出力先を指定してください。")
             return
         voice_name = self.voice_var.get().strip()
         lang = self.lang_var.get().strip()
-        if not voice_name.lower().startswith(lang.lower() + "-"):
+        if self._voice_lang_mismatch(voice_name, lang):
             messagebox.showwarning(
                 "音声名が不正な可能性があります",
                 f"音声名「{voice_name}」が言語コード「{lang}」から始まっていません。\n"
@@ -4998,7 +5033,7 @@ class AnkiTTSApp(_BaseTk):
                     col,
                     nt_name,
                     to_process,
-                    api_key=self.api_key_var.get(),
+                    api_key=self._tts_api_key(),
                     voice=self.voice_var.get(),
                     lang=self.lang_var.get(),
                     gap_seconds=self.sentence_gap_var.get(),

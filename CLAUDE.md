@@ -147,6 +147,11 @@ json_store.py     上記の永続化JSON(ストック・カード定義・タブ
 test_json_store.py
                   json_store.pyと、それを使う6モジュールの回帰テスト
                   (`python test_json_store.py`、2026-08-05追加)
+test_tts_engines.py
+                  TTSの音声エンジン(Cloud / Gemini TTS)・音量ゲイン・config.jsonの
+                  アトミック保存・ローカルTTSツールの補助関数の回帰テスト
+                  (`C:\Python314\python.exe test_tts_engines.py`、2026-10-05追加。
+                  APIも実config.jsonも触らない。anki が要るのでCIでは動かさない)
 config.json       APIキー・音声設定などの保存先(平文注意・Git管理対象外)
 backup/           自動バックアップされた.apkgの保存先
 pending_decks/    各タブの「まとめてノート一覧に出力」が生成する作業用デッキ
@@ -2164,6 +2169,116 @@ AnswerJA を埋めた: 88件(選択問題) / 選択肢が無く対象外: 90件
 使って確かめるほうが先、という判断。**再開する場合は上の実測値をそのまま
 使ってよい**(移行後のコレクションで測った値)。
 
+## 2026-10-05の改修(TTS音声エンジン・不具合修正・使い勝手)
+
+片桐から「不具合やユーザーフレンドリーでない部分の修正、レイアウトと使い勝手の
+改善を重点的に。Googleから新しいTTS音声が出たので選べるように。テスト音声の
+再生もちゃんとできるように」との依頼を受けての改修。
+
+### 新しいTTS音声(Gemini TTS)
+
+- **2026年9月に Gemini 3.8 Flash TTS / Flash-Lite TTS が公開された**。これらは
+  Cloud Text-to-Speech API ではなく **Gemini API(generateContent)** から使う。
+  片桐のGeminiキーで `gemini-3.8-flash-tts` / `gemini-3.8-flash-lite-tts` /
+  `gemini-3.1-flash-tts-preview` / `gemini-2.5-*-preview-tts` が使えることを
+  モデル一覧で確認し、実際に1回呼んで応答形式を確かめた:
+  `candidates[0].content.parts[0].inlineData = {mimeType: 'audio/wav', data}`、
+  RIFFヘッダー付きの WAV(24kHz・モノラル・16bit)。リクエストは従来どおり
+  `speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`。
+  読み方の指示は part の `speechMetadata: {style}`(3.8で動作確認済み。3.8より
+  古いモデルには送らない = `geminiTtsSupportsStyle` / `gemini_tts_supports_style`)。
+  古いプレビュー版はヘッダー無しPCM(`audio/L16;codec=pcm;rate=24000`)を返すので
+  WAVに包み直す。
+- **Web版**: ⚙設定「TTS音声」に「音声エンジン」(Cloud TTS / Gemini TTS)を追加。
+  Gemini TTS はカード生成と同じ Gemini APIキーを使い、呼び出しは
+  `lib/gemini.js` の `generateSpeech`(`postGeminiRequest` に `maxRetries` を
+  足して4回までリトライ)。`.apkg` には **lamejs(cdnjs、SRI付き)で MP3 に
+  圧縮して入れる**(使うときだけ読み込む。読めなければ WAV のまま。
+  テストでは `globalThis.lamejs = null` で無効化できる)。音量ゲインは
+  Gemini に指定が無いので `applyGainToWav` で PCM に掛け、ピーク0.965を
+  超える分は自動で抑える(Geminiは呼ぶたびに音量が少し変わるため)。
+- **音声名・言語は自由入力からプルダウンに変えた**。Cloud は Chirp 3: HD の
+  30種を最初から出し、「一覧を取得」で Neural2 等も足す。voices.list に混ざる
+  **言語コードの無い名前("Kore" 等)は除く**——Cloud経由の Gemini 用で、
+  Vertex AI の権限が要り APIキーだけでは合成できない。
+- **Cloud TTS の言語コードは音声名の先頭(en-GB-…)を優先する**(Web/Python
+  とも)。食い違うと400「リクエスト内容に誤りがあります」になり原因が
+  分からなかった。
+- **PC側(tts_core / ローカルTTSツール / tts_gui)**: 既存の関数の引数を
+  増やさないよう、音声名を **`"gemini:<モデル>:<音声>"`** で表し、
+  `call_google_tts` / `call_google_tts_wav` が振り分ける(`parse_gemini_voice`)。
+  **このときの api_key は Gemini のキー**なので、呼び出し側は
+  `tts_core.tts_api_key_for_voice(voice, cfg)`(GUIは `_tts_api_key()`)で選ぶ。
+  読み方の指示はモジュール変数 `tts_core.GEMINI_TTS_STYLE`。Gemini の音声を
+  .apkg 用に MP3 にするには lameenc が要る(無ければ分かりやすいエラー)。
+  デスクトップ版の音声プルダウンは `tts_core.voice_choices()` で
+  「Cloudの音声 + Gemini 3.8 の60音声」になる。
+
+### テスト再生の作り直し
+
+- 「波形は出るが音が鳴らない」の疑わしい要因だった **Web Audio API
+  (AudioContext / decodeAudioData)を一切使わない形にした**。iOS では
+  AudioContext を作ると音声セッションの扱いが変わり `<audio>` と干渉しうる。
+  テスト用の音声は最初から WAV で受け取り(Cloud は LINEAR16)、`parseWav()` で
+  PCM を直接読んで波形・ピークを出す。再生は従来どおり「無音WAVで要素を解禁
+  → src差し替え」方式。
+- 再生が終わると「再生しました(ピーク -x dBFS、n秒)」に戻り、再生中は
+  ボタンが「■ 停止」になる(以前は「再生中...」が残り続けた)。読み上げる文を
+  入力できる(空なら既定のサンプル文)。キーが無いと、そのキーの欄へ案内する。
+- **実ブラウザで確認済み**(headless Chrome + CDP、`--autoplay-policy=
+  no-user-gesture-required`): Cloud TTS(Chirp3-HD Iapetus)・Gemini 3.8 Flash
+  TTS とも最後まで再生され `ended` まで到達。Gemini の自動調整も動作。
+  lamejs の MP3 も Chrome でデコードできることを確認。
+- ローカルTTSツール(`local_tts_page.html`)にも音声エンジン・音声の一覧と
+  テスト再生(`POST /api/test-tts`、`<audio controls>` で再生)を追加し、
+  Gemini 3.8 で実際に再生できることを確認した。③(音声とオプション)は
+  apkg を読み込む前から表示する(以前は apkg を選ぶまで音声を試せず、しかも
+  apkg を選び直すたびに画面の設定が config.json の値に戻っていた)。
+  「この音声・設定を次回も使う」で config.json に保存できる(APIキーには
+  触れない。保存した音声は PC版とも共通)。
+
+### 見つけて直した不具合
+
+| 場所 | 内容 |
+| --- | --- |
+| Web 起動 | 既定モデルが提供終了の `gemini-2.0-flash` で、新しい端末の最初の生成が必ず失敗 → `gemini-flash-latest`(最新Flashの別名)に |
+| Web モデル一覧 | `listModels` がページ送りせず後ろのモデルが消えていた / TTS・画像用モデルまで文章生成の候補に出ていた → 両方修正(Pythonの`list_gemini_models`も) |
+| Web 設定 | APIキー未設定時に `$('settings').hidden = false` で、通常画面が隠れず重なって出ていた → `openSettingsAt()` でキー欄へ案内 |
+| Web 設定 | 「起動時に自動で読み込む」が `class="check"` でチェックボックスが横幅いっぱいに伸びていた |
+| Web 全体 | `<select>` だけ未スタイル / `a.button-like` の display が hidden に勝ち、スマホで隠すはずの「🔊 TTS」が常に表示 |
+| Web 構造 | `init()` をモジュール冒頭で呼んでおり、後ろに置いた const が TDZ になる構造だった → **末尾で呼ぶよう移動**(定数の置き場所の制約が消えた) |
+| Python | `save_config` が非アトミック、`load_config` は壊れると黙って `{}` → 次の保存で**APIキーごと消える** → `json_store` 経由に(壊れた中身は `config.json.corrupt` に退避) |
+| ローカルツール | 生成中に「TTSを生成する」を再度押すと409をエラー扱いし、生成中なのにキャンセルボタンが消えた / apkg読み込みのたびにクリック処理が重複登録 / `<a><button>` の入れ子 / ツール終了後もポーリングが失敗し続けた / 出力をファイルへ向けて起動すると cp932 で落ちた |
+| デスクトップ | 起動時の音声一覧の自動取得が、Gemini の音声を選んでいても Cloud の先頭へ戻していた(Gemini 対応に伴う修正) |
+
+### 使い勝手・レイアウト
+
+- ⚙設定をグループごとのブロックに分け、先頭に目次(ボタン)を置いた。Escで閉じる。
+  閉じると開く前のスクロール位置に戻る。
+- タブに「まだ出力していない件数」のバッジ(`updateTabBadges`)。PC幅ではタブを
+  1段に並べる(以前は 30% 固定で必ず2段)。
+- 各タブの③と⚙設定に「いまの設定で音声が付くか」を1行で表示(`data-tts-summary`)。
+  音声が付かなかった出力の完了メッセージにも理由を添える(`ttsSkipNote`)。
+- 一覧に「すべて選択」(`data-select-all`)。
+- プレビューで、ノートから作られる**すべてのカード**を切り替えて見られる
+  (`openCardPreview`。表面が空になるテンプレートは出さない)。
+- 入力欄の下書きを端末に保存(`anki_tool_draft_<id>`)。**プログラムから
+  入力欄を変えるときは `setInputValue()` を通すこと**(下書きも揃えるため)。
+- 入力欄で Ctrl+Enter(⌘+Enter)で生成。スマホでは表示を隠す。
+- スマホのヘッダーはボタンを均等幅で並べる。
+
+### テスト
+
+- `tools/test_tts.mjs` [6][7]: WAVの読み書き・ゲイン/リミッター・MP3圧縮・
+  エンジンの振り分け・Geminiの自動調整(1回で済む)・音声一覧の除外。
+- `tools/test_gemini.mjs` [4]: モデル一覧のページ送り・モデルの分類。
+- `tools/test_web_ui.mjs` [30]〜[33]: エンジン/音声の選択肢、Gemini TTS 付きの
+  .apkg(WAV/MP3 の両経路)、すべて選択・件数バッジ・下書き・Ctrl+Enter・
+  設定への案内・Esc、プレビューのカード切り替え。既定モデルの期待値も更新。
+- `test_tts_engines.py`(新設、上記ファイル一覧参照)。
+- **G:ドライブ(Google Drive)上で `npm test` を回すと非常に遅い**(UIテストが
+  10分以上終わらない)。ローカルディスクへコピーして回すと数十秒で終わる。
+
 ## Gitリポジトリ・GitHub連携
 
 2026-07-27に`git init`してGitHub管理下に置いた。**このフォルダはGoogle Drive
@@ -2917,11 +3032,10 @@ PKCEのみで交換できるが、リダイレクトURIがlocalhostに限られ�
   localStorageキー`anki_tool_filter_<id>`で状態を保存・復元する。
   `bindEvents()`内、各タブの初回描画(`render*Stock`/`renderDailyPending`)
   より前に呼ぶ必要がある(復元した値を初回描画に反映させるため)。
-  **`FILTER_STORAGE_PREFIX`定数は`init()`呼び出し(モジュール読み込み直後に
-  即時実行される`init().catch(...)`)より前、モジュール先頭側に置くこと**
-  (`const`のTDZにより、`init()`から同期的に呼ばれる`bindEvents()`内で
-  参照する時点で未初期化だと`ReferenceError`になる。実際にこの順序を
-  誤って一度踏んでいる)。
+  (※以前はここに「`FILTER_STORAGE_PREFIX`定数は`init()`呼び出しより前に
+  置くこと」というTDZの注意があったが、**2026-10-05に`init()`の呼び出しを
+  `app.js`の末尾へ移した**ので、モジュール直下の定数はどこに置いてもよく
+  なった。下記「2026-10-05の改修」を参照。)
 
 ### 習熟用タブの直接入力(2026-08-06追加、Web版のみ)
 

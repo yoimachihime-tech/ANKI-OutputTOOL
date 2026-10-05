@@ -13,7 +13,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20260908a">
+<link rel="stylesheet" href="./style.css?v=20261005a">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -38,6 +38,9 @@
 <div id="notice-banner" class="notice-banner">
   <p id="header-auth-status" class="status notice" role="status" aria-live="polite" data-autohide data-log hidden></p>
   <p id="header-sync-status" class="status notice" role="status" aria-live="polite" data-autohide data-log hidden></p>
+  <!-- 一般的なお知らせ(2026-10-05追加)。設定を開いた直後など、タブ内の
+       ステータス欄が見えない状況で使う(app.js の notify)。 -->
+  <p id="app-notice" class="status notice" role="status" aria-live="polite" data-autohide data-log hidden></p>
 </div>
 
 <header class="app-header">
@@ -86,319 +89,382 @@
            モバイル判定で hidden を外す(既定は隠す)。 -->
       <a id="header-launch-tts" class="ghost button-like" href="ankitts://start"
          title="PC上のTTSツール(既存apkgに音声を付ける)を起動します" hidden>🔊 TTS</a>
-      <button type="button" id="settings-toggle" class="ghost">⚙ 設定</button>
+      <button type="button" id="settings-toggle" class="ghost" aria-controls="settings" aria-expanded="false">⚙ 設定</button>
     </div>
   </div>
 </header>
 
-<!-- ⚙ 設定(全タブ共通) -->
+<!-- ⚙ 設定(全タブ共通)
+     2026-10-05: 項目をグループ(.settings-group)ごとのブロックに分け、先頭に
+     目次(#settings-nav)を置いた。以前は1本の長い縦スクロールで、目的の項目
+     (例: TTSの音声)まで毎回スクロールして探す必要があった。入力欄のIDは
+     app.js・テストが参照しているので変えないこと。 -->
 <section id="settings" class="card" hidden>
   <!-- 設定が長いため、下までスクロールした位置からでも閉じられるよう
-       この中にも専用の閉じるボタンを置いてある(2026-07-30追加。当時は
-       開くボタンが⋮メニューの中にあり、閉じるためだけにメニューを開き直す
-       必要があったのが理由。2026-08-06に⋮メニューは廃止したが、
-       閉じるボタン自体は上記の理由で残している)。 -->
+       この中にも専用の閉じるボタンを置いてある(Esc キーでも閉じる)。 -->
   <div class="settings-head">
     <h2>設定</h2>
     <button type="button" id="settings-close" class="ghost">✕ 閉じる</button>
   </div>
   <!-- いま動いている app.js の版(2026-08-06追加)。GitHub Pages は HTML を
        約10分キャッシュするため、直したはずの挙動が直っていないときは
-       まずここを確認する(古ければ再読み込み)。値は app.js が
-       import.meta.url から読むので、手で書き換える必要はない。 -->
+       まずここを確認する(古ければ再読み込み)。 -->
   <p class="hint version-line">
     このページの版: <code id="app-version">-</code>
     <span id="app-version-note"></span>
   </p>
+
+  <nav id="settings-nav" class="settings-nav" aria-label="設定の項目へ移動">
+    <button type="button" class="chip" data-target="set-gemini">Gemini</button>
+    <button type="button" class="chip" data-target="set-tts">🔊 TTS音声</button>
+    <button type="button" class="chip" data-target="set-sheets">スプレッドシート</button>
+    <button type="button" class="chip" data-target="set-due">出題順</button>
+    <button type="button" class="chip" data-target="set-sync">同期</button>
+    <button type="button" class="chip" data-target="set-backup">バックアップ</button>
+    <button type="button" class="chip" data-target="set-pc">PCツール</button>
+    <button type="button" class="chip" data-target="set-log">ログ</button>
+  </nav>
+
   <p class="hint">
     <b>新しい端末でも、ふつうは何も入力する必要はありません。</b>
     「Googleにログイン」を押すと、APIキーやスプレッドシートIDが自動で設定されます
-    (ログイン維持用 Worker から受け取ります。下の「起動時に自動で読み込む」を
-    OFFにしている場合は、同期かDailyConversationタブを使った時点で設定されます)。
+    (「同期」の「起動時に自動で読み込む」をOFFにしている場合は、同期か
+    DailyConversationタブを使った時点で設定されます)。
     以下の欄は、自動で入らないときや、一時的に別の値を試したいときのためのものです。
-  </p>
-  <p class="hint">
-    APIキーはこのブラウザ内(localStorage)にのみ保存され、
-    Google以外のサーバーには送信されません。
-    共用の端末では使用後に「キーを消去」「TTSキーを消去」「ログアウト」を
-    それぞれ実行してください。
+    APIキーはこのブラウザ内(localStorage)にのみ保存され、Google以外のサーバーには
+    送信されません。共用の端末では、使い終わったら各キーの「消去」とログアウトを行ってください。
   </p>
 
-  <h3>Gemini APIキーとモデル</h3>
+  <!-- ===================== Gemini ===================== -->
+  <div class="settings-group" id="set-gemini">
+    <h3>Gemini APIキーとモデル</h3>
 
-  <label for="api-key">Gemini APIキー</label>
-  <div class="row">
-    <input type="password" id="api-key" autocomplete="off" spellcheck="false"
-           placeholder="AI Studio または Google Cloud で発行したキー">
-    <button type="button" id="toggle-key" class="ghost" title="表示/非表示">👁</button>
+    <label for="api-key">Gemini APIキー</label>
+    <div class="row">
+      <input type="password" id="api-key" autocomplete="off" spellcheck="false"
+             placeholder="AI Studio または Google Cloud で発行したキー">
+      <button type="button" id="toggle-key" class="ghost" title="表示/非表示" aria-label="キーを表示/非表示">👁</button>
+    </div>
+
+    <label for="model">モデル(カードの文章を作るAI)</label>
+    <!-- <select> にしてある理由(datalist は入力中の文字で候補が絞られる)は
+         app.js の renderModelOptions の上のコメントを参照。 -->
+    <div class="row">
+      <select id="model"></select>
+      <button type="button" id="fetch-models" class="ghost">一覧を取得</button>
+    </div>
+    <p class="hint">
+      「一覧を取得」を押すと、そのAPIキーで使えるモデルを取得してここに並べます
+      (この端末に保存され、次回以降も出ます)。音声合成・画像生成用のモデルはカードの
+      文章を作れないため、ここには出しません(音声合成用は下の「TTS音声」で選べます)。
+      一覧に無いモデル名を使いたいときは「直接入力…」を選んでください。
+    </p>
+
+    <div class="row">
+      <button type="button" id="clear-key" class="danger">キーを消去</button>
+    </div>
+
+    <h4>使用状況(このブラウザから今日呼び出した回数)</h4>
+    <div id="quota-usage" class="quota-usage"></div>
+    <p class="hint">
+      分母(上限)は、上限に一度ぶつかったときにGoogleが応答で教えてくれた値を覚えたもので、
+      アプリ側に固定の数字は持っていません。まだ一度もぶつかっていないモデルは分母を
+      表示しません。上限は<b>太平洋時間</b>の深夜にリセットされます(日本時間ではおおよそ
+      午後4〜5時)。他の端末から同じキーを使っている場合、ここの回数は実際より少なく出ます。
+      Gemini TTS で音声を作った回数もここに含まれます(1フィールド=1回)。
+    </p>
+    <div class="row">
+      <button type="button" id="quota-clear-counts" class="ghost">今日の回数を0に戻す</button>
+      <button type="button" id="quota-clear-limits" class="ghost">覚えた上限を忘れる</button>
+    </div>
   </div>
 
-  <label for="model">モデル</label>
-  <!-- 2026-08-06: <input list> + <datalist> から <select> に変更した。
-       datalist はブラウザの仕様として**入力欄の文字に前方一致するものしか
-       候補に出さない**ため、「gemini-3.6-flash」と入っていると候補が
-       その1件だけになり、他のモデルへ切り替えるにはまず文字を消す必要が
-       あった(片桐から「何を入力していても一覧を全部出したい」との指摘)。
-       select なら常に全件が出る。一覧に無いモデル名は「直接入力…」から
-       追加できる。 -->
-  <div class="row">
-    <select id="model"></select>
-    <button type="button" id="fetch-models" class="ghost">一覧を取得</button>
+  <!-- ===================== TTS音声 ===================== -->
+  <!-- 2026-10-05: 音声エンジンを選べるようにした(Cloud Text-to-Speech /
+       Gemini TTS)。Gemini TTS は2026年9月公開の Gemini 3.8 Flash TTS など。
+       音声名・言語は自由入力からプルダウンに変えた(打ち間違いで400になり、
+       原因が分からないことがあったため)。 -->
+  <div class="settings-group" id="set-tts">
+    <h3>TTS音声(.apkg に入れる読み上げ)</h3>
+    <p class="tts-summary" data-tts-summary></p>
+
+    <label class="checkbox">
+      <input type="checkbox" id="tts-enabled" checked>
+      .apkg を出力するときに音声を埋め込む
+    </label>
+    <p class="hint">
+      OFFにすると音声無しの .apkg を出力します(下のテスト再生はOFFでも使えます)。
+    </p>
+
+    <label for="tts-engine">音声エンジン</label>
+    <select id="tts-engine">
+      <option value="cloud">Cloud TTS(Chirp 3: HD など)</option>
+      <option value="gemini">Gemini TTS(新しい音声・3.8)</option>
+    </select>
+
+    <!-- Cloud Text-to-Speech -->
+    <div id="tts-cloud-box" class="subgroup">
+      <label for="tts-api-key">Cloud Text-to-Speech APIキー</label>
+      <div class="row">
+        <input type="password" id="tts-api-key" autocomplete="off" spellcheck="false"
+               placeholder="Google Cloud で発行したCloud Text-to-Speech用のキー">
+        <button type="button" id="toggle-tts-key" class="ghost" title="表示/非表示" aria-label="キーを表示/非表示">👁</button>
+      </div>
+      <div class="field-grid">
+        <div>
+          <label for="tts-lang">言語(なまり)</label>
+          <select id="tts-lang"></select>
+        </div>
+        <div>
+          <label for="tts-voice">音声</label>
+          <div class="row nowrap">
+            <select id="tts-voice"></select>
+            <button type="button" id="tts-fetch-voices" class="ghost" title="Chirp 3: HD 以外の音声も一覧に出します">一覧を取得</button>
+          </div>
+        </div>
+      </div>
+      <p id="tts-voice-status" class="status" role="status" aria-live="polite"></p>
+      <p class="hint">
+        最初は Chirp 3: HD の30種類を表示しています。「一覧を取得」を押すと、Neural2・Studio など
+        その他の音声も選べるようになります。Gemini の新しい音声は、上の「音声エンジン」で
+        「Gemini TTS」を選んでください。
+      </p>
+    </div>
+
+    <!-- Gemini TTS -->
+    <div id="tts-gemini-box" class="subgroup" hidden>
+      <p class="hint">
+        カード生成と同じ <b>Gemini APIキー</b>(上の「Gemini」の欄)を使います。音声1つにつき
+        Gemini API を1回呼ぶので、例文の多いカードをまとめて出力すると、その分だけ
+        「使用状況」の回数が増えます。言語は文章から自動で判定されます。
+        まれに、読み飛ばしや言い直しが入ることがあります(気になる場合は Cloud 側を使ってください)。
+      </p>
+      <div class="field-grid">
+        <div>
+          <label for="tts-gemini-model">モデル</label>
+          <select id="tts-gemini-model"></select>
+        </div>
+        <div>
+          <label for="tts-gemini-voice">音声</label>
+          <select id="tts-gemini-voice"></select>
+        </div>
+      </div>
+      <label for="tts-gemini-style">読み方の指示(任意)<span id="tts-gemini-style-note" class="label-note"></span></label>
+      <input type="text" id="tts-gemini-style" spellcheck="false"
+             placeholder="例: clear and natural, at a moderate pace for language learners">
+      <p class="hint">
+        英語で短く書くのが確実です。空欄なら自然な読み上げになります
+        (本文とは別に渡すので、指示そのものが読み上げられることはありません)。
+      </p>
+    </div>
+
+    <label for="tts-volume-gain">音量ゲイン(dB、-20.0〜16.0、既定0)</label>
+    <div class="row">
+      <input type="number" id="tts-volume-gain" value="0" min="-20" max="16" step="0.5" inputmode="decimal">
+      <button type="button" id="tts-auto-gain" class="ghost">自動調整</button>
+    </div>
+    <p class="hint">
+      「自動調整」は、テスト再生と同じ文で0dBを超えない(音割れしない)範囲に音量ゲインを
+      合わせます(小さければ上げ、すでに音割れしている場合は下げます)。
+      Gemini TTS では、音割れしないよう上げすぎた分は自動で抑えます。
+    </p>
+
+    <label class="checkbox">
+      <input type="checkbox" id="tts-exclude-japanese">
+      日本語を含む文を読み上げから除外する
+    </label>
+    <p class="hint">
+      AIが指示に反して日本語の説明文などを混ぜて返してきた場合の保険用オプションです。
+      単語・AIに質問・DailyConversationタブの音声に効きます(習熟用は例文の欄が元々英文のみのため対象外です)。
+    </p>
+
+    <h4>テスト再生</h4>
+    <label for="tts-test-text">読み上げる文(空欄なら既定のサンプル文)</label>
+    <input type="text" id="tts-test-text" spellcheck="false">
+    <div class="row">
+      <button type="button" id="tts-test-play" class="ghost">🔊 テスト再生</button>
+    </div>
+    <canvas id="tts-test-waveform" class="waveform" width="640" height="80" aria-hidden="true" hidden></canvas>
+    <p id="tts-test-status" class="status" role="status" aria-live="polite"></p>
+    <p class="hint">
+      いまの音声・音量ゲインで読み上げ、波形と音量(ピーク)を表示します。再生中にもう一度押すと止まります。
+      iPhone で波形は動くのに音が出ないときは、本体の消音スイッチ(マナーモード)を確認してください。
+    </p>
+
+    <div class="row">
+      <button type="button" id="clear-tts-key" class="danger">Cloud TTSキーを消去</button>
+    </div>
   </div>
-  <p class="hint">
-    「一覧を取得」を押すと、そのAPIキーで使えるモデルを取得してここに並べます
-    (取得した一覧はこのブラウザに保存され、次回以降も出ます)。
-    一覧に無いモデル名を使いたいときは「直接入力…」を選んでください。
-  </p>
 
-  <div class="row">
-    <button type="button" id="clear-key" class="danger">キーを消去</button>
+  <!-- ===================== スプレッドシート ===================== -->
+  <div class="settings-group" id="set-sheets">
+    <h3>スプレッドシート・ログイン(DailyConversationタブ用)</h3>
+    <p class="hint">
+      「添削結果」シートの読み書きと、複数端末間の同期に使います。<b>通常はどの欄も
+      入力不要です</b>(ログインすると自動で設定されます)。
+    </p>
+
+    <!-- ログイン維持用Worker(2026-08-05追加)。設定するとリフレッシュトークン
+         方式になり、ログインが約1時間で切れなくなる。空欄なら従来のGIS
+         token client方式で動く(詳細は docs/lib/sheets.js 冒頭)。 -->
+    <label for="oauth-worker-url">ログイン維持用 Worker の URL(推奨)</label>
+    <input type="text" id="oauth-worker-url" autocomplete="off" spellcheck="false"
+           placeholder="https://anki-tool-oauth.xxxx.workers.dev">
+    <p class="hint">
+      設定すると、<b>ページを閉じてもGoogleログインが保たれます</b>(空欄の場合は約1時間で切れます)。
+      ただし Google Cloud の OAuth 同意画面が「テスト」ステータスのままの場合、Googleの仕様で
+      <b>7日ごとに1回はログインし直しが必要です</b>。しばらく使えていたのに急にログインを
+      求められた場合は、不具合ではなくこれが原因の可能性が高いです。
+      セットアップ手順はリポジトリの <code>worker/README.md</code> を参照してください。
+    </p>
+
+    <label for="google-client-id">OAuth 2.0 クライアントID(Worker未使用時のみ)</label>
+    <input type="text" id="google-client-id" autocomplete="off" spellcheck="false"
+           placeholder="xxxxxxxx.apps.googleusercontent.com">
+    <p class="hint">
+      Google Cloud Console →「APIとサービス → 認証情報」で種類「ウェブ アプリケーション」の
+      OAuth クライアント ID を作成し、<b>承認済みの JavaScript 生成元</b>にこのページの
+      オリジン(例: https://yoimachihime-tech.github.io)を登録してください。
+    </p>
+
+    <div class="field-grid">
+      <div>
+        <label for="sheets-spreadsheet-id">スプレッドシートID</label>
+        <input type="text" id="sheets-spreadsheet-id" autocomplete="off" spellcheck="false"
+               placeholder="(未設定)">
+      </div>
+      <div>
+        <label for="sheets-sheet-name">シート(タブ)名</label>
+        <input type="text" id="sheets-sheet-name" autocomplete="off" spellcheck="false" value="添削結果">
+      </div>
+    </div>
+    <p class="hint">
+      スプレッドシートIDが自動で入らない場合のみ、シートのURL
+      <code>/spreadsheets/d/<b>ここ</b>/edit</code> の部分を貼ってください。
+    </p>
   </div>
 
-  <h3>Gemini APIの使用状況</h3>
-  <p class="hint">
-    このブラウザから今日呼び出した回数です。分母(上限)は、上限に一度ぶつかったときに
-    Googleが応答で教えてくれた値をそのまま覚えたもので、アプリ側に固定の数字は
-    持っていません。上限が変わっても、次に一度ぶつかった時点で自動で入れ替わります。
-    まだ一度もぶつかっていないモデルは分母を表示しません。
-  </p>
-  <div id="quota-usage" class="quota-usage"></div>
-  <p class="hint">
-    無料枠の1日あたりの上限は<b>太平洋時間</b>の深夜にリセットされます(日本時間では
-    おおよそ午後4〜5時)。Googleはプロジェクト単位で数えるため、他の端末やブラウザから
-    同じキーを使っている場合、ここの回数は実際より少なく出ます。
-  </p>
-  <div class="row">
-    <button type="button" id="quota-clear-counts" class="ghost">今日の回数を0に戻す</button>
-    <button type="button" id="quota-clear-limits" class="ghost">覚えた上限を忘れる</button>
+  <!-- ===================== 出題順 ===================== -->
+  <!-- 新規カードの位置(2026-08-20追加)。lib/dueCounter.js がカード種別ごとに
+       続き番号を持つ。この値はAnkiコレクション側の実際の位置とは同期しない
+       ため、ここで確認・修正できるようにしてある。 -->
+  <div class="settings-group" id="set-due">
+    <h3>新規カードの位置(Ankiの出題順)</h3>
+    <p class="hint">
+      出力する .apkg に書き込む「位置」の開始番号です。出力するたびにカード件数分だけ
+      自動で進みます。<b>Anki側で既に使われている番号と重複すると、その番号のカード同士が
+      交互に出題されます。</b>デッキごとの現在の最大値は、PC側で
+      <code>fix_anki_new_order.py --show</code> を実行すると確認できます。
+      習熟用(音読)は Num フィールドの続き番号をそのまま位置に使うため、ここには出てきません。
+    </p>
+    <div class="field-grid three">
+      <div>
+        <label for="due-next-word">単語</label>
+        <input type="number" id="due-next-word" min="1" step="1" inputmode="numeric" autocomplete="off">
+      </div>
+      <div>
+        <label for="due-next-grammar_multi">AIに質問</label>
+        <input type="number" id="due-next-grammar_multi" min="1" step="1" inputmode="numeric" autocomplete="off">
+      </div>
+      <div>
+        <label for="due-next-daily">DailyConversation</label>
+        <input type="number" id="due-next-daily" min="1" step="1" inputmode="numeric" autocomplete="off">
+      </div>
+    </div>
+    <div class="row">
+      <button type="button" id="due-next-save" class="ghost">位置の開始番号を保存</button>
+    </div>
+    <p id="due-next-status" class="status" role="status" aria-live="polite" data-autohide></p>
   </div>
 
-  <hr>
-
-  <h3>TTS音声(Cloud Text-to-Speech)</h3>
-
-  <label for="tts-api-key">Cloud Text-to-Speech APIキー(任意)</label>
-  <p class="hint">
-    設定すると、.apkg 出力時に例文の音声を自動で合成して埋め込みます。空欄のままなら
-    従来どおり音声無しの .apkg を出力します。
-  </p>
-  <div class="row">
-    <input type="password" id="tts-api-key" autocomplete="off" spellcheck="false"
-           placeholder="Google Cloud で発行したCloud Text-to-Speech用のキー">
-    <button type="button" id="toggle-tts-key" class="ghost" title="表示/非表示">👁</button>
+  <!-- ===================== 同期 ===================== -->
+  <div class="settings-group" id="set-sync">
+    <h3>複数端末間の同期(任意)</h3>
+    <p class="hint">
+      単語・AIに質問・習熟用(音読)の3ストックと一部の設定(モデル・TTS音声など)を、
+      スプレッドシート内の隠しタブへ保存し、別のPC・スマホと共有します。
+      作業を終えて端末を切り替える前に「🔄 今すぐ同期」(ヘッダーの「🔄 同期」と同じ)を押してください。
+    </p>
+    <div class="row">
+      <button type="button" id="sync-now" class="ghost">🔄 今すぐ同期</button>
+    </div>
+    <!-- 2026-10-05: class="check" になっていたため通常のラベル(太字・ブロック)扱いに
+         なり、チェックボックスが横幅いっぱいに伸びていた。他と同じ checkbox に直した。 -->
+    <label class="checkbox">
+      <input type="checkbox" id="sync-auto-pull" checked>
+      起動時に自動で読み込む(書き戻しはしない)
+    </label>
+    <p class="hint">
+      ページを開いたときに、他の端末が保存した内容を自動で取り込みます
+      (読み込むだけで、この端末の内容をシートへ書き戻すことはしません)。
+    </p>
+    <p id="sync-status" class="status" role="status" aria-live="polite" data-autohide></p>
   </div>
 
-  <label for="tts-voice">音声名</label>
-  <label for="tts-lang">言語コード</label>
-  <div class="row">
-    <input type="text" id="tts-voice" spellcheck="false" value="en-US-Chirp3-HD-Iapetus">
-    <input type="text" id="tts-lang" spellcheck="false" value="en-US" style="max-width:6em">
+  <!-- ===================== バックアップ ===================== -->
+  <div class="settings-group" id="set-backup">
+    <h3>バックアップ(書き出し / 読み込み)</h3>
+    <p class="hint">
+      3ストックの内容をJSONファイルとして手元に保存します。
+      <strong>Web版は書き出した .apkg を自動保存していません。</strong>
+      ストックの項目が「Ankiに取り込む前の内容」を再現できる唯一のコピーなので、
+      「出力済みのカードを削除」を実行する前や、ブラウザのデータを消す前に書き出しておくことを
+      強く推奨します。
+    </p>
+    <div class="row">
+      <button type="button" id="backup-export" class="ghost">💾 バックアップを書き出す</button>
+      <button type="button" id="backup-import" class="ghost">📂 バックアップを読み込む</button>
+      <input type="file" id="backup-file" accept="application/json,.json" hidden>
+    </div>
+    <p class="hint">
+      読み込みは<strong>現在の内容に足し合わせる</strong>方式です(既存の項目は消えません)。
+      削除済みの項目が含まれていた場合は、新しい項目として復元します
+      (同じ内容が二重に見えることがありますが、一覧の「⚠ 重複」表示から選んで削除できます)。
+    </p>
+    <p id="backup-status" class="status" role="status" aria-live="polite"></p>
   </div>
 
-  <label for="tts-volume-gain">音量ゲイン(dB、-20.0〜16.0、既定0)</label>
-  <div class="row">
-    <input type="number" id="tts-volume-gain" value="0" min="-20" max="16" step="0.5">
-    <button type="button" id="tts-auto-gain" class="ghost">自動調整</button>
-  </div>
-  <p class="hint">
-    「自動調整」は、テスト再生と同じサンプル文で0dBを超えない(音割れしない)範囲に
-    音量ゲインを自動調整します(小さければ引き上げ、すでに音割れしている場合は
-    下げます)。
-  </p>
-
-  <label class="checkbox">
-    <input type="checkbox" id="tts-exclude-japanese">
-    TTSで日本語を含む文を除外する
-  </label>
-  <p class="hint">
-    AIが指示に反して日本語の説明文などを混ぜて返してきた場合の保険用オプションです。
-    単語・AIに質問・DailyConversationタブの音声生成に効きます(習熟用は例文フィールドが
-    元々英文のみのため対象外です)。
-  </p>
-
-  <div class="row">
-    <button type="button" id="tts-test-play" class="ghost">🔊 テスト再生</button>
-  </div>
-  <canvas id="tts-test-waveform" class="waveform" width="320" height="60"></canvas>
-  <p id="tts-test-status" class="status" role="status" aria-live="polite"></p>
-
-  <div class="row">
-    <button type="button" id="clear-tts-key" class="danger">TTSキーを消去</button>
-  </div>
-
-  <hr>
-
-  <h3>スプレッドシート(DailyConversationタブ用)</h3>
-  <p class="hint">
-    「添削結果」シートの読み書きに使います。DailyConversationタブを使わない場合は
-    設定不要です。クライアントIDは秘密情報ではないため、他のAPIキーと違い
-    そのまま保存しても問題ありません。
-  </p>
-
-  <!-- ログイン維持用Worker(2026-08-05追加)。設定するとリフレッシュトークン
-       方式になり、ログインが約1時間で切れなくなる。空欄なら従来のGIS
-       token client方式で動く(詳細は docs/lib/sheets.js 冒頭)。
-       クライアントIDより先に置いてあるのは、こちらが推奨の設定であり、
-       設定した場合はクライアントID欄が不要になるため。 -->
-  <label for="oauth-worker-url">ログイン維持用 Worker の URL(推奨)</label>
-  <p class="hint">
-    設定すると、<b>ページを閉じてもGoogleログインが保たれます</b>(空欄の場合は
-    従来どおり約1時間で切れ、そのつどログインし直しになります)。
-    セットアップ手順はリポジトリの <code>worker/README.md</code> を参照してください。
-    設定した場合、下のクライアントID欄は使いません(Workerから受け取ります)。
-  </p>
-  <p class="hint">
-    ただし、Google Cloud の OAuth 同意画面が「テスト」ステータスのままの場合、
-    Googleの仕様で<b>7日ごとに1回はログインし直しが必要です</b>
-    (1時間ごとよりは大幅に長くなります)。しばらく使えていたのに急に
-    ログインを求められた場合は、不具合ではなくこれが原因の可能性が高いです。
-  </p>
-  <input type="text" id="oauth-worker-url" autocomplete="off" spellcheck="false"
-         placeholder="https://anki-tool-oauth.xxxx.workers.dev">
-
-  <label for="google-client-id">OAuth 2.0 クライアントID(Worker未使用時のみ)</label>
-  <p class="hint">
-    Google Cloud Console →「APIとサービス → 認証情報」で「OAuth クライアント ID」を
-    種類「ウェブ アプリケーション」で作成し、<b>承認済みの JavaScript 生成元</b>に
-    このページのオリジン(例: https://yoimachihime-tech.github.io)を登録してください。
-    末尾が <code>.apps.googleusercontent.com</code> の文字列です。
-  </p>
-  <input type="text" id="google-client-id" autocomplete="off" spellcheck="false"
-         placeholder="xxxxxxxx.apps.googleusercontent.com">
-
-  <label for="sheets-spreadsheet-id">スプレッドシートID</label>
-  <p class="hint">
-    <b>通常は入力不要です。</b>ログインすると Worker から自動で設定されます。
-    自動で入らない場合のみ、シートのURL
-    <code>/spreadsheets/d/<b>ここ</b>/edit</code> の部分を貼ってください。
-  </p>
-  <input type="text" id="sheets-spreadsheet-id" autocomplete="off" spellcheck="false"
-         placeholder="1ruIEHQk8J0rjjQQdiaT2Nvnje...">
-
-  <label for="sheets-sheet-name">シート(タブ)名</label>
-  <p class="hint"><b>通常は入力不要です</b>(ログイン時に自動設定されます)。</p>
-  <input type="text" id="sheets-sheet-name" autocomplete="off" spellcheck="false" value="添削結果">
-
-  <hr>
-
-  <!-- 新規カードの位置(2026-08-20追加)。Ankiの新規カードは「位置」(cards.due)の
-       順に出題される。以前は出力のたびに0から振り直していたため、別々のバッチで
-       出したカードが同じ位置に居座り、1つの質問から作った複数問がまとまって
-       出題されずに他のカードと混ざっていた(片桐からの報告)。lib/dueCounter.js が
-       カード種別ごとに続き番号を持つようにしたが、この値はAnkiコレクション側の
-       実際の位置とは同期しないため、ここで確認・修正できるようにしてある。 -->
-  <h3>新規カードの位置(Ankiの出題順)</h3>
-  <p class="hint">
-    出力する .apkg に書き込む「位置」の開始番号です。出力するたびにカード件数分だけ
-    自動で進みます。<b>Anki側で既に使われている番号と重複すると、その番号のカード同士が
-    交互に出題されます。</b>デッキごとの現在の最大値は、PC側で
-    <code>fix_anki_new_order.py --show</code> を実行すると確認できます。
-    習熟用(音読)は Num フィールドの続き番号をそのまま位置に使うため、ここには出てきません。
-  </p>
-  <label for="due-next-word">単語 (02.単語・MindTips::単語)</label>
-  <input type="number" id="due-next-word" min="1" step="1" inputmode="numeric" autocomplete="off">
-  <label for="due-next-grammar_multi">AIに質問 (02.単語・MindTips::文法・用法)</label>
-  <input type="number" id="due-next-grammar_multi" min="1" step="1" inputmode="numeric" autocomplete="off">
-  <label for="due-next-daily">DailyConversation (02.単語・MindTips::DailyConversation)</label>
-  <input type="number" id="due-next-daily" min="1" step="1" inputmode="numeric" autocomplete="off">
-  <div class="row">
-    <button type="button" id="due-next-save" class="ghost">位置の開始番号を保存</button>
-  </div>
-  <p id="due-next-status" class="status" role="status" aria-live="polite" data-autohide></p>
-
-  <hr>
-
-  <h3>複数端末間の同期(任意)</h3>
-  <p class="hint">
-    単語・AIに質問・習熟用(音読)の3ストックを、上記と同じスプレッドシート内の
-    隠しタブへ保存し、別のPC・スマホと共有します。追加の同意やAPIキーは不要
-    (上のGoogleログイン設定をそのまま使います)。作業を終えて端末を切り替える
-    前に「🔄 今すぐ同期」を押してください。
-  </p>
-  <div class="row">
-    <button type="button" id="sync-now" class="ghost">🔄 今すぐ同期</button>
-  </div>
-  <label class="check">
-    <input type="checkbox" id="sync-auto-pull" checked>
-    起動時に自動で読み込む(書き戻しはしない)
-  </label>
-  <p class="hint">
-    ページを開いたときに、他の端末が保存した内容を自動で取り込みます
-    (読み込むだけで、この端末の内容をシートへ書き戻すことはしません)。
-    同期ボタンの押し忘れで、古い状態のまま作業を始めてしまうのを防ぐためのものです。
-  </p>
-  <p id="sync-status" class="status" role="status" aria-live="polite" data-autohide></p>
-
-  <hr>
-
-  <h3>バックアップ(書き出し / 読み込み)</h3>
-  <p class="hint">
-    3ストックの内容をJSONファイルとして手元に保存します。
-    <strong>この画面はデスクトップ版と違い、書き出した .apkg を自動保存していません。</strong>
-    ストックの項目が「Ankiに取り込む前の内容」を再現できる唯一のコピーなので、
-    「出力済みのカードを削除」を実行する前や、ブラウザのデータを消す前に書き出しておくことを
-    強く推奨します。
-  </p>
-  <div class="row">
-    <button type="button" id="backup-export" class="ghost">💾 バックアップを書き出す</button>
-    <button type="button" id="backup-import" class="ghost">📂 バックアップを読み込む</button>
-    <input type="file" id="backup-file" accept="application/json,.json" hidden>
-  </div>
-  <p class="hint">
-    読み込みは<strong>現在の内容に足し合わせる</strong>方式です(既存の項目は消えません)。
-    削除済みの項目が含まれていた場合は、新しい項目として復元します
-    (同じ内容が二重に見えることがありますが、一覧の「⚠ 重複」表示から選んで削除できます)。
-  </p>
-  <p id="backup-status" class="status" role="status" aria-live="polite"></p>
-
-  <hr>
-
+  <!-- ===================== PCツール ===================== -->
   <!-- PC上のローカルツールへの導線(2026-08-19追加)。
        この画面から http://127.0.0.1 を fetch する構成は Chrome の
        Local Network Access 権限に阻まれる(実測)ため、リンクによる
        トップレベル遷移で繋いでいる(こちらは制限を受けない)。 -->
-  <h3>既存のapkgにTTS音声を付ける(PCのみ)</h3>
-  <p class="hint">
-    Ankiから書き出した <code>.apkg</code> や、他で作った <code>.apkg</code> に、
-    後からTTS音声を付ける機能です。処理はPC上のツールが行うため、
-    <strong>PCからのみ使えます</strong>(スマホでは動きません)。
-  </p>
-  <p class="row">
-    <!-- ankitts: はこのPCに登録したカスタムURLスキーム。Webページから直接
-         プログラムを起動する手段はブラウザに存在しないため、Zoomの zoommtg:
-         などと同じこの仕組みを使う(登録は tools/register_local_tts_protocol.py
-         を1回実行するだけ。HKCUのみで管理者権限は不要)。 -->
-    <a class="ghost button-like" href="ankitts://start">🔊 PCのTTSツールを起動する</a>
-    <a class="ghost button-like" href="http://127.0.0.1:8765/" target="_blank" rel="noopener">
-      起動済みの画面を開く
-    </a>
-  </p>
-  <p class="hint">
-    起動すると、PC側でブラウザが自動的に開きます。初回はブラウザが
-    「このサイトは ankitts を開こうとしています」と確認するので許可してください
-    (「常に許可」にすると次回から出ません)。
-    <strong>押しても何も起きない場合は、そのPCで一度だけ
-    <code>python tools\register_local_tts_protocol.py</code> を実行してください</strong>
-    (起動ボタンの登録。実行していないPCやスマホでは反応しません)。
-  </p>
+  <div class="settings-group" id="set-pc">
+    <h3>既存のapkgにTTS音声を付ける(PCのみ)</h3>
+    <p class="hint">
+      Ankiから書き出した <code>.apkg</code> や、他で作った <code>.apkg</code> に、
+      後からTTS音声を付ける機能です。処理はPC上のツールが行うため、
+      <strong>PCからのみ使えます</strong>(スマホでは動きません)。
+    </p>
+    <p class="row">
+      <!-- ankitts: はこのPCに登録したカスタムURLスキーム(登録は
+           tools/register_local_tts_protocol.py を1回実行するだけ)。 -->
+      <a class="ghost button-like" href="ankitts://start">🔊 PCのTTSツールを起動する</a>
+      <a class="ghost button-like" href="http://127.0.0.1:8765/" target="_blank" rel="noopener">
+        起動済みの画面を開く
+      </a>
+    </p>
+    <p class="hint">
+      初回はブラウザが「このサイトは ankitts を開こうとしています」と確認するので許可してください。
+      <strong>押しても何も起きない場合は、そのPCで一度だけ
+      <code>python tools\register_local_tts_protocol.py</code> を実行してください</strong>。
+    </p>
+  </div>
 
-  <hr>
-
-  <!-- ログ(2026-08-06追加)。以前はヘッダーの「🗒 ログ」ボタンで
-       「自動で隠れた状態表示をもう一度出す」だけの仕組みだったが、
-       ヘッダーのボタンが増えて枠に収まらなくなったこと・直近1件しか
-       見返せなかったことから、履歴として残す形にして設定内へ移した。
+  <!-- ===================== ログ ===================== -->
+  <!-- ログ(2026-08-06追加)。通知バナーに出た文言の履歴。
        ページを再読み込みすると消える(保存はしない)。 -->
-  <h3>ログ</h3>
-  <p class="hint">
-    画面上部に出たログイン・同期の通知の履歴です(新しいものが上)。
-    通知は数秒で自動的に消えるため、見逃した内容をここで確認できます。
-    ページを再読み込みすると消えます。
-  </p>
-  <ul id="app-log" class="log-list"></ul>
-  <p id="app-log-empty" class="empty">まだログはありません。</p>
-  <div class="row">
-    <button type="button" id="app-log-clear" class="ghost">ログを消去</button>
+  <div class="settings-group" id="set-log">
+    <h3>ログ</h3>
+    <p class="hint">
+      画面上部に出た通知の履歴です(新しいものが上)。通知は数秒で自動的に消えるため、
+      見逃した内容をここで確認できます。ページを再読み込みすると消えます。
+    </p>
+    <ul id="app-log" class="log-list"></ul>
+    <p id="app-log-empty" class="empty">まだログはありません。</p>
+    <div class="row">
+      <button type="button" id="app-log-clear" class="ghost">ログを消去</button>
+    </div>
   </div>
 </section>
 
@@ -409,11 +475,13 @@
 
 <!-- 入力元タブ(単語 / AIに質問 / 習熟用 / DailyConversation / 一括出力) -->
 <nav class="tabbar" role="tablist">
-  <button type="button" class="tab-btn active" data-tab="word" role="tab" aria-selected="true">単語</button>
-  <button type="button" class="tab-btn" data-tab="ai_ask" role="tab" aria-selected="false">AIに質問</button>
-  <button type="button" class="tab-btn" data-tab="shuujuku" role="tab" aria-selected="false">習熟用(音読)</button>
-  <button type="button" class="tab-btn" data-tab="daily" role="tab" aria-selected="false">DailyConversation</button>
-  <button type="button" class="tab-btn" data-tab="bulk" role="tab" aria-selected="false">一括出力</button>
+  <!-- 各タブの「まだ出力していない件数」をバッジで出す(2026-10-05追加)。
+       どのタブに出力待ちのカードが溜まっているか、開かなくても分かるように。 -->
+  <button type="button" class="tab-btn active" data-tab="word" role="tab" aria-selected="true">単語<span class="tab-count" data-count-for="word" hidden></span></button>
+  <button type="button" class="tab-btn" data-tab="ai_ask" role="tab" aria-selected="false">AIに質問<span class="tab-count" data-count-for="ai_ask" hidden></span></button>
+  <button type="button" class="tab-btn" data-tab="shuujuku" role="tab" aria-selected="false">習熟用(音読)<span class="tab-count" data-count-for="shuujuku" hidden></span></button>
+  <button type="button" class="tab-btn" data-tab="daily" role="tab" aria-selected="false">DailyConversation<span class="tab-count" data-count-for="daily" hidden></span></button>
+  <button type="button" class="tab-btn" data-tab="bulk" role="tab" aria-selected="false">一括出力<span class="tab-count" data-count-for="bulk" hidden></span></button>
 </nav>
 
 <!-- ============================= 単語タブ ============================= -->
@@ -429,7 +497,7 @@
 placeholder="slated | The update is slated for release next month.
 give up
 resilient | She remained resilient."></textarea>
-    <button type="button" id="word-generate" class="primary">AIでカードを生成</button>
+    <button type="button" id="word-generate" class="primary">AIでカードを生成 <kbd class="kbd-hint">Ctrl+Enter</kbd></button>
     <p id="word-generate-status" class="status" role="status" aria-live="polite"></p>
   </section>
 
@@ -443,6 +511,7 @@ resilient | She remained resilient."></textarea>
     </p>
     <div class="row">
       <label class="checkbox"><input type="checkbox" id="word-filter-hide-exported">出力済みを隠す</label>
+      <label class="checkbox select-all"><input type="checkbox" data-select-all="word-stock-list">表示中をすべて選択</label>
     </div>
     <div id="word-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="word-stock-list" class="stock"></ul>
@@ -469,9 +538,10 @@ resilient | She remained resilient."></textarea>
     <p class="hint">
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       同じ単語のカードは既存のものが更新されるだけなので、学習履歴は失われません。
-      ⚙設定でTTS APIキーを設定していれば、例文の音声も自動で合成して埋め込みます。
+      例文の音声は、⚙設定の「TTS音声」の設定で自動的に合成して埋め込みます(下の1行が現在の状態です)。
       対象は②の一覧のうち<b>まだ出力していないカードだけ</b>です。
     </p>
+    <p class="hint tts-status-line" data-tts-summary></p>
     <button type="button" id="word-export" class="primary">.apkg をダウンロード</button>
     <p id="word-export-status" class="status" role="status" aria-live="polite"></p>
   </section>
@@ -491,7 +561,7 @@ resilient | She remained resilient."></textarea>
     </p>
     <textarea id="ai-ask-input" rows="4" spellcheck="false"
 placeholder="例: patience と patient の使い分けを教えて"></textarea>
-    <button type="button" id="ai-ask-generate" class="primary">AIに質問して3問生成</button>
+    <button type="button" id="ai-ask-generate" class="primary">AIに質問して3問生成 <kbd class="kbd-hint">Ctrl+Enter</kbd></button>
     <p id="ai-ask-generate-status" class="status" role="status" aria-live="polite"></p>
   </section>
 
@@ -505,6 +575,7 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     </p>
     <div class="row">
       <label class="checkbox"><input type="checkbox" id="ai-ask-filter-hide-exported">出力済みを隠す</label>
+      <label class="checkbox select-all"><input type="checkbox" data-select-all="ai-ask-stock-list">表示中をすべて選択</label>
     </div>
     <div id="ai-ask-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="ai-ask-stock-list" class="stock"></ul>
@@ -527,9 +598,10 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       同じ問題(同じ質問から生成された同じ番目のカード)は既存のものが更新されるだけなので、
       学習履歴は失われません。
-      ⚙設定でTTS APIキーを設定していれば、解答と例文の音声も自動で合成して埋め込みます。
+      解答と例文の音声は、⚙設定の「TTS音声」の設定で自動的に合成して埋め込みます(下の1行が現在の状態です)。
       対象は②の一覧のうち<b>まだ出力していないカードだけ</b>です。
     </p>
+    <p class="hint tts-status-line" data-tts-summary></p>
     <button type="button" id="ai-ask-export" class="primary">.apkg をダウンロード</button>
     <p id="ai-ask-export-status" class="status" role="status" aria-live="polite"></p>
   </section>
@@ -562,7 +634,7 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     </ul>
     <textarea id="shuujuku-input" rows="4" spellcheck="false"
 placeholder="I've been working here since 2020.&#10;give up"></textarea>
-    <button type="button" id="shuujuku-generate" class="primary">カードを生成する</button>
+    <button type="button" id="shuujuku-generate" class="primary">カードを生成する <kbd class="kbd-hint">Ctrl+Enter</kbd></button>
     <!-- 「正しい場合のみ生成する」ことは、押す前に分かっていないと
          「入力したのにカードが増えない」と誤解される。ボタンの直下に
          警告色で常設する(2026-08-06、片桐の指示)。 -->
@@ -601,6 +673,9 @@ placeholder="I've been working here since 2020.&#10;give up"></textarea>
       生成したカードはこのブラウザに保存され、再訪しても残ります。
       同じ質問・同じ添削行から重ねて生成した場合は、重複として警告表示されます。
     </p>
+    <div class="row">
+      <label class="checkbox select-all"><input type="checkbox" data-select-all="shuujuku-stock-list">すべて選択</label>
+    </div>
     <div id="shuujuku-stock-empty" class="empty">まだカードがありません。</div>
     <ul id="shuujuku-stock-list" class="stock"></ul>
     <p class="hint btn-group-label">カードを削除する(取り消せません)</p>
@@ -616,8 +691,9 @@ placeholder="I've been working here since 2020.&#10;give up"></textarea>
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
       出力した内容はこの一覧から取り除かれます(番号の重複を避けるため、出力するたびに
       続き番号を採番します)。
-      ⚙設定でTTS APIキーを設定していれば、各例文の音声も自動で合成して埋め込みます。
+      各例文の音声は、⚙設定の「TTS音声」の設定で自動的に合成して埋め込みます(下の1行が現在の状態です)。
     </p>
+    <p class="hint tts-status-line" data-tts-summary></p>
     <button type="button" id="shuujuku-export" class="primary">.apkg をダウンロード</button>
     <p id="shuujuku-export-status" class="status" role="status" aria-live="polite"></p>
   </section>
@@ -647,7 +723,7 @@ placeholder="I've been working here since 2020.&#10;give up"></textarea>
     </p>
     <textarea id="daily-input" rows="6" spellcheck="false"
 placeholder="I go to the park yesterday. She don't like coffee."></textarea>
-    <button type="button" id="daily-correct" class="primary">AIに添削させてシートに追加</button>
+    <button type="button" id="daily-correct" class="primary">AIに添削させてシートに追加 <kbd class="kbd-hint">Ctrl+Enter</kbd></button>
     <p id="daily-correct-status" class="status" role="status" aria-live="polite"></p>
   </section>
 
@@ -667,6 +743,7 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
       <label class="checkbox"><input type="checkbox" id="daily-filter-hide-no-error">「誤りなし」を隠す</label>
       <label class="checkbox"><input type="checkbox" id="daily-filter-only-duplicates">重複の可能性がある行のみ表示</label>
       <label class="checkbox"><input type="checkbox" id="daily-filter-hide-exported">出力済み(このブラウザで記録)を隠す</label>
+      <label class="checkbox select-all"><input type="checkbox" data-select-all="daily-pending-list">表示中をすべて選択</label>
     </div>
     <div id="daily-pending-empty" class="empty">まだ読み込んでいません。</div>
     <ul id="daily-pending-list" class="stock"></ul>
@@ -685,8 +762,8 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <h2>③ Ankiに取り込む</h2>
     <p class="hint">
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
-      ⚙設定でTTS APIキーを設定していれば、添削後の文と類似表現の音声も自動で
-      合成して埋め込みます。
+      添削後の文と類似表現の音声は、⚙設定の「TTS音声」の設定で自動的に合成して
+      埋め込みます(下の1行が現在の状態です)。
       対象は②に読み込んだ行のうち<b>まだ出力していない行だけ</b>です
       (表示フィルターで隠している行も、出力していなければ対象に含まれます)。
       カテゴリが「誤りなし」の行と、IDが重複している行も出力対象から除かれます。
@@ -695,6 +772,7 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
       <input type="checkbox" id="daily-mark-exported" checked>
       出力後、対応する行をシートの「Anki出力済み」列にマークする
     </label>
+    <p class="hint tts-status-line" data-tts-summary></p>
     <button type="button" id="daily-export" class="primary">.apkg をダウンロード</button>
     <p id="daily-export-status" class="status" role="status" aria-live="polite"></p>
   </section>
@@ -722,14 +800,15 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <h2>② Ankiに取り込む</h2>
     <p class="hint">
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
-      ⚙設定でTTS APIキーを設定していれば、各タブと同じ対象フィールドに音声も
-      合成して埋め込みます(件数が多いと時間がかかります)。
+      ⚙設定の「TTS音声」の設定で、各タブと同じ対象フィールドに音声も合成して
+      埋め込みます(件数が多いと時間がかかります。下の1行が現在の状態です)。
       番号(Numや出題順)の採番は、各タブから個別に出力したときとまったく同じです。
     </p>
     <label class="checkbox">
       <input type="checkbox" id="bulk-include-daily" checked>
       DailyConversationも含める(DailyConversationタブの②で読み込み済みの行が対象)
     </label>
+    <p class="hint tts-status-line" data-tts-summary></p>
     <button type="button" id="bulk-export" class="primary">まとめて .apkg をダウンロード</button>
     <p id="bulk-export-status" class="status" role="status" aria-live="polite"></p>
   </section>
@@ -744,6 +823,9 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <strong id="preview-title">プレビュー</strong>
     <button type="button" id="preview-close" class="ghost">閉じる</button>
   </div>
+  <!-- ノートから作られるカード(テンプレート)ごとの切り替え(2026-10-05追加)。
+       1枚しか作られないノートでは隠す(app.js の openCardPreview)。 -->
+  <div id="preview-templates" class="preview-tabs" role="group" aria-label="カードの種類" hidden></div>
   <iframe id="preview-frame" title="カードプレビュー"></iframe>
 </dialog>
 
@@ -751,6 +833,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20260908a"></script>
+<script type="module" src="./app.js?v=20261005a"></script>
 </body>
 </html>

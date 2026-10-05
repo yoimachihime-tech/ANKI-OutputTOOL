@@ -20,24 +20,26 @@ import {
   generateVocabCards, generateGrammarMultiItems, generateShuujukuItem, generateShuujukuItemsFromRows,
   generateShuujukuItemsFromSentences, generateShuujukuItemFromPhrases,
   phraseExampleCount, phraseExamplesMayOmit, MAX_PHRASE_EXAMPLES,
-  correctEnglishText, consolidateNoErrorCorrections, listModels,
+  correctEnglishText, consolidateNoErrorCorrections, listModels, isNonTextModel, isGeminiTtsModel,
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21に付けた。穴あき例文 example_blank の生成を足したため、古い
-//  gemini.js を掴んだままだと ExampleBlank が空のカードが出力される。
-//  gemini.js を import しているのはこの app.js だけ)
-} from './lib/gemini.js?v=20260908a';
+//  gemini.js を掴んだままだと ExampleBlank が空のカードが出力される)。
+// 2026-10-05: lib/tts.js も Gemini TTS のために gemini.js を import するように
+// なった。**tts.js 側の `?v=` と必ず同じ値にすること**(URLが違うと同じ
+// モジュールが2つ読み込まれる)。
+} from './lib/gemini.js?v=20261005a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21: 一括出力タブのために buildApkg を複数種別対応にしたため、
 // 古い apkg.js が使われると groups 指定が無視されてしまう)。
 // apkg.js は app.js からしか import されていない。
-import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20260908a';
+import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20261005a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-20: 習熟用のフィールド構成をv2へ変えた際、ここが無かったために
 // ブラウザが古い lib/shuujuku.js を読み続け、旧Num/Content形式のカードが
 // 出力され続けた)。shuujuku.js は app.js からしか import されていない。
 import {
   buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum,
-} from './lib/shuujuku.js?v=20260908a';
+} from './lib/shuujuku.js?v=20261005a';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
 } from './lib/dueCounter.js';
@@ -46,9 +48,12 @@ import {
 //  掴んだままだと「Ex1.」等が読み上げに残り続ける。tts.js を import している
 //  のはこの app.js だけなので、実体が二重になる心配はない)
 import {
-  synthesizeFieldWithTags, synthesizeExampleAudioTags, synthesizeTestSample,
-  decodeAudioSamples, computeWaveformMinMax, computePeakAmplitude, isClipped, findSafeVolumeGainDb,
-} from './lib/tts.js?v=20260908a';
+  synthesizeFieldWithTags, synthesizeExampleAudioTags, synthesizeTestSampleWav, parseWav,
+  computeWaveformMinMax, computePeakAmplitude, isClipped, peakToDbfs, findSafeVolumeGainDb,
+  listCloudVoices, PREBUILT_VOICES, prebuiltVoiceLabel, chirp3VoiceName, languageCodeFromVoiceName,
+  GEMINI_TTS_MODELS, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE, DEFAULT_CLOUD_VOICE,
+  geminiTtsSupportsStyle, TTS_ENGINE_GEMINI, TTS_ENGINE_CLOUD, DEFAULT_TEST_TEXT,
+} from './lib/tts.js?v=20261005a';
 import {
   getAccessToken, clearAccessToken, signOut, isSignedIn,
   beginAuthCodeFlow, completeAuthCodeFlowIfReturning,
@@ -104,6 +109,17 @@ const APP_VERSION = (() => {
 // **アプリ全体が中途半端な状態になる**(実際にこの順序を誤って一度踏んだ)。
 const MODEL_CUSTOM_VALUE = '__custom__';
 
+/**
+ * 文章生成に使うモデルの既定値(2026-10-05に gemini-2.0-flash から変更)。
+ *
+ * gemini-2.0-flash は既に提供が終わっており(片桐のキーで取得した一覧にも
+ * 無い)、モデルを選んでいない新しい端末では最初のカード生成が必ず失敗して
+ * いた。`gemini-flash-latest` は Google が「その時点の最新の Flash」を指す
+ * 別名で、モデルが入れ替わっても使い続けられる。MODEL_CUSTOM_VALUE と同じ
+ * 理由(TDZ)でモジュール先頭側に置くこと。
+ */
+const DEFAULT_TEXT_MODEL = 'gemini-flash-latest';
+
 // 状態表示の自動非表示(2026-07-30追加)用の定数。init()がモジュール読み込み
 // 直後に即時呼び出され、その中の同期処理(updateGoogleAuthStatus→setStatus)
 // がこれらを参照するため、FILTER_STORAGE_PREFIXと同じ理由でモジュール先頭側に
@@ -148,6 +164,16 @@ const STORAGE = {
   ttsLang: 'anki_tool_tts_lang',
   ttsVolumeGainDb: 'anki_tool_tts_volume_gain_db',
   ttsExcludeJapanese: 'anki_tool_tts_exclude_japanese',
+  // 2026-10-05追加: 音声エンジン(cloud / gemini)と Gemini TTS の設定。
+  ttsEngine: 'anki_tool_tts_engine',
+  ttsEnabled: 'anki_tool_tts_enabled',
+  ttsGeminiModel: 'anki_tool_tts_gemini_model',
+  ttsGeminiVoice: 'anki_tool_tts_gemini_voice',
+  ttsGeminiStyle: 'anki_tool_tts_gemini_style',
+  ttsTestText: 'anki_tool_tts_test_text',
+  // 「一覧を取得」で得た Cloud TTS の音声一覧(言語コードごと)と Gemini TTS のモデル一覧。
+  ttsVoiceListPrefix: 'anki_tool_tts_voice_list_',
+  ttsGeminiModelList: 'anki_tool_tts_gemini_model_list',
   googleClientId: 'anki_tool_google_client_id',
   // ログイン維持用 Worker の URL(2026-08-05追加)。設定されていると
   // リフレッシュトークン方式になり、ログインが1時間で切れなくなる
@@ -293,11 +319,14 @@ let dailyPendingRows = [];
 
 // ---------------------------------------------------------------------------
 // 起動
+//
+// init() の呼び出しはこのファイルの**末尾**にある(2026-10-05に移動)。
+// 以前はここで呼んでいたため、init() の同期部分から参照されるモジュール直下の
+// const(FILTER_STORAGE_PREFIX や MODEL_CUSTOM_VALUE など)をすべてこの位置より
+// 上に置く必要があり、置き忘れると TDZ で init() が途中で止まり「アプリ全体が
+// 中途半端な状態」になっていた(実際に2回踏んでいる)。末尾で呼べば、どこに
+// 定数を置いても初期化済みになる。
 // ---------------------------------------------------------------------------
-
-init().catch((e) => {
-  setStatus($('word-generate-status'), `初期化に失敗しました: ${e.message}`, true);
-});
 
 async function init() {
   bindEvents();
@@ -315,12 +344,8 @@ async function init() {
   const launchEl = $('header-launch-tts');
   if (launchEl && !isMobileBrowser()) launchEl.hidden = false;
 
-  renderModelOptions(loadCachedModels(), localStorage.getItem(STORAGE.model) || 'gemini-2.0-flash');
-  $('tts-api-key').value = localStorage.getItem(STORAGE.ttsApiKey) || '';
-  $('tts-voice').value = localStorage.getItem(STORAGE.ttsVoice) || $('tts-voice').value;
-  $('tts-lang').value = localStorage.getItem(STORAGE.ttsLang) || $('tts-lang').value;
-  $('tts-volume-gain').value = localStorage.getItem(STORAGE.ttsVolumeGainDb) || $('tts-volume-gain').value;
-  $('tts-exclude-japanese').checked = localStorage.getItem(STORAGE.ttsExcludeJapanese) === '1';
+  renderModelOptions(loadCachedModels(), localStorage.getItem(STORAGE.model) || DEFAULT_TEXT_MODEL);
+  restoreTtsSettings();
   $('google-client-id').value = localStorage.getItem(STORAGE.googleClientId) || '';
   // Worker URL は既定値を持たせてある(2026-08-05)。新しい端末で使い始めるとき、
   // これが空だとログインすらできず、他の設定を配ってもらうこともできないため
@@ -479,6 +504,72 @@ function on(id, type, handler) {
   el.addEventListener(type, handler);
 }
 
+/**
+ * 入力欄で Ctrl+Enter(Mac は ⌘+Enter)を押すと、その欄の生成ボタンを押す
+ * (2026-10-05追加)。PCで連続して入力するとき、マウスに持ち替えずに済むように。
+ * Enter だけでは改行(複数行入力が前提の欄なので)。
+ */
+const GENERATE_SHORTCUTS = {
+  'word-input': 'word-generate',
+  'ai-ask-input': 'ai-ask-generate',
+  'shuujuku-input': 'shuujuku-generate',
+  'daily-input': 'daily-correct',
+};
+
+function bindGenerateShortcuts() {
+  for (const [inputId, buttonId] of Object.entries(GENERATE_SHORTCUTS)) {
+    on(inputId, 'keydown', (e) => {
+      if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || e.isComposing) return;
+      e.preventDefault();
+      const btn = $(buttonId);
+      if (btn && !btn.disabled) btn.click();
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 入力途中の文章の保存(2026-10-05追加)
+//
+// 単語・質問・英文の入力欄は、ページを再読み込みしたりタブを閉じたりすると
+// 消えていた(スマホではブラウザが裏で勝手に再読み込みすることもある)。
+// 入力のたびにこの端末だけに保存し、開き直したときに戻す。生成に成功して
+// アプリが欄を空にしたときは、保存も消す(setInputValue を通す)。
+// ---------------------------------------------------------------------------
+
+const DRAFT_STORAGE_PREFIX = 'anki_tool_draft_';
+const draftTimers = new Map();
+
+function saveDraft(id, value) {
+  try {
+    if (value) localStorage.setItem(DRAFT_STORAGE_PREFIX + id, value);
+    else localStorage.removeItem(DRAFT_STORAGE_PREFIX + id);
+  } catch { /* 保存できない環境では何もしない(入力自体は続けられる) */ }
+}
+
+function bindDraftPersistence() {
+  for (const id of Object.keys(GENERATE_SHORTCUTS)) {
+    const el = $(id);
+    if (!el) continue;
+    try {
+      const saved = localStorage.getItem(DRAFT_STORAGE_PREFIX + id);
+      if (saved && !el.value) el.value = saved;
+    } catch { /* 読めなければ空のまま */ }
+    el.addEventListener('input', () => {
+      clearTimeout(draftTimers.get(id));
+      draftTimers.set(id, setTimeout(() => saveDraft(id, el.value), 400));
+    });
+  }
+}
+
+/** プログラムから入力欄の中身を変えるときはこれを使う(保存した下書きも揃える)。 */
+function setInputValue(id, value) {
+  const el = $(id);
+  if (!el) return;
+  el.value = value;
+  clearTimeout(draftTimers.get(id));
+  if (Object.prototype.hasOwnProperty.call(GENERATE_SHORTCUTS, id)) saveDraft(id, value);
+}
+
 function bindEvents() {
   // タブ切り替え
   document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -498,6 +589,14 @@ function bindEvents() {
   // 設定パネル自身の閉じるボタン(2026-07-30追加)。設定は縦に長いため、
   // 下までスクロールした位置からでも閉じられるようにするためのもの。
   on('settings-close', 'click', toggleSettings);
+  on('settings-nav', 'click', onSettingsNavClick);
+  // Esc で設定を閉じる(プレビューのダイアログが開いているときは、そちらが
+  // 先に閉じるのでここには来ない)。
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('settings').hidden) setSettingsOpen(false);
+  });
+  bindGenerateShortcuts();
+  bindDraftPersistence();
   on('due-next-save', 'click', onDueCounterSave);
   on('quota-clear-counts', 'click', onQuotaClearCounts);
   on('quota-clear-limits', 'click', onQuotaClearLimits);
@@ -507,6 +606,7 @@ function bindEvents() {
   });
   on('api-key', 'change', (e) => {
     localStorage.setItem(STORAGE.apiKey, e.target.value.trim());
+    updateTtsSummary(); // Gemini TTS はこのキーを使う
   });
   on('model', 'change', onModelChanged);
   on('clear-key', 'click', onClearKey);
@@ -519,13 +619,28 @@ function bindEvents() {
   });
   on('tts-api-key', 'change', (e) => {
     localStorage.setItem(STORAGE.ttsApiKey, e.target.value.trim());
+    updateTtsSummary();
   });
-  on('tts-voice', 'change', (e) => {
-    localStorage.setItem(STORAGE.ttsVoice, e.target.value.trim());
+  on('tts-enabled', 'change', (e) => {
+    localStorage.setItem(STORAGE.ttsEnabled, e.target.checked ? '1' : '0');
+    updateTtsSummary();
+  });
+  on('tts-engine', 'change', (e) => {
+    localStorage.setItem(STORAGE.ttsEngine, e.target.value);
     markSettingsChanged();
+    updateTtsEngineView();
   });
-  on('tts-lang', 'change', (e) => {
-    localStorage.setItem(STORAGE.ttsLang, e.target.value.trim());
+  on('tts-voice', 'change', onCloudVoiceChanged);
+  on('tts-lang', 'change', onTtsLangChanged);
+  on('tts-fetch-voices', 'click', onFetchCloudVoices);
+  on('tts-gemini-model', 'change', onGeminiTtsModelChanged);
+  on('tts-gemini-voice', 'change', (e) => {
+    localStorage.setItem(STORAGE.ttsGeminiVoice, e.target.value);
+    markSettingsChanged();
+    updateTtsSummary();
+  });
+  on('tts-gemini-style', 'change', (e) => {
+    localStorage.setItem(STORAGE.ttsGeminiStyle, e.target.value.trim());
     markSettingsChanged();
   });
   on('tts-volume-gain', 'change', (e) => {
@@ -535,6 +650,9 @@ function bindEvents() {
   on('tts-exclude-japanese', 'change', (e) => {
     localStorage.setItem(STORAGE.ttsExcludeJapanese, e.target.checked ? '1' : '0');
     markSettingsChanged();
+  });
+  on('tts-test-text', 'change', (e) => {
+    localStorage.setItem(STORAGE.ttsTestText, e.target.value.trim());
   });
   on('tts-test-play', 'click', onTestPlay);
   on('tts-auto-gain', 'click', onAutoGain);
@@ -617,6 +735,58 @@ function bindEvents() {
 
   // プレビュー(共通)
   on('preview-close', 'click', () => $('preview-dialog').close());
+
+  // 一覧の「すべて選択」(全タブ共通、2026-10-05追加)
+  document.addEventListener('change', onSelectAllChanged);
+}
+
+/**
+ * タブボタンに「まだ出力していない件数」を出す(2026-10-05追加)。
+ * どのタブに出力待ちのカードが溜まっているかを、タブを開かなくても分かるように。
+ * 各タブの描画関数の最後から呼ばれる(件数が変わるのは必ず描画を伴うため)。
+ */
+function updateTabBadges() {
+  const exportedIds = dailyconv.loadExportedIds();
+  const daily = dailyconv.processSheetRows(dailyPendingRows.filter((r) => !exportedIds.has(r.id))).rows.length;
+  const word = wordStock.filter((i) => !i.exported_at).length;
+  const aiAsk = aiAskStock.filter((i) => !i.exported_at).length;
+  const counts = {
+    word, ai_ask: aiAsk, shuujuku: shuujukuStock.length, daily,
+  };
+  const src = collectBulkSources();
+  counts.bulk = src.word.items.length + src.aiAsk.items.length
+    + src.shuujuku.items.length + src.daily.items.length;
+  document.querySelectorAll('[data-count-for]').forEach((el) => {
+    const n = counts[el.dataset.countFor] || 0;
+    el.textContent = n > 99 ? '99+' : String(n);
+    el.hidden = n === 0;
+    el.title = `まだ出力していないカード ${n} 件`;
+  });
+}
+
+/**
+ * 一覧の「すべて選択」(2026-10-05追加)。以前は削除・除外のたびに1件ずつ
+ * チェックを入れる必要があった。フィルターで隠れている行は一覧に描画されて
+ * いないので、選ばれるのは「表示中の行」だけになる。
+ */
+function onSelectAllChanged(event) {
+  const box = event.target.closest('input[data-select-all]');
+  if (!box) return;
+  document.querySelectorAll(`#${box.dataset.selectAll} input[type="checkbox"]`).forEach((cb) => {
+    cb.checked = box.checked;
+  });
+}
+
+/**
+ * 一覧を描き直したら「すべて選択」も外す(描き直した行は未選択のため)。
+ * 選べる行が無いときは「すべて選択」自体を隠す。
+ */
+function resetSelectAll(listId) {
+  const box = document.querySelector(`input[data-select-all="${listId}"]`);
+  if (!box) return;
+  box.checked = false;
+  const label = box.closest('label');
+  if (label) label.hidden = !($(listId)?.children.length);
 }
 
 function switchTab(key) {
@@ -642,16 +812,67 @@ function switchTab(key) {
  * 開く前と同じタブ・同じ表示にそのまま戻る。
  */
 function toggleSettings() {
-  const willOpen = $('settings').hidden;
-  $('settings').hidden = !willOpen;
-  $('main-content').hidden = willOpen;
-  $('settings-toggle').textContent = willOpen ? '✕ 設定を閉じる' : '⚙ 設定';
-  // 開くたびに描き直す。これらの値は設定を開いていない間にも増えるため、
-  // 一度描いたきりにすると必ず古い数字が出る。
-  if (willOpen) {
+  setSettingsOpen($('settings').hidden);
+}
+
+/** 設定を閉じたときに戻すスクロール位置(開いた時点の位置)。 */
+let scrollBeforeSettings = 0;
+
+/**
+ * ⚙設定を開く/閉じる(2026-10-05に toggleSettings から切り出した)。
+ *
+ * 以前は「APIキーが未設定です」等のエラー時に `$('settings').hidden = false`
+ * を直接書いており、(1) 通常画面が隠れないまま設定が上に重なって出る
+ * (2) ヘッダーのボタンが「⚙ 設定」のまま (3) 設定は画面の上の方にあるのに
+ * スクロール位置がそのままで、開いたことに気づけない、という食い違いがあった。
+ * 開閉は必ずここを通すこと。
+ */
+function setSettingsOpen(open) {
+  const wasOpen = !$('settings').hidden;
+  if (open === wasOpen) return;
+  const scroller = document.scrollingElement || document.documentElement;
+  if (open) scrollBeforeSettings = scroller.scrollTop || 0;
+  $('settings').hidden = !open;
+  $('main-content').hidden = open;
+  $('settings-toggle').textContent = open ? '✕ 設定を閉じる' : '⚙ 設定';
+  $('settings-toggle').setAttribute('aria-expanded', String(open));
+  if (open) {
+    // 開くたびに描き直す。これらの値は設定を開いていない間にも増えるため、
+    // 一度描いたきりにすると必ず古い数字が出る。
     renderQuotaUsage();
     renderDueCounters();
+    updateTtsSummary();
+    scroller.scrollTop = 0;
+  } else {
+    // 開く前に見ていた位置へ戻す(長いタブの下の方から設定を開いた場合に、
+    // 閉じたとたん先頭へ飛ばされないように)。
+    scroller.scrollTop = scrollBeforeSettings;
   }
+}
+
+/** scrollIntoView が無い環境(テスト用のjsdom等)でも例外にしない。 */
+function scrollIntoViewSafe(el, options) {
+  if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView(options);
+}
+
+/**
+ * 設定を開き、指定の入力欄までスクロールしてフォーカスする。
+ * 「APIキーを設定してください」のようなエラーのとき、どこを直せばよいかを
+ * その場で示すために使う。
+ */
+function openSettingsAt(fieldId) {
+  setSettingsOpen(true);
+  const el = $(fieldId);
+  if (!el) return;
+  scrollIntoViewSafe(el, { block: 'center' });
+  el.focus({ preventScroll: true });
+}
+
+/** 設定の目次(上部のボタン列)から各グループへ移動する。 */
+function onSettingsNavClick(event) {
+  const btn = event.target.closest('button[data-target]');
+  if (!btn) return;
+  scrollIntoViewSafe($(btn.dataset.target), { behavior: 'smooth', block: 'start' });
 }
 
 // ---------------------------------------------------------------------------
@@ -893,6 +1114,35 @@ function onClearKey() {
   if (!confirm('保存したAPIキーをこのブラウザから消去します。よろしいですか？')) return;
   localStorage.removeItem(STORAGE.apiKey);
   $('api-key').value = '';
+  updateTtsSummary();
+}
+
+/** 文章生成に使うモデル名(未選択なら既定値)。 */
+function currentTextModel() {
+  const v = ($('model').value || '').trim();
+  return v && v !== MODEL_CUSTOM_VALUE ? v : DEFAULT_TEXT_MODEL;
+}
+
+/**
+ * Gemini APIキーを返す。未設定なら理由を出して設定のキー欄を開き、空文字を返す
+ * (呼び出し側はそこで中止する)。
+ */
+function geminiKeyOrOpenSettings(status) {
+  const apiKey = $('api-key').value.trim();
+  if (apiKey) return apiKey;
+  setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
+  notify('Gemini APIキーが未設定のため実行できませんでした。設定のキー欄を開いたので、入力してから戻ってください。');
+  openSettingsAt('api-key');
+  return '';
+}
+
+/**
+ * 画面上端の通知バナーに一般的なお知らせを出す(2026-10-05追加)。
+ * 設定を開いた直後など、タブ内のステータス欄が見えない状況で使う。
+ */
+function notify(message, isError = false) {
+  const el = $('app-notice');
+  if (el) setStatus(el, message, isError);
 }
 
 // ---------------------------------------------------------------------------
@@ -926,7 +1176,9 @@ function loadCachedModels() {
  */
 function renderModelOptions(names, current) {
   const sel = $('model');
-  const list = [...new Set(names.filter(Boolean))];
+  // 音声合成・画像生成などの専用モデルは、カード生成(文章)には使えないので
+  // 候補に出さない(2026-10-05。選ぶと生成が分かりにくいエラーで失敗していた)。
+  const list = [...new Set(names.filter((n) => n && !isNonTextModel(n)))];
   const value = (current || '').trim();
   if (value && !list.includes(value)) list.unshift(value);
 
@@ -961,7 +1213,7 @@ function onModelChanged() {
 
   if (sel.value === MODEL_CUSTOM_VALUE) {
     const entered = (prompt(
-      '使用するモデル名を入力してください(例: gemini-2.0-flash)。',
+      `使用するモデル名を入力してください(例: ${DEFAULT_TEXT_MODEL})。`,
       saved,
     ) || '').trim();
     if (!entered) {
@@ -987,9 +1239,19 @@ async function onFetchModels() {
   btn.disabled = true;
   try {
     const names = await listModels(apiKey);
-    localStorage.setItem(STORAGE.modelList, JSON.stringify(names));
-    renderModelOptions(names, $('model').value.trim());
-    alert(`${names.length} 件のモデルを取得しました。モデル欄から選べます。`);
+    const textModels = names.filter((n) => !isNonTextModel(n));
+    const ttsModels = names.filter(isGeminiTtsModel);
+    localStorage.setItem(STORAGE.modelList, JSON.stringify(textModels));
+    renderModelOptions(textModels, $('model').value.trim());
+    // TTS用のモデルは「TTS音声」の Gemini TTS モデル欄へ回す(2026-10-05)。
+    if (ttsModels.length) {
+      localStorage.setItem(STORAGE.ttsGeminiModelList, JSON.stringify(ttsModels));
+      renderGeminiTtsModelOptions($('tts-gemini-model').value);
+    }
+    alert(
+      `${textModels.length} 件の文章生成モデルを取得しました。モデル欄から選べます。`
+      + (ttsModels.length ? `\n(音声合成用の ${ttsModels.length} 件は「TTS音声」の Gemini TTS モデル欄に追加しました)` : ''),
+    );
   } catch (e) {
     alert(e.message);
   } finally {
@@ -1001,64 +1263,373 @@ function onClearTtsKey() {
   if (!confirm('保存したTTS APIキーをこのブラウザから消去します。よろしいですか？')) return;
   localStorage.removeItem(STORAGE.ttsApiKey);
   $('tts-api-key').value = '';
+  updateTtsSummary();
 }
 
 // ---------------------------------------------------------------------------
-// TTS音声の埋め込み(2026-07-28追加)
-// 現在の設定欄からCloud Text-to-SpeechのAPIキー等を読み、apkg出力の直前に
-// 音声を合成して[sound:...]タグを埋め込む。TTS APIキーが空なら何もしない
-// (従来どおり音声無しのapkgを出力する。他のAI呼び出しと同じ「未設定なら
-// 黙ってスキップ」方針)。
+// TTS音声の設定と埋め込み(2026-07-28追加、2026-10-05に音声エンジンを2種類に)
+//
+// 音声エンジンは2つ(詳細は lib/tts.js の冒頭):
+//   - Cloud Text-to-Speech(Chirp 3: HD など)… 「Cloud TTS APIキー」を使う
+//   - Gemini TTS(Gemini 3.8 Flash TTS など、2026年9月公開)… 「Gemini APIキー」を使う
+// 「.apkg 出力時に音声を埋め込む」がONで、選んだエンジンに必要なキーがあれば、
+// .apkg 出力の直前に音声を合成して [sound:...] タグを埋め込む。キーが無い場合は
+// 従来どおり音声無しで出力するが、**黙って音声無しにはせず**、出力結果の
+// メッセージにその旨を添える(ttsSkipNote)。
 // ---------------------------------------------------------------------------
 
-function getTtsOptions() {
-  const apiKey = $('tts-api-key').value.trim();
-  if (!apiKey) return null;
-  return {
-    apiKey,
-    voiceName: $('tts-voice').value.trim() || 'en-US-Chirp3-HD-Iapetus',
-    languageCode: $('tts-lang').value.trim() || 'en-US',
-    volumeGainDb: Number($('tts-volume-gain').value) || 0,
-    excludeJapanese: $('tts-exclude-japanese').checked,
-  };
+/** 音声の言語の選択肢(Chirp 3: HD の30音声がそろっている英語圏)。 */
+const TTS_LANGUAGES = [
+  ['en-US', '英語(アメリカ)'],
+  ['en-GB', '英語(イギリス)'],
+  ['en-AU', '英語(オーストラリア)'],
+  ['en-IN', '英語(インド)'],
+];
+
+/** Cloud TTS の「一覧を取得」で得た音声のグループの並び(上ほどおすすめ)。 */
+const CLOUD_FAMILY_ORDER = ['Chirp-HD', 'Studio', 'Neural2', 'Wavenet', 'News', 'Casual', 'Polyglot', 'Standard'];
+
+/**
+ * <select> に値を入れる。選択肢に無ければ「直接入力…」の手前に足してから選ぶ
+ * (<select> は選択肢に無い値を代入すると空になるため。モデル欄と同じ理由)。
+ */
+function selectValueEnsured(sel, value, label = value) {
+  if (!sel || !value) return;
+  if (![...sel.options].some((o) => o.value === value)) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    const custom = [...sel.options].find((o) => o.value === MODEL_CUSTOM_VALUE);
+    sel.insertBefore(opt, custom || null);
+  }
+  sel.value = value;
+}
+
+function appendOption(parent, value, label) {
+  const opt = document.createElement('option');
+  opt.value = value;
+  opt.textContent = label;
+  parent.appendChild(opt);
+  return opt;
+}
+
+function appendCustomOption(sel) {
+  appendOption(sel, MODEL_CUSTOM_VALUE, '直接入力…');
+}
+
+function loadJsonArray(key) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 保存してあるTTS設定を画面へ戻す(init から呼ぶ)。 */
+function restoreTtsSettings() {
+  $('tts-api-key').value = localStorage.getItem(STORAGE.ttsApiKey) || '';
+  $('tts-enabled').checked = localStorage.getItem(STORAGE.ttsEnabled) !== '0';
+  $('tts-engine').value = localStorage.getItem(STORAGE.ttsEngine) === TTS_ENGINE_GEMINI
+    ? TTS_ENGINE_GEMINI : TTS_ENGINE_CLOUD;
+
+  const savedVoice = localStorage.getItem(STORAGE.ttsVoice) || DEFAULT_CLOUD_VOICE;
+  // 言語は音声名の先頭を優先する(音声名と言語が食い違っていると合成が400になるため)。
+  renderTtsLanguageOptions(
+    languageCodeFromVoiceName(savedVoice) || localStorage.getItem(STORAGE.ttsLang) || 'en-US',
+  );
+  renderCloudVoiceOptions(savedVoice);
+  renderGeminiTtsModelOptions(localStorage.getItem(STORAGE.ttsGeminiModel) || DEFAULT_GEMINI_TTS_MODEL);
+  renderGeminiVoiceOptions(localStorage.getItem(STORAGE.ttsGeminiVoice) || DEFAULT_GEMINI_TTS_VOICE);
+  $('tts-gemini-style').value = localStorage.getItem(STORAGE.ttsGeminiStyle) || '';
+  $('tts-volume-gain').value = localStorage.getItem(STORAGE.ttsVolumeGainDb) || '0';
+  $('tts-exclude-japanese').checked = localStorage.getItem(STORAGE.ttsExcludeJapanese) === '1';
+  $('tts-test-text').value = localStorage.getItem(STORAGE.ttsTestText) || '';
+  $('tts-test-text').placeholder = DEFAULT_TEST_TEXT;
+  updateTtsEngineView();
+}
+
+function renderTtsLanguageOptions(current) {
+  const sel = $('tts-lang');
+  sel.textContent = '';
+  for (const [code, label] of TTS_LANGUAGES) appendOption(sel, code, `${label} ${code}`);
+  appendCustomOption(sel);
+  selectValueEnsured(sel, current || 'en-US');
 }
 
 /**
- * ⚙設定「テスト再生」ボタン(2026-07-29追加)。tts_core.py の
- * synthesize_test_sample_wav + winsound再生のWeb版だが、Web版は波形表示・
- * gap_seconds(文と文の間隔)には対応せず、固定サンプル文を1回のTTS呼び出しで
- * MP3化して<audio>で再生するだけの簡易版(音声名・言語・音量ゲインの確認が
- * 主目的)。連打時は前の再生を止めてからやり直す(desktop版のPlaySound
- * SND_PURGEと同じ考え方)。
+ * Cloud TTS の音声の選択肢を作り直す。Chirp 3: HD の30音声は最初から出し、
+ * 「一覧を取得」で得たその他の音声(Neural2 など)をグループに分けて後ろに足す。
  */
-// テスト再生用の状態(2026-07-29、実機で「音が鳴らない」と報告されたため
-// AudioBufferSourceNode方式から<audio>要素方式に変更)。
+function renderCloudVoiceOptions(current) {
+  const sel = $('tts-voice');
+  const lang = $('tts-lang').value || 'en-US';
+  sel.textContent = '';
+
+  const chirp = document.createElement('optgroup');
+  chirp.label = 'Chirp 3: HD(おすすめ)';
+  for (const v of PREBUILT_VOICES) appendOption(chirp, chirp3VoiceName(lang, v.name), prebuiltVoiceLabel(v));
+  sel.appendChild(chirp);
+
+  const fetched = loadJsonArray(STORAGE.ttsVoiceListPrefix + lang)
+    .filter((v) => v && typeof v.name === 'string' && v.family !== 'Chirp3-HD');
+  const families = [...new Set(fetched.map((v) => v.family))].sort((a, b) => {
+    const ia = CLOUD_FAMILY_ORDER.indexOf(a);
+    const ib = CLOUD_FAMILY_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+  for (const family of families) {
+    const group = document.createElement('optgroup');
+    group.label = family;
+    for (const v of fetched.filter((x) => x.family === family)) {
+      const gender = v.gender === 'F' ? '(女性)' : v.gender === 'M' ? '(男性)' : '';
+      appendOption(group, v.name, `${v.name}${gender}`);
+    }
+    sel.appendChild(group);
+  }
+  appendCustomOption(sel);
+  selectValueEnsured(sel, current || chirp3VoiceName(lang, DEFAULT_GEMINI_TTS_VOICE));
+}
+
+function renderGeminiTtsModelOptions(current) {
+  const sel = $('tts-gemini-model');
+  sel.textContent = '';
+  const known = new Set(GEMINI_TTS_MODELS.map((m) => m.id));
+  for (const m of GEMINI_TTS_MODELS) appendOption(sel, m.id, m.label);
+  // 「一覧を取得」で見つかった、まだここに載っていないTTSモデル(今後の新モデル)
+  for (const id of loadJsonArray(STORAGE.ttsGeminiModelList)) {
+    if (typeof id === 'string' && id && !known.has(id)) appendOption(sel, id, `${id}(取得した一覧から)`);
+  }
+  appendCustomOption(sel);
+  selectValueEnsured(sel, current || DEFAULT_GEMINI_TTS_MODEL);
+}
+
+function renderGeminiVoiceOptions(current) {
+  const sel = $('tts-gemini-voice');
+  sel.textContent = '';
+  for (const v of PREBUILT_VOICES) appendOption(sel, v.name, prebuiltVoiceLabel(v));
+  appendCustomOption(sel);
+  selectValueEnsured(sel, current || DEFAULT_GEMINI_TTS_VOICE);
+}
+
+/**
+ * 「直接入力…」が選ばれたら名前を聞く。取り消されたら元の値に戻す
+ * (番兵の値が選ばれたままAPIへ送られるのを防ぐ。モデル欄と同じ考え方)。
+ * @returns {boolean} 値が確定したか(false なら呼び出し側は何もしない)
+ */
+function resolveCustomChoice(sel, storageKey, promptText, render) {
+  if (sel.value !== MODEL_CUSTOM_VALUE) return true;
+  const saved = localStorage.getItem(storageKey) || '';
+  const entered = (prompt(promptText, saved) || '').trim();
+  render(entered || saved);
+  return Boolean(entered);
+}
+
+function onTtsLangChanged() {
+  const sel = $('tts-lang');
+  if (!resolveCustomChoice(sel, STORAGE.ttsLang, '言語コードを入力してください(例: en-NZ)。',
+    renderTtsLanguageOptions)) return;
+  const lang = sel.value;
+  localStorage.setItem(STORAGE.ttsLang, lang);
+  // 音声も新しい言語のものに合わせる(Chirp 3: HD なら同じ名前の音声に)。
+  const cur = $('tts-voice').value;
+  const star = /-Chirp3-HD-([A-Za-z]+)$/.exec(cur)?.[1];
+  const next = languageCodeFromVoiceName(cur) === lang
+    ? cur : chirp3VoiceName(lang, star || DEFAULT_GEMINI_TTS_VOICE);
+  renderCloudVoiceOptions(next);
+  localStorage.setItem(STORAGE.ttsVoice, next);
+  markSettingsChanged();
+  updateTtsSummary();
+}
+
+function onCloudVoiceChanged() {
+  const sel = $('tts-voice');
+  if (!resolveCustomChoice(sel, STORAGE.ttsVoice,
+    '音声名を入力してください(例: en-US-Neural2-F)。', renderCloudVoiceOptions)) return;
+  const voice = sel.value;
+  localStorage.setItem(STORAGE.ttsVoice, voice);
+  // 音声名に言語が書いてあれば、言語の欄もそれに合わせる(表示の食い違いを防ぐ)。
+  const lang = languageCodeFromVoiceName(voice);
+  if (lang && lang !== $('tts-lang').value) {
+    renderTtsLanguageOptions(lang);
+    localStorage.setItem(STORAGE.ttsLang, lang);
+    renderCloudVoiceOptions(voice);
+  }
+  markSettingsChanged();
+  updateTtsSummary();
+}
+
+function onGeminiTtsModelChanged() {
+  const sel = $('tts-gemini-model');
+  if (!resolveCustomChoice(sel, STORAGE.ttsGeminiModel,
+    'Gemini TTS のモデル名を入力してください(例: gemini-3.8-flash-tts)。',
+    renderGeminiTtsModelOptions)) return;
+  localStorage.setItem(STORAGE.ttsGeminiModel, sel.value);
+  markSettingsChanged();
+  updateTtsEngineView();
+}
+
+async function onFetchCloudVoices() {
+  const status = $('tts-voice-status');
+  const apiKey = $('tts-api-key').value.trim();
+  if (!apiKey) {
+    setStatus(status, '先に Cloud Text-to-Speech APIキーを入力してください。', true);
+    $('tts-api-key').focus();
+    return;
+  }
+  const lang = $('tts-lang').value || 'en-US';
+  const btn = $('tts-fetch-voices');
+  btn.disabled = true;
+  showLoading(status, `${lang} の音声一覧を取得中...`);
+  try {
+    const voices = await listCloudVoices(lang, apiKey);
+    localStorage.setItem(STORAGE.ttsVoiceListPrefix + lang, JSON.stringify(voices));
+    renderCloudVoiceOptions($('tts-voice').value);
+    hideLoading(status);
+    setStatus(status, `${voices.length} 件の音声を取得しました(この端末に保存しました)。`);
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** 選んでいるエンジンに合わせて、設定欄の表示を切り替える。 */
+function updateTtsEngineView() {
+  const gemini = $('tts-engine').value === TTS_ENGINE_GEMINI;
+  $('tts-cloud-box').hidden = gemini;
+  $('tts-gemini-box').hidden = !gemini;
+  const styleOk = geminiTtsSupportsStyle($('tts-gemini-model').value);
+  $('tts-gemini-style').disabled = !styleOk;
+  $('tts-gemini-style-note').textContent = styleOk
+    ? ''
+    : '(選んでいるモデルは読み方の指示に対応していません。Gemini 3.8 以降を選ぶと使えます)';
+  updateTtsSummary();
+}
+
+/**
+ * 現在のTTS設定(.apkg 出力の ON/OFF に関係なく)。テスト再生・自動調整と
+ * .apkg 出力の両方がここを使う。
+ * @returns {{opts: object, missing: string|null, missingField: string|null}}
+ */
+function getTtsSettings() {
+  const engine = $('tts-engine').value === TTS_ENGINE_GEMINI ? TTS_ENGINE_GEMINI : TTS_ENGINE_CLOUD;
+  const common = {
+    engine,
+    volumeGainDb: Number($('tts-volume-gain').value) || 0,
+    excludeJapanese: $('tts-exclude-japanese').checked,
+  };
+  if (engine === TTS_ENGINE_GEMINI) {
+    const geminiApiKey = $('api-key').value.trim();
+    const voiceName = $('tts-gemini-voice').value;
+    const model = $('tts-gemini-model').value;
+    return {
+      opts: {
+        ...common,
+        geminiApiKey,
+        model: model && model !== MODEL_CUSTOM_VALUE ? model : DEFAULT_GEMINI_TTS_MODEL,
+        voiceName: voiceName && voiceName !== MODEL_CUSTOM_VALUE ? voiceName : DEFAULT_GEMINI_TTS_VOICE,
+        style: $('tts-gemini-style').disabled ? '' : $('tts-gemini-style').value.trim(),
+      },
+      missing: geminiApiKey ? null : 'Gemini APIキー',
+      missingField: geminiApiKey ? null : 'api-key',
+    };
+  }
+  const apiKey = $('tts-api-key').value.trim();
+  const voiceName = $('tts-voice').value;
+  return {
+    opts: {
+      ...common,
+      apiKey,
+      voiceName: voiceName && voiceName !== MODEL_CUSTOM_VALUE ? voiceName : DEFAULT_CLOUD_VOICE,
+      languageCode: $('tts-lang').value && $('tts-lang').value !== MODEL_CUSTOM_VALUE
+        ? $('tts-lang').value : 'en-US',
+    },
+    missing: apiKey ? null : 'Cloud Text-to-Speech APIキー',
+    missingField: apiKey ? null : 'tts-api-key',
+  };
+}
+
+/** .apkg 出力時に使うTTS設定。音声を付けない場合は null。 */
+function getTtsOptions() {
+  if (!$('tts-enabled').checked) return null;
+  const { opts, missing } = getTtsSettings();
+  return missing ? null : opts;
+}
+
+/** 「Gemini 3.8 Flash TTS / Iapetus(男性・明瞭)」のような、いまの音声の説明。 */
+function describeTtsVoice(opts) {
+  if (opts.engine === TTS_ENGINE_GEMINI) {
+    const model = GEMINI_TTS_MODELS.find((m) => m.id === opts.model);
+    const voice = PREBUILT_VOICES.find((v) => v.name === opts.voiceName);
+    // ラベル末尾のかっこ書きの補足(「(最新・高品質)」等)は省いて短くする
+    const modelName = model ? model.label.replace(/\s*\([^()]*\)$/, '') : opts.model;
+    return `${modelName} / ${voice ? prebuiltVoiceLabel(voice) : opts.voiceName}`;
+  }
+  const star = /-Chirp3-HD-([A-Za-z]+)$/.exec(opts.voiceName)?.[1];
+  const voice = star && PREBUILT_VOICES.find((v) => v.name === star);
+  return `Cloud TTS / ${voice ? `Chirp 3: HD ${prebuiltVoiceLabel(voice)}(${languageCodeFromVoiceName(opts.voiceName)})` : opts.voiceName}`;
+}
+
+/**
+ * 各タブの「③ Ankiに取り込む」と⚙設定に出す、音声の状態の1行。
+ * 音声が付くのか付かないのかを、出力する前に分かるようにする(2026-10-05)。
+ */
+function ttsSummaryText() {
+  if (!$('tts-enabled').checked) return '🔇 音声: 付けない設定です(⚙設定 → TTS音声)。';
+  const { opts, missing } = getTtsSettings();
+  if (missing) return `⚠ 音声: ${missing}が未設定のため、音声無しで出力します(⚙設定 → TTS音声)。`;
+  return `🔊 音声: ${describeTtsVoice(opts)}`;
+}
+
+function updateTtsSummary() {
+  const text = ttsSummaryText();
+  document.querySelectorAll('[data-tts-summary]').forEach((el) => {
+    el.textContent = text;
+    el.classList.toggle('warn', text.startsWith('⚠'));
+  });
+}
+
+/** 出力結果のメッセージに添える一言(音声が付かなかった理由)。付いたなら空。 */
+function ttsSkipNote() {
+  if (!$('tts-enabled').checked) return '';
+  const { missing } = getTtsSettings();
+  return missing ? `\n⚠ ${missing}が未設定のため、音声は付けていません(⚙設定 → TTS音声)。` : '';
+}
+
+// ---------------------------------------------------------------------------
+// テスト再生(2026-07-29追加、2026-10-05に作り直し)
 //
-// 当初はWeb Audio API(AudioContext.createBufferSource)で再生していたが、
-// AudioContextは生成直後「suspended」状態になることがあり、ユーザー操作
-// (クリック)と再生の間にawait(TTS合成・デコード)を挟むと、ブラウザによっては
-// 「ユーザー操作起因」と見なされず自動でrunning状態に遷移しない
-// (=source.start()を呼んでも無音のまま)。<audio>要素のplay()は同様の
-// オートプレイ制限があっても失敗時に明確に例外を投げるため検知でき、
-// かつAudioContextの状態管理を自前で扱う必要が無く実績も豊富なため、
-// 再生自体は<audio>要素に戻した。波形解析(decodeAudioSamples等)は
-// 再生の成否と無関係にWeb Audio APIのデコード機能だけを使うので変更なし。
+// 【経緯】
+// - 当初は Web Audio API(AudioBufferSourceNode)で再生していたが、AudioContext が
+//   suspended のままになるブラウザがあり、無音のまま何も起きなかった。
+// - <audio> 要素での再生に戻したが、モバイルでは TTS 合成の待ち時間(数秒)の間に
+//   「ユーザー操作起因」の許可が切れて NotAllowedError になった。→ クリック直後に
+//   無音WAVをループ再生して要素を"解禁"し、合成後に src だけ差し替える方式にした。
+// - それでも「波形は出るが音が鳴らない」報告が残った。波形の計算のためだけに
+//   AudioContext(decodeAudioData)を作っていたのが疑わしい(iOS では
+//   AudioContext を作ると音声セッションの扱いが変わり、<audio> の再生と干渉する
+//   ことがある)。**2026-10-05: テスト音声を最初から WAV で受け取り、波形は
+//   lib/tts.js の parseWav() で PCM を直接読むようにして、Web Audio API を
+//   一切使わない形にした。**
+// - あわせて、再生が終わったら状態を「再生しました」に戻し、ボタンも再生中は
+//   「■ 停止」になるようにした(以前は「再生中...」のまま残り続けた)。
 //
-// 追記(2026-07-29、スマホ実機で「NotAllowedError」により再生されないと
-// 再報告): <audio>要素に戻しただけでは、TTS合成のネットワーク待ち(数秒)の
-// 間に「ユーザー操作起因」の有効期限が切れるモバイル環境で依然play()が
-// 拒否されることが判明。`onTestPlay`のコメントを参照(無音WAVを即座に再生して
-// 要素を解禁し、後からsrcだけ差し替える方式に変更)。
+// それでも iPhone で音が出ない場合は、本体の消音スイッチ(アプリからは制御
+// できない)を疑うこと。画面の説明にも書いてある。
+// ---------------------------------------------------------------------------
 let testPlayAudio = null;
 let testAnimationFrameId = null;
+
+const TEST_PLAY_LABEL = '🔊 テスト再生';
+const TEST_STOP_LABEL = '■ 停止';
 
 /** 再生中のテスト音声・波形アニメーションを止める(連打時の多重再生防止)。 */
 function stopTestPlayback() {
   if (testPlayAudio) {
     testPlayAudio.pause();
     testPlayAudio.loop = false;
-    // onTestPlayでDOMに常駐させた要素を後片付けする(下記「モバイルでの
-    // 再生ブロック対策」参照)。
     if (testPlayAudio.parentNode) testPlayAudio.parentNode.removeChild(testPlayAudio);
     testPlayAudio = null;
   }
@@ -1066,17 +1637,26 @@ function stopTestPlayback() {
     cancelAnimationFrame(testAnimationFrameId);
     testAnimationFrameId = null;
   }
+  const btn = $('tts-test-play');
+  if (btn) btn.textContent = TEST_PLAY_LABEL;
 }
 
 /**
  * テスト再生の波形をcanvasに描画する(tts_core.pyの`_draw_test_waveform`に
  * 対応)。中心(0点)を挟んで上下に振れるbipolar表示。再生位置(progress、
  * 0.0〜1.0)より前のバーをアクセントカラー(音割れ時は警告色)、後ろを
- * 未再生色で塗り分ける。
+ * 未再生色で塗り分ける。表示サイズに合わせて解像度を上げ、高DPIの画面でも
+ * ぼやけないようにしている。
  */
 function drawTestWaveform(buckets, progress, clipped) {
   const canvas = $('tts-test-waveform');
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas?.getContext?.('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.clientWidth || 320;
+  const cssHeight = canvas.clientHeight || 60;
+  if (canvas.width !== Math.round(cssWidth * dpr)) canvas.width = Math.round(cssWidth * dpr);
+  if (canvas.height !== Math.round(cssHeight * dpr)) canvas.height = Math.round(cssHeight * dpr);
   const { width, height } = canvas;
   ctx.clearRect(0, 0, width, height);
 
@@ -1086,35 +1666,25 @@ function drawTestWaveform(buckets, progress, clipped) {
 
   const mid = height / 2;
   const barWidth = width / buckets.length;
+  const gap = Math.max(1, Math.round(barWidth * 0.25));
   buckets.forEach(([min, max], i) => {
     const played = i / buckets.length < progress;
     ctx.fillStyle = played ? playedColor : upcomingColor;
     const y1 = mid - max * mid;
     const y2 = mid - min * mid;
-    ctx.fillRect(i * barWidth, y1, Math.max(1, barWidth - 1), Math.max(1, y2 - y1));
+    ctx.fillRect(i * barWidth, y1, Math.max(1, barWidth - gap), Math.max(1, y2 - y1));
   });
 }
 
 /**
  * 完全な無音のWAVをBlob URLとして返す(モバイルでの再生ブロック対策、
- * `onTestPlay`から参照)。
- *
- * **2026-07-30修正**: 以前はサンプル1個(8000Hzで約0.125ミリ秒)だけの
- * 極端に短いWAVだった。TTS合成完了後にsrcを実音声へ差し替えても引き続き
- * 再生されない不具合が実機で報告され、原因はこの短さにあると考えられる
- * ——ほぼ一瞬で最後まで再生し終わってしまうため、`onTestPlay`が
- * `audio.loop = true`でループさせない限り「ユーザー操作起因で再生開始した」
- * という状態がTTS合成待ちの間(数秒)持続しない(ブラウザによっては
- * 再生が一瞬で終わった時点でこの状態を失効させることがある)。
- * ループ再生前提でも極端に短い音を高頻度でループさせるのはブラウザに
- * よって不安定になりうるため、それなりの長さ(0.25秒)の無音にした。
- * `ArrayBuffer`はゼロ初期化されるため、ヘッダー以降のサンプル領域は
- * 明示的に書き込まなくても全て無音(0)のままでよい。
+ * `onTestPlay`から参照)。0.25秒の無音を、合成が終わるまでループ再生させる
+ * (短すぎるとすぐ再生終了してしまい、"再生中"の状態を保てないため)。
  */
 function createSilentWavBlobUrl() {
   const sampleRate = 8000;
-  const numSamples = Math.round(sampleRate * 0.25); // 0.25秒分の無音
-  const dataSize = numSamples * 2; // 16bit(2バイト)モノラル
+  const numSamples = Math.round(sampleRate * 0.25);
+  const dataSize = numSamples * 2;
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
   const writeStr = (offset, str) => {
@@ -1125,43 +1695,37 @@ function createSilentWavBlobUrl() {
   writeStr(8, 'WAVE');
   writeStr(12, 'fmt ');
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // mono
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true); // byte rate
-  view.setUint16(32, 2, true); // block align
-  view.setUint16(34, 16, true); // bits per sample
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
   writeStr(36, 'data');
   view.setUint32(40, dataSize, true);
   return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
 }
 
 /**
- * 事前計算した波形(buckets)を見ながらMP3を<audio>要素で再生し、経過時間に
- * 応じて波形アニメーションを進める(tts_core.pyの「再生前に全サンプルから
- * 概形を事前計算しておき、再生開始からの経過時間でその配列を参照しながら
- * 描画する」方式と同じ考え方。デスクトップ版はwinsound+time.monotonic()、
- * Web版は<audio>要素のcurrentTime基準)。
- * `audio`は`onTestPlay`が無音再生でユーザー操作起因の許可を得た同一要素
- * (下記のNotAllowedError対策コメント参照)。
+ * WAVを<audio>要素で再生し、経過時間に応じて波形アニメーションを進める。
+ * `audio`は`onTestPlay`が無音再生でユーザー操作起因の許可を得た同一要素。
+ * @param {() => void} onEnded 最後まで再生し終わったときに呼ぶ
  * @returns {Promise<void>} play()が実際に始まる(または失敗する)まで待つ
  */
-async function playTestWaveform(audio, mp3Bytes, duration, buckets, clipped) {
-  const blob = new Blob([mp3Bytes], { type: 'audio/mpeg' });
-  const url = URL.createObjectURL(blob);
-  // ループ再生していた無音WAVを止めて本番の音声に差し替える。srcの再設定は
-  // 仕様上それ自体が現在の再生を停止させる(resource selection algorithm)ため、
-  // 明示的なpause()は不要(2026-07-30、以前はここでpause()していたが削除)。
+async function playTestWaveform(audio, wavBytes, duration, buckets, clipped, onEnded) {
+  const url = URL.createObjectURL(new Blob([wavBytes], { type: 'audio/wav' }));
+  // src の再設定はそれ自体が現在の再生(ループ中の無音)を止める。
+  // currentTime = 0 は呼ばない(src 直後のシークは iOS Safari で不安定)。
   audio.loop = false;
   audio.src = url;
-  // `audio.currentTime = 0` はここでは呼ばない(2026-08-05削除)。src を代入した
-  // 直後は readyState が HAVE_NOTHING で、この時点のシークは iOS Safari で
-  // 不安定な挙動(InvalidStateError や以後の再生停止)の原因として知られている。
-  // 新しいリソースの再生位置はどのみち先頭から始まるため、不要な操作だった。
-  audio.addEventListener('ended', () => URL.revokeObjectURL(url));
+  audio.addEventListener('ended', () => {
+    URL.revokeObjectURL(url);
+    drawTestWaveform(buckets, 1, clipped);
+    if (testPlayAudio === audio) onEnded();
+  }, { once: true });
 
   const tick = () => {
-    const progress = Math.min(1, audio.currentTime / duration);
+    const progress = duration > 0 ? Math.min(1, audio.currentTime / duration) : 1;
     drawTestWaveform(buckets, progress, clipped);
     if (progress < 1 && testPlayAudio === audio) {
       testAnimationFrameId = requestAnimationFrame(tick);
@@ -1173,38 +1737,44 @@ async function playTestWaveform(audio, mp3Bytes, duration, buckets, clipped) {
   await audio.play();
 }
 
+function formatDb(db) {
+  return Number.isFinite(db) ? db.toFixed(1) : '-∞';
+}
+
+/** 必要なキーが無いとき、そのキーの欄へ案内する。 */
+function pointToMissingTtsKey(statusEl, missing, missingField) {
+  setStatus(statusEl, `${missing}を入力してください。`, true);
+  const el = $(missingField);
+  if (el) {
+    scrollIntoViewSafe(el, { block: 'center' });
+    el.focus({ preventScroll: true });
+  }
+}
+
 /**
- * モバイル(特にiOS Safari)では、クリックからTTS合成完了(ネットワーク
- * 待ちで数秒かかることがある)までの間に「ユーザー操作起因」の有効期限が
- * 切れてしまい、その後の`audio.play()`が
- * NotAllowedError(「The request is not allowed by the user agent or the
- * platform...」)で拒否されることがある(2026-07-29、実機で報告)。対策として、
- * クリックハンドラの同期部分(await前)でまず無音WAVを即座に再生開始し、
- * その<audio>要素をユーザー操作起因の再生として"解禁"しておく。TTS合成後は
- * 同じ要素のsrcを実際の音声に差し替えて再度play()するだけにする(同一要素
- * であれば、srcの差し替え後のplay()も解禁状態が引き継がれる)。
- *
- * **2026-07-30修正(波形は表示されるが音が鳴らない不具合)**: 上記の対策を
- * 入れてもなお音が鳴らない場合があると再報告された。原因は2つ考えられる:
- * (1) 無音WAVがサンプル1個(約0.125ミリ秒)しかなく、再生開始した端から
- * 「再生終了」してしまうため、TTS合成待ちの数秒間"再生中"の状態を維持
- * できていなかった → `audio.loop = true`でTTS合成が終わるまでループさせ、
- * 常に"再生中"の状態を保つようにした(`createSilentWavBlobUrl`も参照)。
- * (2) `new Audio()`で作った要素がDOMツリーに属していないままだと、
- * 一部のモバイルブラウザで再生が不安定になることがある → `document.body`に
- * 明示的に追加する(`controls`属性が無いため画面上には何も表示されない)。
+ * ⚙設定「テスト再生」。いまの音声・音量ゲインで、入力した文(空なら既定の
+ * サンプル文)を読み上げ、波形と音量(ピーク)を表示する。再生中にもう一度
+ * 押すと止まる。
  */
 async function onTestPlay() {
-  const opts = getTtsOptions();
-  if (!opts) {
-    alert('先にCloud Text-to-Speech APIキーを入力してください。');
-    return;
-  }
   const statusEl = $('tts-test-status');
   const btn = $('tts-test-play');
+  if (testPlayAudio && btn.textContent === TEST_STOP_LABEL) {
+    stopTestPlayback();
+    setStatus(statusEl, '停止しました。');
+    return;
+  }
+  const { opts, missing, missingField } = getTtsSettings();
+  if (missing) {
+    pointToMissingTtsKey(statusEl, missing, missingField);
+    return;
+  }
   stopTestPlayback();
   btn.disabled = true;
 
+  // クリック直後(await より前)に無音の再生を始めて、この要素を"解禁"しておく
+  // (経緯は上のセクションコメントを参照)。DOMに入れておかないと再生が
+  // 不安定なモバイルブラウザがある(controls が無いので画面には出ない)。
   const audio = new Audio();
   document.body.appendChild(audio);
   const silentUrl = createSilentWavBlobUrl();
@@ -1213,35 +1783,42 @@ async function onTestPlay() {
   testPlayAudio = audio;
   const unlockPromise = audio.play().catch(() => {});
 
-  showLoading(statusEl, 'テスト音声を生成中...');
+  const voiceLabel = describeTtsVoice(opts);
+  $('tts-test-waveform').hidden = false;
+  drawTestWaveform(Array.from({ length: 60 }, () => [0, 0]), 0, false);
+  showLoading(statusEl, `テスト音声を生成中...(${voiceLabel})`);
   try {
-    const bytes = await synthesizeTestSample(opts);
-    const audioBuffer = await decodeAudioSamples(bytes);
-    const buckets = computeWaveformMinMax(audioBuffer);
-    const clipped = isClipped(computePeakAmplitude(audioBuffer));
-
-    hideLoading(statusEl);
-    setStatus(statusEl, clipped
-      ? '再生中...(⚠ 音割れの可能性があります。音量ゲインを下げることを推奨します)'
-      : '再生中...');
+    const { bytes, limited } = await synthesizeTestSampleWav(opts, $('tts-test-text').value);
+    const wav = parseWav(bytes);
+    const buckets = computeWaveformMinMax(wav, 60);
+    const peak = computePeakAmplitude(wav);
+    const clipped = isClipped(peak);
+    const level = `ピーク ${formatDb(peakToDbfs(peak))} dBFS`;
+    const note = clipped
+      ? '\n⚠ 音割れの可能性があります。音量ゲインを下げるか「自動調整」を押してください。'
+      : (limited ? '\n(音割れしないよう、音量ゲインを自動で抑えました)' : '');
 
     await unlockPromise;
-    if (testPlayAudio !== audio) { URL.revokeObjectURL(silentUrl); return; } // 連打等で別の再生に切り替わっている
-    await playTestWaveform(audio, bytes, audioBuffer.duration, buckets, clipped);
-    // 無音WAVのBlob URLの解放は、**本番の音声にsrcを差し替えた後**に行う
-    // (2026-08-05修正)。以前はここより前で解放しており、要素がまだその無音WAVを
-    // ループ再生している最中にURLを無効化していた。再生中のリソースをrevokeすると
-    // audio.error を立てるブラウザがあり、以後の再生が無反応になり得る
-    // (実機で報告されている「波形は出るが音が鳴らない」の候補の一つ。
-    //  ただし本命は依然としてiPhone本体のサイレントスイッチで、これは
-    //  アプリ側のコードでは制御できない)。
+    if (testPlayAudio !== audio) { URL.revokeObjectURL(silentUrl); return; } // 連打等で別の再生に切り替わった
+
+    hideLoading(statusEl);
+    setStatus(statusEl, `再生中... ${voiceLabel}(${level}、${wav.duration.toFixed(1)}秒)${note}`, clipped);
+    btn.textContent = TEST_STOP_LABEL;
+    btn.disabled = false;
+    await playTestWaveform(audio, bytes, wav.duration, buckets, clipped, () => {
+      stopTestPlayback();
+      setStatus(statusEl, `再生しました: ${voiceLabel}(${level}、${wav.duration.toFixed(1)}秒)${note}`, clipped);
+    });
+    // 無音WAVの解放は、本番の音声に src を差し替えた**後**に行う(再生中のリソースを
+    // revoke すると audio.error を立て、以後の再生が無反応になるブラウザがある)。
     URL.revokeObjectURL(silentUrl);
   } catch (e) {
     URL.revokeObjectURL(silentUrl);
     hideLoading(statusEl);
-    setStatus(statusEl, e.message, true);
-    // 失敗時、無音WAVがループ再生されたままDOMに残り続けないよう片付ける
-    // (次にボタンを押すまで放置されても実害は無いが、念のため即座に止める)。
+    const message = e?.name === 'NotAllowedError'
+      ? 'ブラウザに自動再生を止められました。もう一度「テスト再生」を押してください。'
+      : e.message;
+    setStatus(statusEl, message, true);
     if (testPlayAudio === audio) stopTestPlayback();
   } finally {
     btn.disabled = false;
@@ -1249,26 +1826,27 @@ async function onTestPlay() {
 }
 
 /**
- * ⚙設定「自動調整」ボタン(2026-07-29追加)。tts_core.find_safe_volume_gain_db()
- * のWeb版を呼び、0dBを超えない範囲までできるだけ音量ゲインを引き上げる。
- * 結果はスライダー(input)とlocalStorageの両方へ即座に反映する。
+ * ⚙設定「自動調整」(2026-07-29追加)。tts_core.find_safe_volume_gain_db()
+ * のWeb版を呼び、0dBを超えない範囲までできるだけ音量ゲインを上げる
+ * (すでに大きすぎる場合は下げる)。結果は入力欄とlocalStorageへ即座に反映する。
  */
 async function onAutoGain() {
-  const opts = getTtsOptions();
-  if (!opts) {
-    alert('先にCloud Text-to-Speech APIキーを入力してください。');
+  const statusEl = $('tts-test-status');
+  const { opts, missing, missingField } = getTtsSettings();
+  if (missing) {
+    pointToMissingTtsKey(statusEl, missing, missingField);
     return;
   }
-  const statusEl = $('tts-test-status');
   const btn = $('tts-auto-gain');
   btn.disabled = true;
   showLoading(statusEl, '音割れしない音量ゲインを計算中...');
   try {
-    const gainDb = Math.round(await findSafeVolumeGainDb(opts) * 10) / 10;
+    const gainDb = Math.round(await findSafeVolumeGainDb(opts, { text: $('tts-test-text').value }) * 10) / 10;
     $('tts-volume-gain').value = gainDb;
     localStorage.setItem(STORAGE.ttsVolumeGainDb, String(gainDb));
+    markSettingsChanged();
     hideLoading(statusEl);
-    setStatus(statusEl, `音量ゲインを ${gainDb}dB に自動調整しました。`);
+    setStatus(statusEl, `音量ゲインを ${gainDb}dB に自動調整しました。「テスト再生」で確かめられます。`);
   } catch (e) {
     hideLoading(statusEl);
     setStatus(statusEl, e.message, true);
@@ -1402,6 +1980,8 @@ function renderWordStock() {
       ? `(${wordStock.length} 件)`
       : `(${visibleCount} / ${wordStock.length} 件表示)`)
     : '';
+  resetSelectAll('word-stock-list');
+  updateTabBadges();
 }
 
 /** 「単語 | 文脈」形式の複数行入力をパースする(_parse_word_pairs と同じ)。 */
@@ -1420,12 +2000,8 @@ function parseWordPairs(text) {
 
 async function onWordGenerate() {
   const status = $('word-generate-status');
-  const apiKey = $('api-key').value.trim();
-  if (!apiKey) {
-    setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
-    $('settings').hidden = false;
-    return;
-  }
+  const apiKey = geminiKeyOrOpenSettings(status);
+  if (!apiKey) return;
   if (!shared.wordPrompt) {
     setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
     return;
@@ -1439,7 +2015,7 @@ async function onWordGenerate() {
 
   const btn = $('word-generate');
   btn.disabled = true;
-  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  const model = currentTextModel();
   const generated = [];
   const failed = [];
 
@@ -1488,7 +2064,7 @@ async function onWordGenerate() {
     hideLoading(status);
     // 全件成功したときだけ入力欄を空にする(失敗した行を片桐が確認できるように)。
     if (failed.length === 0) {
-      $('word-input').value = '';
+      setInputValue('word-input', '');
       setStatus(status, `${generated.length} 件のカードを生成しました。${quotaSuffix()}`);
     } else {
       setStatus(
@@ -1573,6 +2149,8 @@ function renderAiAskStock() {
       ? `(${aiAskStock.length} 件)`
       : `(${visibleCount} / ${aiAskStock.length} 件表示)`)
     : '';
+  resetSelectAll('ai-ask-stock-list');
+  updateTabBadges();
 }
 
 /**
@@ -1594,12 +2172,8 @@ function htmlToPlainText(html) {
 
 async function onAiAskGenerate() {
   const status = $('ai-ask-generate-status');
-  const apiKey = $('api-key').value.trim();
-  if (!apiKey) {
-    setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
-    $('settings').hidden = false;
-    return;
-  }
+  const apiKey = geminiKeyOrOpenSettings(status);
+  if (!apiKey) return;
   if (!shared.grammarMultiPrompt) {
     setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
     return;
@@ -1613,7 +2187,7 @@ async function onAiAskGenerate() {
 
   const btn = $('ai-ask-generate');
   btn.disabled = true;
-  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  const model = currentTextModel();
 
   try {
     showLoading(status, 'AIに質問中...(3問生成には数十秒かかることがあります)');
@@ -1656,7 +2230,7 @@ async function onAiAskGenerate() {
     }
 
     hideLoading(status);
-    $('ai-ask-input').value = '';
+    setInputValue('ai-ask-input', '');
     setStatus(status, `${items.length} 件のカードを生成しました${shuujukuNote}${quotaSuffix()}`);
   } catch (e) {
     hideLoading(status);
@@ -1794,12 +2368,8 @@ function normalizeAllCaps(text, { asSentence }) {
  */
 async function onShuujukuGenerate() {
   const status = $('shuujuku-generate-status');
-  const apiKey = $('api-key').value.trim();
-  if (!apiKey) {
-    setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
-    $('settings').hidden = false;
-    return;
-  }
+  const apiKey = geminiKeyOrOpenSettings(status);
+  if (!apiKey) return;
   if (!shared.correctionSystemInstruction || !shared.correctionResponseSchema
     || !shared.shuujukuSentencePrompt || !shared.shuujukuPhrasePrompt) {
     setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
@@ -1830,7 +2400,7 @@ async function onShuujukuGenerate() {
 
   const btn = $('shuujuku-generate');
   btn.disabled = true;
-  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  const model = currentTextModel();
   const items = [];
   let failed = 0;
   let ngRows = [];
@@ -1905,7 +2475,7 @@ async function onShuujukuGenerate() {
     hideLoading(status);
     // 全文が正しくカード化できたときだけ入力欄を消す。誤りがあった場合は、
     // どの文が弾かれたのか片桐が見比べられるよう残す(単語タブと同じ方針)。
-    if (items.length > 0 && ngRows.length === 0 && failed === 0) $('shuujuku-input').value = '';
+    if (items.length > 0 && ngRows.length === 0 && failed === 0) setInputValue('shuujuku-input', '');
 
     const notes = [];
     if (items.length > 0) {
@@ -2036,7 +2606,7 @@ function transferToDailyInput(sentences) {
     transferredToDaily.add(key);
   }
   if (added.length === 0) return 0;
-  el.value = current ? `${current}\n${added.join('\n')}` : added.join('\n');
+  setInputValue('daily-input', current ? `${current}\n${added.join('\n')}` : added.join('\n'));
   return added.length;
 }
 
@@ -2077,6 +2647,8 @@ function renderShuujukuStock() {
 
   $('shuujuku-stock-empty').hidden = shuujukuStock.length > 0;
   $('shuujuku-stock-count').textContent = shuujukuStock.length ? `(${shuujukuStock.length} 件)` : '';
+  resetSelectAll('shuujuku-stock-list');
+  updateTabBadges();
 }
 
 async function onExportShuujuku() {
@@ -2131,7 +2703,7 @@ async function onExportShuujuku() {
 
     setStatus(
       status,
-      `${targets.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。`,
+      `${targets.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。${ttsSkipNote()}`,
     );
   } catch (e) {
     setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
@@ -2157,13 +2729,7 @@ function showShuujukuPreview(item) {
   const ready = buildFieldsReadyItem(previewNum, item);
   const values = {};
   def.fields.forEach((f) => { values[f.anki_name] = ready[f.item_key] ?? ''; });
-  const tmpl = def.anki_model.tmpls[0];
-  const front = renderTemplate(tmpl.qfmt, values);
-  const back = renderTemplate(tmpl.afmt, values, front);
-
-  $('preview-title').textContent = `プレビュー: ${item.pattern || '(パターン未設定)'}`;
-  $('preview-frame').srcdoc = buildPreviewDoc(def.anki_model.css, front, back);
-  $('preview-dialog').showModal();
+  openCardPreview(`プレビュー: ${item.pattern || '(パターン未設定)'}`, def, values);
 }
 
 // ---------------------------------------------------------------------------
@@ -2230,6 +2796,7 @@ function applyRemoteAppConfig(config) {
   assign(config.sheet_name, 'sheets-sheet-name', STORAGE.sheetName, 'シート名');
   assign(config.gemini_api_key, 'api-key', STORAGE.apiKey, 'Gemini APIキー');
   assign(config.tts_api_key, 'tts-api-key', STORAGE.ttsApiKey, 'Cloud TTS APIキー');
+  if (applied.length) updateTtsSummary();
   return applied;
 }
 
@@ -2458,7 +3025,7 @@ function restoreStateAfterAuthRedirect() {
   }
   if (!saved) return;
   if (saved.tab) switchTab(saved.tab);
-  if (saved.dailyInput) $('daily-input').value = saved.dailyInput;
+  if (saved.dailyInput) setInputValue('daily-input', saved.dailyInput);
 }
 
 // ---------------------------------------------------------------------------
@@ -2487,10 +3054,17 @@ function restoreStateAfterAuthRedirect() {
 /** 同期する設定項目(入力欄のID → localStorageキー)。 */
 const SYNCED_SETTING_FIELDS = [
   { el: 'model', key: STORAGE.model, type: 'text' },
-  { el: 'tts-voice', key: STORAGE.ttsVoice, type: 'text' },
+  // tts-lang は tts-voice より先に戻すこと(音声の選択肢は言語ごとに作り直すため)。
   { el: 'tts-lang', key: STORAGE.ttsLang, type: 'text' },
+  { el: 'tts-voice', key: STORAGE.ttsVoice, type: 'text' },
   { el: 'tts-volume-gain', key: STORAGE.ttsVolumeGainDb, type: 'text' },
   { el: 'tts-exclude-japanese', key: STORAGE.ttsExcludeJapanese, type: 'checkbox' },
+  // 2026-10-05追加(Gemini TTS)。古い版の app.js が書いた同期データには
+  // これらが無いが、無い項目は mergeRemoteSettings が飛ばすので問題ない。
+  { el: 'tts-engine', key: STORAGE.ttsEngine, type: 'text' },
+  { el: 'tts-gemini-model', key: STORAGE.ttsGeminiModel, type: 'text' },
+  { el: 'tts-gemini-voice', key: STORAGE.ttsGeminiVoice, type: 'text' },
+  { el: 'tts-gemini-style', key: STORAGE.ttsGeminiStyle, type: 'text', allowEmpty: true },
 ];
 
 /** 設定を最後に変更した時刻(ISO文字列)。どちらが新しいかの判定に使う。 */
@@ -2545,15 +3119,21 @@ function mergeRemoteSettings(remoteJson) {
       localStorage.setItem(f.key, v ? '1' : '0');
     } else {
       const s = String(v ?? '').trim();
-      if (!s) continue; // 空で上書きしない
-      // モデル欄は <select> なので、候補に無い値はそのまま代入しても入らない
-      // (空文字になる)。先に候補へ足しておくこと(2026-08-06)。
-      ensureModelOption(f.el === 'model' ? s : '');
-      $(f.el).value = s;
+      if (!s && !f.allowEmpty) continue; // 空で上書きしない
+      const el = $(f.el);
+      if (!el) continue;
+      // <select> は候補に無い値をそのまま代入しても入らない(空文字になる)。
+      // 先に候補へ足しておくこと(2026-08-06、2026-10-05にTTSの欄にも広げた)。
+      if (f.el === 'model') ensureModelOption(s);
+      else if (f.el === 'tts-lang') renderTtsLanguageOptions(s);
+      else if (f.el === 'tts-voice') renderCloudVoiceOptions(s);
+      else if (el.tagName === 'SELECT') selectValueEnsured(el, s);
+      if (el.tagName !== 'SELECT' || f.el === 'model') el.value = s;
       localStorage.setItem(f.key, s);
     }
   }
   localStorage.setItem(SETTINGS_UPDATED_AT_KEY, remoteAt);
+  updateTtsEngineView();
   return true;
 }
 
@@ -2718,12 +3298,9 @@ async function runSync(statusEl, btnEl) {
   const missingAuth = missingAuthConfigMessage();
   if (missingAuth) {
     setStatus(statusEl, missingAuth, true);
-    $('settings').hidden = false;
     const emptyField = firstEmptySheetsSettingField();
-    if (emptyField) {
-      emptyField.scrollIntoView({ block: 'center' });
-      emptyField.focus();
-    }
+    if (emptyField) openSettingsAt(emptyField.id);
+    else setSettingsOpen(true);
     return;
   }
 
@@ -2750,9 +3327,7 @@ async function runSync(statusEl, btnEl) {
       // 実際に空かどうかを目で確かめてもらう(2026-07-30追加。「設定したはず
       // なのにこのエラーになる」という報告を受けての対応。プレースホルダーの
       // 例文(灰色の薄い文字)を保存済みの値と見間違えているケースもあるため)。
-      $('settings').hidden = false;
-      $('sheets-spreadsheet-id').scrollIntoView({ block: 'center' });
-      $('sheets-spreadsheet-id').focus();
+      openSettingsAt('sheets-spreadsheet-id');
       return;
     }
 
@@ -3087,6 +3662,8 @@ function renderDailyPending() {
       ? `(${dailyPendingRows.length} 件)`
       : `(${visibleRows.length} / ${dailyPendingRows.length} 件表示)`)
     : '';
+  resetSelectAll('daily-pending-list');
+  updateTabBadges();
 }
 
 /**
@@ -3135,12 +3712,8 @@ async function refreshDailyPending(status) {
 
 async function onDailyCorrect() {
   const status = $('daily-correct-status');
-  const apiKey = $('api-key').value.trim();
-  if (!apiKey) {
-    setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
-    $('settings').hidden = false;
-    return;
-  }
+  const apiKey = geminiKeyOrOpenSettings(status);
+  if (!apiKey) return;
   if (!shared.correctionSystemInstruction || !shared.correctionResponseSchema) {
     setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
     return;
@@ -3153,7 +3726,7 @@ async function onDailyCorrect() {
 
   const btn = $('daily-correct');
   btn.disabled = true;
-  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  const model = currentTextModel();
   try {
     // 先にシートへの書き込み権限を確保しておく(添削だけ済んで書き込めない、
     // という無駄なAPI消費を避けるため)。
@@ -3181,7 +3754,7 @@ async function onDailyCorrect() {
     const inputEl = $('daily-input');
     const remaining = inputEl.value.trimStart();
     if (remaining.startsWith(text)) {
-      inputEl.value = remaining.slice(text.length).replace(/^\s+/, '');
+      setInputValue('daily-input', remaining.slice(text.length).replace(/^\s+/, ''));
     }
     setStatus(status, `${newIds.length} 件をシートに追加しました。②の一覧を更新します...`);
 
@@ -3282,7 +3855,7 @@ async function generateShuujukuCandidatesFromRows(rows, status) {
   const apiKey = $('api-key').value.trim();
   if (!apiKey || !shared.shuujukuDailyconvPrompt) return '';
 
-  const model = $('model').value.trim() || 'gemini-2.0-flash';
+  const model = currentTextModel();
   const items = [];
   let failed = 0;
 
@@ -3450,7 +4023,7 @@ async function onDailyExport() {
 
     setStatus(
       status,
-      `${rows.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。${note}`,
+      `${rows.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。${note}${ttsSkipNote()}`,
     );
   } catch (e) {
     hideLoading(status);
@@ -3488,13 +4061,7 @@ function showDailyPreview(row) {
   const values = {};
   def.fields.forEach((f, i) => { values[f.anki_name] = fields[i]; });
 
-  const tmpl = def.anki_model.tmpls[0];
-  const front = renderTemplate(tmpl.qfmt, values);
-  const back = renderTemplate(tmpl.afmt, values, front);
-
-  $('preview-title').textContent = `プレビュー: ${(row.original || '').slice(0, 30)}`;
-  $('preview-frame').srcdoc = buildPreviewDoc(def.anki_model.css, front, back);
-  $('preview-dialog').showModal();
+  openCardPreview(`プレビュー: ${(row.original || '').slice(0, 30)}`, def, values);
 }
 
 // ---------------------------------------------------------------------------
@@ -3671,6 +4238,7 @@ function renderBulkSummary() {
   li.appendChild(left);
   li.appendChild(right);
   list.appendChild(li);
+  updateTabBadges();
 }
 
 /** 生成した音声を1つのMapへ集める(ファイル名はタブごとの接頭辞で衝突しない)。 */
@@ -3813,7 +4381,8 @@ async function onExportBulk() {
       + (dailyRows.length > 0
         ? '\nDailyConversationのシートの「Anki出力済み」列にはマークしていません'
           + '(必要ならDailyConversationタブから行ってください)。'
-        : ''),
+        : '')
+      + ttsSkipNote(),
     );
   } catch (e) {
     hideLoading(status);
@@ -4046,7 +4615,7 @@ async function onExport(tabKey) {
 
     setStatus(
       status,
-      `${pendingItems.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。`,
+      `${pendingItems.length} 件を書き出しました。ダウンロードした .apkg を Anki で開いてください。${ttsSkipNote()}`,
     );
   } catch (e) {
     setStatus(status, `.apkg の生成に失敗しました: ${e.message}`, true);
@@ -4121,12 +4690,56 @@ function showPreview(tabKey, item) {
   const values = {};
   def.fields.forEach((f, i) => { values[f.anki_name] = fields[i]; });
 
-  const tmpl = def.anki_model.tmpls[0];
-  const front = renderTemplate(tmpl.qfmt, values);
-  const back = renderTemplate(tmpl.afmt, values, front);
+  openCardPreview(`プレビュー: ${TAB_CONFIG[tabKey].label(item)}`, def, values);
+}
 
-  $('preview-title').textContent = `プレビュー: ${TAB_CONFIG[tabKey].label(item)}`;
-  $('preview-frame').srcdoc = buildPreviewDoc(def.anki_model.css, front, back);
+/**
+ * プレビューを開く。ノートから作られる**すべてのカード**(テンプレート)を
+ * 切り替えて見られるようにする(2026-10-05追加)。以前は1枚目のテンプレート
+ * しか表示しておらず、AIに質問(4種類のカード)の2〜4枚目がどう見えるかを
+ * 出力前に確かめられなかった。
+ *
+ * 表面が空になるテンプレートは、Anki がそのノートからは作らない(穴埋め用の
+ * 例文が無いノートの「4. 例文穴埋め」等)ので、ボタンにも出さない。
+ */
+function openCardPreview(title, def, values) {
+  const tmpls = def.anki_model.tmpls || [];
+  const cards = tmpls
+    .map((tmpl) => {
+      const front = renderTemplate(tmpl.qfmt, values);
+      return { name: tmpl.name, front, back: renderTemplate(tmpl.afmt, values, front) };
+    })
+    .filter((c) => htmlToPlainText(c.front).replace(/\s+/g, '') !== '');
+  if (cards.length === 0) {
+    // 念のため(全部空なら1枚目をそのまま出す。何も出ないよりは原因を追える)
+    const front = renderTemplate(tmpls[0]?.qfmt || '', values);
+    cards.push({ name: tmpls[0]?.name || '', front, back: renderTemplate(tmpls[0]?.afmt || '', values, front) });
+  }
+
+  const tabs = $('preview-templates');
+  const show = (i) => {
+    $('preview-frame').srcdoc = buildPreviewDoc(def.anki_model.css, cards[i].front, cards[i].back);
+    if (tabs) {
+      [...tabs.children].forEach((b, j) => {
+        b.classList.toggle('active', i === j);
+        b.setAttribute('aria-pressed', String(i === j));
+      });
+    }
+  };
+  if (tabs) {
+    tabs.textContent = '';
+    tabs.hidden = cards.length < 2;
+    cards.forEach((c, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ghost';
+      b.textContent = c.name || `カード${i + 1}`;
+      b.addEventListener('click', () => show(i));
+      tabs.appendChild(b);
+    });
+  }
+  $('preview-title').textContent = cards.length > 1 ? `${title}(カード ${cards.length} 枚)` : title;
+  show(0);
   $('preview-dialog').showModal();
 }
 
@@ -4194,3 +4807,10 @@ function setStatus(el, message, isError = false) {
     if (!isError) scheduleAutoHideStatus(el);
   }
 }
+
+// ---------------------------------------------------------------------------
+// 起動(モジュールの末尾で呼ぶ理由は、上の「起動」セクションのコメントを参照)
+// ---------------------------------------------------------------------------
+init().catch((e) => {
+  setStatus($('word-generate-status'), `初期化に失敗しました: ${e.message}`, true);
+});

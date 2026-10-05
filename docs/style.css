@@ -103,6 +103,16 @@ body {
 }
 .toolbar-group button:hover:not(:disabled) { border-color: var(--accent); }
 
+/* 狭い画面(スマホ)では、ヘッダーのボタンを枠いっぱいに均等に並べる
+   (2026-10-05。右寄せのままだと2段目に「設定」だけがぽつんと残り、
+   押しにくいうえに枠の左側が空いていた)。 */
+@media (max-width: 520px) {
+  .toolbar-group { width: 100%; padding: 6px; }
+  .header-actions { justify-content: stretch; gap: 6px; }
+  .header-actions > button,
+  .header-actions > a.button-like { flex: 1 1 auto; text-align: center; padding: 8px 10px; }
+}
+
 /* 2026-08-06: ここにあった⋮メニュー(.header-menu / .header-menu-panel)の
    スタイルは廃止した。「設定」ボタンはヘッダーへ直接戻してある
    (詳細はindex.html側のコメントを参照)。 */
@@ -183,7 +193,9 @@ h2 { font-size: 1.05rem; margin: 0 0 4px; }
 }
 
 .tab-btn {
-  flex: 1 1 30%;
+  /* 2026-10-05: 30%固定だとPCの幅でも必ず3+2の2段に折り返していた。
+     中身の幅に合わせて伸び縮みさせ、入りきるなら1段に並べる。 */
+  flex: 1 1 auto;
   padding: 8px 10px;
   font-weight: 600;
   color: var(--sub);
@@ -198,6 +210,22 @@ h2 { font-size: 1.05rem; margin: 0 0 4px; }
   color: var(--accent-fg);
   background: var(--accent);
 }
+
+/* タブの「まだ出力していない件数」(2026-10-05追加) */
+.tab-count {
+  display: inline-block;
+  min-width: 1.5em;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: .72rem;
+  line-height: 1.5;
+  border-radius: 999px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  vertical-align: 1px;
+}
+.tab-count[hidden] { display: none; }
+.tab-btn.active .tab-count { color: var(--accent); background: var(--accent-fg); }
 
 .tab-panel[hidden] { display: none; }
 
@@ -271,11 +299,15 @@ label.checkbox {
   font-weight: 400;
 }
 label.checkbox input[type="checkbox"] { width: auto; flex: none; }
+/* display:flex が hidden 属性の既定(display:none)に勝つので明示する */
+label.checkbox[hidden] { display: none; }
 
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row > input[type="text"], .row > input[type="password"] { flex: 1 1 12rem; }
 
-input, textarea {
+/* select も入力欄と同じ見た目にする(2026-10-05。以前は select だけブラウザ
+   既定の小さな見た目のままで、モデル欄が他の欄と揃っていなかった)。 */
+input, textarea, select {
   width: 100%;
   padding: 10px 12px;
   font: inherit;
@@ -286,7 +318,24 @@ input, textarea {
 }
 
 textarea { resize: vertical; font-size: .95rem; }
-input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+select { cursor: pointer; }
+select:disabled, input:disabled { opacity: .55; cursor: not-allowed; }
+input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* キーボード操作のときだけ、どのボタンにいるか分かるようにする */
+button:focus-visible, a.button-like:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row > select { flex: 1 1 12rem; width: auto; }
+/* 数値欄(音量ゲイン等)は横に並ぶボタンを押し出さない幅にする */
+.row > input[type="number"] { flex: 0 1 9rem; width: auto; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap > select { min-width: 0; }
+
+/* 2列の入力欄(言語+音声 など)。狭い画面では1列に戻る(2026-10-05追加)。 */
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0 12px;
+}
+.field-grid.three { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
 
 #settings hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 
@@ -300,19 +349,68 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
      - .hint は一段下げて(左に余白)、直前の項目にぶら下がって見えるようにする
    区切り線を h3 自身に持たせたので、既存の <hr> は無くても切れ目が分かる
    (残っていても二重線にはならないよう、h3 の直後の hr は消す)。 */
+/* 2026-10-05: グループ(.settings-group)ごとに区切り線と余白を持たせた。
+   見出しは各グループの先頭にあるので、以前の h3:first-of-type / hr + h3 の
+   打ち消しは不要になった。 */
 #settings h3 {
   font-size: 1rem;
   font-weight: 700;
   color: var(--accent);
-  margin: 28px 0 2px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+  margin: 0 0 6px;
 }
-#settings h3:first-of-type { margin-top: 8px; padding-top: 0; border-top: 0; }
-#settings hr + h3 { margin-top: 0; padding-top: 0; border-top: 0; }
+#settings h4 {
+  font-size: .9rem;
+  margin: 18px 0 4px;
+}
+.settings-group {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  /* 目次から移動したとき、上端の通知バナーに見出しが隠れないように */
+  scroll-margin-top: 72px;
+}
 #settings .hint { padding-left: 12px; }
 /* 版表示とグループ直下の総論は字下げしない(特定の項目の注釈ではないため) */
-#settings .version-line { padding-left: 0; }
+#settings .version-line,
+#settings > .hint { padding-left: 0; }
+
+/* 設定の目次(2026-10-05追加)。押すとそのグループへスクロールする。 */
+.settings-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+button.chip {
+  padding: 4px 12px;
+  font-size: .82rem;
+  font-weight: 500;
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+/* エンジンごとの設定のまとまり(Cloud / Gemini)。左の線で、上の
+   「音声エンジン」の選択にぶら下がっていることを示す。 */
+.subgroup {
+  margin: 8px 0 4px;
+  padding: 2px 0 4px 12px;
+  border-left: 3px solid var(--border);
+}
+.subgroup[hidden] { display: none; }
+.label-note { font-weight: 400; color: var(--sub); font-size: .8rem; margin-left: 4px; }
+
+/* 「音声が付くか」の1行(⚙設定のTTSと、各タブの③に出す) */
+.tts-summary {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  font-size: .88rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.tts-summary.warn, .tts-status-line.warn { color: var(--fg); background: var(--warn-bg); }
+.tts-status-line { margin: 4px 0 0; padding: 6px 10px; border-radius: 8px; }
+.tts-status-line.warn { padding-left: 10px; }
 
 /* 一括出力タブの内訳リスト(2026-08-20追加)。件数の桁が揃って見えるよう
    行頭記号は付けず、種別名と件数だけを並べる。 */
@@ -361,9 +459,29 @@ button.primary {
   border-color: var(--accent);
 }
 
+/* 生成ボタンのショートカットの表示(2026-10-05追加)。キーボードの無い
+   スマホ・タブレットでは意味が無いので隠す。 */
+.kbd-hint {
+  margin-left: 6px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: .72rem;
+  font-weight: 500;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  opacity: .7;
+}
+@media (hover: none) { .kbd-hint { display: none; } }
+
+/* 一覧の「すべて選択」は右端へ寄せる */
+label.checkbox.select-all { margin-left: auto; }
+
 button.ghost,
 a.button-like.ghost { padding: 8px 12px; font-weight: 500; }
 a.button-like { display: inline-block; text-decoration: none; }
+/* 上の display 指定が hidden 属性に勝ってしまい、スマホで隠すはずの
+   ヘッダーの「🔊 TTS」(PC専用)が常に表示されていた(2026-10-05修正)。 */
+a.button-like[hidden] { display: none; }
 button.danger { color: var(--danger); border-color: var(--danger); }
 
 .status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }
@@ -375,11 +493,11 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .status[hidden] { display: none; }
 
 /* ⚙設定のTTSテスト再生の波形表示(2026-07-29追加)。 */
+.waveform[hidden] { display: none; }
 .waveform {
   display: block;
   width: 100%;
-  max-width: 320px;
-  height: 60px;
+  height: 72px;
   margin-top: 8px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -521,4 +639,17 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   border-bottom: 1px solid var(--border);
 }
 
-#preview-frame { width: 100%; height: calc(100% - 52px); border: 0; background: #fff; }
+#preview-dialog[open] { display: flex; flex-direction: column; }
+#preview-frame { width: 100%; flex: 1 1 auto; min-height: 0; border: 0; background: #fff; }
+
+/* プレビューのカード切り替え(2026-10-05追加) */
+.preview-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.preview-tabs[hidden] { display: none; }
+.preview-tabs button { padding: 4px 10px; font-size: .82rem; font-weight: 500; }
+.preview-tabs button.active { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }

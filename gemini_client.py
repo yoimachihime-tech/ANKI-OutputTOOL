@@ -33,12 +33,14 @@ config.jsonの"gemini_api_key"に平文で保存する(既存のGoogle Cloud TTS
 リトライせず即座に打ち切る。
 """
 
+import base64
 import json
 import os
 import re
 import time
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 
 GEMINI_ENDPOINT_TMPL = (
@@ -149,7 +151,8 @@ def _is_billing_error(error_detail_text: str) -> bool:
     )
 
 
-def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> dict:
+def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int,
+                         max_retries: int = _MAX_RETRIES) -> dict:
     """Gemini APIへのPOSTリクエストを行い、レスポンスのJSONをdictで返す共通処理。
     429(レート制限/無料枠上限)が返った場合は、Google側が示すretryDelay
     (無ければ既定値)だけ待って最大_MAX_RETRIES回リトライする。ただし
@@ -161,7 +164,7 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> di
         "X-Goog-Api-Key": api_key,
     }
     last_detail = None
-    for attempt in range(_MAX_RETRIES):
+    for attempt in range(max_retries):
         req = urllib.request.Request(url, data=data, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -190,7 +193,7 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> di
                         "打ち切りました。翌日まで待つか、⚙設定でモデルを変更する、"
                         f"または有料プランへの切り替えをご検討ください。\n詳細: {detail}"
                     ) from e
-                if attempt < _MAX_RETRIES - 1:
+                if attempt < max_retries - 1:
                     delay = _extract_retry_delay_seconds(detail) or _DEFAULT_RETRY_DELAY_SECONDS
                     time.sleep(min(delay, _MAX_RETRY_DELAY_SECONDS))
                     continue
@@ -204,7 +207,7 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int) -> di
                 # experiencing high demand」等、2026-07-28に片桐の環境で発生)。
                 # 429と違い長期の割り当て超過ではなく、数秒〜数十秒待てば
                 # 解消することが多いため、429と同じ回数だけ短い間隔でリトライする。
-                if attempt < _MAX_RETRIES - 1:
+                if attempt < max_retries - 1:
                     time.sleep(2.0 * (attempt + 1))
                     continue
                 raise GeminiClientError(
@@ -307,31 +310,119 @@ def translate_to_japanese(
 
 def list_gemini_models(api_key: str, timeout: int = 30) -> list:
     """generateContentに対応しているGeminiモデルの名前一覧を取得する
-    (例: "gemini-2.0-flash")。"""
+    (例: "gemini-flash-latest")。
+
+    2026-10-05: ページ送り(nextPageToken)に対応した。以前は1ページ目しか
+    読んでおらず、モデルが増えると後ろの方が一覧から黙って消えていた
+    (Web版 docs/lib/gemini.js の listModels と同じ修正)。"""
     if not api_key:
         raise GeminiClientError("Gemini APIキーが設定されていません。")
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models"
-    req = urllib.request.Request(url, headers={"X-Goog-Api-Key": api_key})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        raise GeminiClientError(f"Geminiモデル一覧の取得に失敗しました: {detail}") from e
-    except Exception as e:  # noqa: BLE001
-        raise GeminiClientError(f"Geminiモデル一覧の取得に失敗しました: {e}") from e
-
     names = []
-    for m in result.get("models", []):
-        if "generateContent" not in m.get("supportedGenerationMethods", []):
-            continue
-        name = m.get("name", "")
-        if name.startswith("models/"):
-            name = name[len("models/"):]
-        if name:
-            names.append(name)
-    return sorted(names)
+    page_token = ""
+    for _ in range(20):  # ページ送りが止まらない応答で無限ループしないための上限
+        url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
+        if page_token:
+            url += "&pageToken=" + urllib.parse.quote(page_token)
+        req = urllib.request.Request(url, headers={"X-Goog-Api-Key": api_key})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            raise GeminiClientError(f"Geminiモデル一覧の取得に失敗しました: {detail}") from e
+        except Exception as e:  # noqa: BLE001
+            raise GeminiClientError(f"Geminiモデル一覧の取得に失敗しました: {e}") from e
+
+        for m in result.get("models", []):
+            if "generateContent" not in m.get("supportedGenerationMethods", []):
+                continue
+            name = m.get("name", "")
+            if name.startswith("models/"):
+                name = name[len("models/"):]
+            if name:
+                names.append(name)
+        page_token = result.get("nextPageToken") or ""
+        if not page_token:
+            break
+    return sorted(set(names))
+
+
+# ---------------------------------------------------------------------------
+# Gemini TTS(音声合成、2026-10-05追加)
+#
+# 2026年9月に公開された Gemini 3.8 Flash TTS / Flash-Lite TTS は、
+# Cloud Text-to-Speech API ではなく Gemini API(このファイルが呼んでいる
+# generateContent)から使う。Web版 docs/lib/gemini.js の generateSpeech と同じ。
+# 応答は RIFF ヘッダー付きの WAV(24kHz・モノラル・16bit)。古いプレビュー版は
+# ヘッダー無しの PCM('audio/L16;codec=pcm;rate=24000')を返すので WAV に包み直す。
+# ---------------------------------------------------------------------------
+
+GEMINI_TTS_MODELS = [
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-preview-tts",
+]
+
+
+def gemini_tts_supports_style(model: str) -> bool:
+    """読み方の指示(speechMetadata.style)に対応しているモデルか(3.8以降)。
+    古いモデルにこのフィールドを送ると400になりうる。"""
+    m = re.match(r"^gemini-(\d+)(?:\.(\d+))?", model or "")
+    if not m:
+        return False
+    major, minor = int(m.group(1)), int(m.group(2) or 0)
+    return major > 3 or (major == 3 and minor >= 8)
+
+
+def _pcm_to_wav(pcm: bytes, sample_rate: int = 24000, channels: int = 1) -> bytes:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def generate_speech_wav(text: str, api_key: str, model: str, voice_name: str,
+                        style: str = "", timeout: int = 120) -> bytes:
+    """Gemini TTS で text を読み上げ、WAV(16bit)のバイト列を返す。"""
+    if not api_key:
+        raise GeminiClientError("Gemini APIキーが設定されていません(Gemini TTSに必要です)。")
+    part = {"text": text}
+    if style and gemini_tts_supports_style(model):
+        part["speechMetadata"] = {"style": style}
+    body = {
+        "contents": [{"role": "user", "parts": [part]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice_name}}},
+        },
+    }
+    # 音声は1フィールド=1回呼ぶので、分あたりのレート制限に当たりやすい。
+    # テキスト生成より多めにリトライする(Web版と同じ4回)。
+    data = _post_gemini_request(GEMINI_ENDPOINT_TMPL.format(model=model), body, api_key,
+                                timeout, max_retries=4)
+    candidate = (data.get("candidates") or [{}])[0]
+    for p in (candidate.get("content") or {}).get("parts") or []:
+        inline = p.get("inlineData") or {}
+        if inline.get("data"):
+            raw = base64.b64decode(inline["data"])
+            if raw[:4] == b"RIFF":
+                return raw
+            mime = inline.get("mimeType", "")
+            rate = re.search(r"rate=(\d+)", mime)
+            return _pcm_to_wav(raw, int(rate.group(1)) if rate else 24000)
+    raise GeminiClientError(
+        f"Gemini TTSから音声が返ってきませんでした(理由: {candidate.get('finishReason', '不明')})。"
+        "TTS用のモデル(名前が -tts で終わるもの)を選んでいるか確認してください。"
+    )
 
 
 def _extract_json(text: str) -> dict:

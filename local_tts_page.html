@@ -67,10 +67,20 @@
   }
   label.opt { display: flex; gap: 6px; align-items: center; font-size: 13.5px; }
   .opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
-  input[type=number], input[type=text] {
+  input[type=number], input[type=text], select {
     font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line);
     background: var(--bg); color: var(--fg); width: 100%;
   }
+  select:disabled, input:disabled { opacity: .55; }
+  a.button {
+    display: inline-block; font: inherit; padding: 7px 14px; border-radius: 7px;
+    text-decoration: none; cursor: pointer;
+  }
+  a.button.primary { background: var(--accent); color: var(--accent-fg); }
+  .voice-box { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; }
+  .test-play { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .test-play audio { width: 100%; margin-top: 8px; }
+  .test-play button { flex: none; white-space: nowrap; }
   .field-label { font-size: 12.5px; color: var(--sub); display: block; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 10px; }
   th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); }
@@ -120,16 +130,63 @@
   </section>
 
   <section id="sec-opts" hidden>
-    <h2>③ オプション</h2>
+    <h2>③ 音声とオプション</h2>
+    <!-- 2026-10-05: 音声名・言語コードの自由入力をやめ、エンジン(Cloud TTS /
+         Gemini TTS)と音声を一覧から選ぶ形にした。Gemini TTS は2026年9月公開の
+         Gemini 3.8 Flash TTS など。tts_core には "gemini:<モデル>:<音声>" という
+         音声名で渡す(tts_core.parse_gemini_voice 参照)。 -->
     <div class="opts">
       <div>
-        <span class="field-label">音声名</span>
-        <input type="text" id="voice">
+        <label class="field-label" for="engine">音声エンジン</label>
+        <select id="engine">
+          <option value="cloud">Cloud TTS(Chirp 3: HD など)</option>
+          <option value="gemini">Gemini TTS(新しい音声・3.8)</option>
+        </select>
       </div>
-      <div>
-        <span class="field-label">言語コード</span>
-        <input type="text" id="lang">
+    </div>
+    <div class="voice-box" id="cloud-box">
+      <div class="opts">
+        <div>
+          <label class="field-label" for="lang">言語(なまり)</label>
+          <select id="lang">
+            <option value="en-US">英語(アメリカ) en-US</option>
+            <option value="en-GB">英語(イギリス) en-GB</option>
+            <option value="en-AU">英語(オーストラリア) en-AU</option>
+            <option value="en-IN">英語(インド) en-IN</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="voice">音声</label>
+          <div class="row" style="flex-wrap:nowrap">
+            <select id="voice"></select>
+            <button id="fetch-voices" title="Chirp 3: HD 以外(Neural2 など)も一覧に出します">一覧を取得</button>
+          </div>
+        </div>
       </div>
+      <p class="hint" style="margin:8px 0 0">APIキーは <code>config.json</code> の <code>api_key</code> を使います。</p>
+    </div>
+    <div class="voice-box" id="gemini-box" hidden>
+      <div class="opts">
+        <div>
+          <label class="field-label" for="gemini-model">モデル</label>
+          <select id="gemini-model"></select>
+        </div>
+        <div>
+          <label class="field-label" for="gemini-voice">音声</label>
+          <select id="gemini-voice"></select>
+        </div>
+        <div>
+          <label class="field-label" for="gemini-style">読み方の指示(任意・3.8以降)</label>
+          <input type="text" id="gemini-style" placeholder="例: clear and natural, moderate pace">
+        </div>
+      </div>
+      <p class="hint" style="margin:8px 0 0">
+        APIキーは <code>config.json</code> の <code>gemini_api_key</code> を使います。
+        1件(文ごとにタグを分ける場合は1文)につき Gemini API を1回呼びます。
+        MP3 への変換に <code>lameenc</code> を使います。
+      </p>
+    </div>
+    <div class="opts" style="margin-top:12px">
       <div>
         <span class="field-label">音量ゲイン(dB)</span>
         <input type="number" id="gain" step="0.5" min="-20" max="16">
@@ -159,8 +216,22 @@
       <strong>既に作ってしまった分を直すときは、右の「音声が2つ以上あるフィールドだけ
       作り直す」を使うと、該当分だけをやり直せます</strong>(全部作り直す必要はありません)。
     </p>
+    <div class="test-play">
+      <label class="field-label" for="test-text">テスト再生する文(空欄なら既定のサンプル文)</label>
+      <div class="row" style="flex-wrap:nowrap">
+        <input type="text" id="test-text" placeholder="This is a short test sentence. Here is a second one to check the pause between sentences.">
+        <button id="test-play">🔊 テスト再生</button>
+      </div>
+      <audio id="test-audio" controls hidden></audio>
+      <div id="test-status" class="status"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="save-settings">この音声・設定を次回も使う(config.json に保存)</button>
+      <span id="save-status" class="status"></span>
+    </div>
     <p class="hint" style="margin:10px 0 0">
       APIキーは <code>config.json</code> のものを使います(この画面には出しません)。
+      保存した設定は PC版(ANKI出力ツール)とも共通です。
     </p>
   </section>
 
@@ -179,7 +250,7 @@
     <div id="run-status" class="status"></div>
     <div id="log" hidden></div>
     <div class="row" style="margin-top:12px">
-      <a id="download" hidden href="/api/download"><button class="primary">.apkgをダウンロード</button></a>
+      <a id="download" class="button primary" hidden href="/api/download">.apkgをダウンロード</a>
     </div>
     <p class="hint" style="margin-top:12px">
       割り当ての上限などで途中で止まった場合も、<strong>そこまでの分は書き出されます</strong>。
@@ -206,7 +277,7 @@
       <span id="strip-status" class="status"></span>
     </div>
     <div class="row" style="margin-top:12px">
-      <a id="strip-download" hidden href="/api/download"><button class="primary">.apkgをダウンロード</button></a>
+      <a id="strip-download" class="button primary" hidden href="/api/download">.apkgをダウンロード</a>
     </div>
   </section>
 
@@ -250,8 +321,9 @@ $('file').addEventListener('change', async (ev) => {
     notetypes = data.notetypes;
     if (!notetypes.length) throw new Error('ノートが1件も入っていません。');
     renderNotetypes();
-    await loadSettings();
-    $('sec-fields').hidden = $('sec-opts').hidden = $('sec-run').hidden = false;
+    // 設定はページを開いたときに読み込み済み(ここで読み直すと、apkg を選び直す
+    // たびに画面で変えた音声などが config.json の値に戻ってしまう)。
+    $('sec-fields').hidden = $('sec-run').hidden = false;
     // テンプレートに {{tts}} がある場合だけ⑤を出す(無いapkgでは無関係な節なので隠す)
     $('tpl-tts-count').textContent = String(data.template_tts || 0);
     $('sec-template').hidden = !data.template_tts;
@@ -333,15 +405,16 @@ function renderNotetypes() {
     wrap.appendChild(fields);
     box.appendChild(wrap);
   });
-
-  box.addEventListener('click', (ev) => {
-    const btn = ev.target.closest('button[data-act]');
-    if (!btn) return;
-    ev.preventDefault();
-    const ni = Number(btn.dataset.nt);
-    selectIn(ni, btn.dataset.act);
-  });
 }
+
+// ノートタイプごとの「ENで終わるもの/すべて/解除」。以前は renderNotetypes() の
+// 中で登録しており、apkg を読み込み直すたびに同じ処理が重ねて登録されていた。
+$('notetypes').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  ev.preventDefault();
+  selectIn(Number(btn.dataset.nt), btn.dataset.act);
+});
 
 function selectIn(ni, mode) {
   document.querySelectorAll(`input[data-nt="${ni}"]`).forEach((cb) => {
@@ -383,20 +456,203 @@ function collectTargets() {
 }
 
 // --- ③ 設定 ---------------------------------------------------------------
+let serverSettings = null;
+const GEMINI_PREFIX = 'gemini:';
+
+/** select に値を入れる(選択肢に無ければ足してから)。 */
+function selectEnsured(sel, value, label = value) {
+  if (!value) return;
+  if (![...sel.options].some((o) => o.value === value)) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+  sel.value = value;
+}
+
+function renderCloudVoices(current) {
+  const lang = $('lang').value || 'en-US';
+  const sel = $('voice');
+  sel.textContent = '';
+  const chirp = document.createElement('optgroup');
+  chirp.label = 'Chirp 3: HD(おすすめ)';
+  for (const name of serverSettings.prebuilt_voices) {
+    const opt = document.createElement('option');
+    opt.value = `${lang}-Chirp3-HD-${name}`;
+    opt.textContent = name;
+    chirp.appendChild(opt);
+  }
+  sel.appendChild(chirp);
+  // 「一覧を取得」で得た(または PC版で取得済みの)その他の音声
+  const others = (serverSettings.cloud_voice_cache[lang] || [])
+    .filter((n) => /^[a-z]{2,3}-[A-Z]{2}-/.test(n) && !n.includes('-Chirp3-HD-'));
+  if (others.length) {
+    const g = document.createElement('optgroup');
+    g.label = 'その他';
+    others.forEach((n) => {
+      const opt = document.createElement('option');
+      opt.value = n;
+      opt.textContent = n;
+      g.appendChild(opt);
+    });
+    sel.appendChild(g);
+  }
+  selectEnsured(sel, current || `${lang}-Chirp3-HD-Iapetus`);
+}
+
+function updateEngineView() {
+  const gemini = $('engine').value === 'gemini';
+  $('cloud-box').hidden = gemini;
+  $('gemini-box').hidden = !gemini;
+  const m = /^gemini-(\d+)(?:\.(\d+))?/.exec($('gemini-model').value);
+  const styleOk = m && (Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2] || 0) >= 8));
+  $('gemini-style').disabled = !styleOk;
+  const s = serverSettings || {};
+  const missing = gemini ? !s.has_gemini_key : !s.has_api_key;
+  if (missing) {
+    setStatus($('run-status'), gemini
+      ? 'config.json に gemini_api_key が設定されていません。Gemini TTS では生成できません。'
+      : 'config.json に api_key が設定されていません。Cloud TTS では生成できません。', 'err');
+  } else if ($('run-status').classList.contains('err') && /config\.json/.test($('run-status').textContent)) {
+    setStatus($('run-status'), '');
+  }
+}
+
 async function loadSettings() {
   const s = await (await fetch('/api/settings')).json();
-  $('voice').value = s.voice;
-  $('lang').value = s.language_code;
-  $('gain').value = s.volume_gain_db;
+  serverSettings = s;
+  // Gemini のモデル・音声の選択肢
+  $('gemini-model').textContent = '';
+  s.gemini_models.forEach((m) => selectEnsured($('gemini-model'), m.id, m.label));
+  $('gemini-voice').textContent = '';
+  s.prebuilt_voices.forEach((n) => selectEnsured($('gemini-voice'), n));
+
+  const voice = s.voice || '';
+  if (voice.startsWith(GEMINI_PREFIX)) {
+    const rest = voice.slice(GEMINI_PREFIX.length);
+    const i = rest.lastIndexOf(':');
+    $('engine').value = 'gemini';
+    selectEnsured($('gemini-model'), rest.slice(0, i));
+    selectEnsured($('gemini-voice'), rest.slice(i + 1));
+    selectEnsured($('lang'), s.language_code || 'en-US');
+    renderCloudVoices('');
+  } else {
+    $('engine').value = 'cloud';
+    const lang = (/^([a-z]{2,3}-[A-Z]{2})-/.exec(voice) || [])[1] || s.language_code || 'en-US';
+    selectEnsured($('lang'), lang);
+    renderCloudVoices(voice);
+    $('gemini-model').value = s.gemini_models[0].id;
+    selectEnsured($('gemini-voice'), 'Iapetus');
+  }
+  $('gemini-style').value = s.gemini_style || '';
+  // config.json には自動調整の結果が 4.128116827689715 のような値で入っていることがある
+  $('gain').value = Math.round(Number(s.volume_gain_db || 0) * 10) / 10;
   $('gap').value = s.sentence_gap;
   $('bitrate').value = s.mp3_bitrate;
   $('per-sentence').checked = s.per_sentence_tags;
   $('exclude-ja').checked = s.exclude_japanese;
-  if (!s.has_api_key) {
-    setStatus($('run-status'),
-      'config.json に api_key が設定されていません。生成はできません。', 'err');
-  }
+  updateEngineView();
 }
+
+$('engine').addEventListener('change', updateEngineView);
+$('gemini-model').addEventListener('change', updateEngineView);
+$('lang').addEventListener('change', () => {
+  // 言語を変えたら、Chirp 3: HD は同じ名前の音声に合わせる
+  const star = (/-Chirp3-HD-([A-Za-z]+)$/.exec($('voice').value) || [])[1] || 'Iapetus';
+  renderCloudVoices(`${$('lang').value}-Chirp3-HD-${star}`);
+});
+
+$('fetch-voices').addEventListener('click', async () => {
+  if (isBusy($('fetch-voices'))) return;
+  $('fetch-voices').setAttribute('aria-disabled', 'true');
+  setStatus($('test-status'), '音声の一覧を取得しています…');
+  try {
+    const res = await fetch('/api/voices', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language_code: $('lang').value }),
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    serverSettings.cloud_voice_cache[d.language_code] = d.voices;
+    renderCloudVoices($('voice').value);
+    setStatus($('test-status'), `${d.voices.length} 件の音声を取得しました。`, 'ok');
+  } catch (e) {
+    setStatus($('test-status'), '取得できませんでした: ' + e.message, 'err');
+  } finally {
+    $('fetch-voices').removeAttribute('aria-disabled');
+  }
+});
+
+/** 画面に出す音声の名前(例: "Gemini 3.8 Flash TTS / Kore")。 */
+function voiceLabel() {
+  if ($('engine').value === 'gemini') {
+    const opt = $('gemini-model').selectedOptions[0];
+    const model = opt ? opt.textContent.replace(/\s*\([^()]*\)$/, '') : $('gemini-model').value;
+    return `${model} / ${$('gemini-voice').value}`;
+  }
+  return `Cloud TTS / ${$('voice').value}`;
+}
+
+/** いまの画面で選んでいる音声名(tts_core へ渡す形)。 */
+function currentVoice() {
+  if ($('engine').value === 'gemini') {
+    return `${GEMINI_PREFIX}${$('gemini-model').value}:${$('gemini-voice').value}`;
+  }
+  return $('voice').value;
+}
+
+// --- テスト再生(2026-10-05追加) --------------------------------------------
+$('test-play').addEventListener('click', async () => {
+  if (isBusy($('test-play'))) return;
+  const audio = $('test-audio');
+  audio.pause();
+  $('test-play').setAttribute('aria-disabled', 'true');
+  setStatus($('test-status'), 'テスト音声を作っています…');
+  try {
+    const res = await fetch('/api/test-tts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: settings(), text: $('test-text').value }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || `HTTP ${res.status}`);
+    }
+    const peak = Number(res.headers.get('X-Peak')) || 0;
+    const sec = Number(res.headers.get('X-Duration')) || 0;
+    const blob = await res.blob();
+    if (audio.src) URL.revokeObjectURL(audio.src);
+    audio.src = URL.createObjectURL(blob);
+    audio.hidden = false;
+    const db = peak > 0 ? (20 * Math.log10(peak)).toFixed(1) : '-∞';
+    const clipped = peak >= 0.999;
+    setStatus($('test-status'),
+      `再生中: ${voiceLabel()}(ピーク ${db} dBFS、${sec.toFixed(1)}秒)`
+      + (clipped ? ' ⚠ 音割れの可能性があります。音量ゲインを下げてください。' : ''),
+      clipped ? 'err' : 'ok');
+    await audio.play().catch(() => {
+      setStatus($('test-status'), $('test-status').textContent + '(自動再生が止められました。▶ を押してください)');
+    });
+  } catch (e) {
+    setStatus($('test-status'), 'テスト再生できませんでした: ' + e.message, 'err');
+  } finally {
+    $('test-play').removeAttribute('aria-disabled');
+  }
+});
+
+$('save-settings').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/save-settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { ...settings(), exclude_japanese: $('exclude-ja').checked } }),
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    setStatus($('save-status'), '保存しました(次回からこの設定で開きます)。', 'ok');
+  } catch (e) {
+    setStatus($('save-status'), '保存できませんでした: ' + e.message, 'err');
+  }
+});
 
 const options = () => ({
   exclude_japanese: $('exclude-ja').checked,
@@ -412,8 +668,9 @@ const options = () => ({
 });
 
 const settings = () => ({
-  voice: $('voice').value.trim(),
-  language_code: $('lang').value.trim(),
+  voice: currentVoice(),
+  language_code: $('lang').value,
+  gemini_style: $('gemini-style').disabled ? '' : $('gemini-style').value.trim(),
   volume_gain_db: Number($('gain').value),
   sentence_gap: Number($('gap').value),
   mp3_bitrate: Number($('bitrate').value),
@@ -421,7 +678,13 @@ const settings = () => ({
 });
 
 // --- ④ 実行 ---------------------------------------------------------------
+/** aria-disabled のボタンは押されても何もしない(見た目だけ無効にしているため)。 */
+function isBusy(btn) {
+  return btn.hasAttribute('aria-disabled');
+}
+
 $('dry').addEventListener('click', async () => {
+  if (isBusy($('dry'))) return;
   const targets = collectTargets();
   $('dry-result').innerHTML = '';
   if (!targets.length) {
@@ -469,6 +732,9 @@ function renderDryRun(d) {
 }
 
 $('run').addEventListener('click', async () => {
+  // 生成中にもう一度押すと、以前はサーバーの「すでに生成中です」をエラーとして
+  // 受け取り、生成が続いているのにキャンセルボタンが消えていた(2026-10-05修正)。
+  if (isBusy($('run'))) return;
   const targets = collectTargets();
   if (!targets.length) {
     setStatus($('run-status'), 'フィールドが1つも選ばれていません。', 'err');
@@ -546,6 +812,12 @@ $('shutdown').addEventListener('click', async () => {
   }, 400);
 });
 
+// ページを開いたらすぐ設定を読み込み、③(音声の選択・テスト再生)を出す
+// (2026-10-05。以前は apkg を読み込むまで③が出ず、音声を試せなかった)。
+loadSettings()
+  .then(() => { $('sec-opts').hidden = false; })
+  .catch((e) => setStatus($('open-status'), '設定を読み込めませんでした: ' + e.message, 'err'));
+
 function setBusy(busy) {
   $('run').toggleAttribute('aria-disabled', busy);
   $('dry').toggleAttribute('aria-disabled', busy);
@@ -553,7 +825,16 @@ function setBusy(busy) {
 }
 
 async function poll() {
-  const j = await (await fetch('/api/progress')).json();
+  let j;
+  try {
+    j = await (await fetch('/api/progress')).json();
+  } catch (e) {
+    // ツールを終了した・PCがスリープした等で応答が無い。延々と失敗し続けないよう止める。
+    clearInterval(polling);
+    setBusy(false);
+    setStatus($('run-status'), '進み具合を取得できませんでした(ツールが終了している可能性があります): ' + e.message, 'err');
+    return;
+  }
   if (j.total) {
     $('bar').max = j.total;
     $('bar').value = j.done;

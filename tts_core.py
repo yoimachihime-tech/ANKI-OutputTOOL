@@ -71,25 +71,107 @@ SOUND_TAG_RE = re.compile(r"\[sound:[^\]]+\]")
 
 
 def load_config() -> dict:
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:  # noqa: BLE001
-        return {}
+    """config.json を読む。
+
+    2026-10-05: json_store 経由にした。以前は壊れていると黙って {} を返し、
+    次の save_config() で**APIキーを含む設定がまるごと空で上書きされていた**。
+    今は壊れたファイルを config.json.corrupt へ退避してから {} を返すので、
+    手作業でキーを救出できる。"""
+    import json_store
+
+    data = json_store.read_json(CONFIG_PATH, {})
+    return data if isinstance(data, dict) else {}
 
 
 def save_config(cfg: dict) -> None:
-    os.makedirs(BASE_DIR, exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    """config.json をアトミックに書く(書き込み途中で落ちても旧版が残る)。
+
+    2026-10-05: 他の永続化JSONと同じく json_store.write_json を使うようにした
+    (以前は open(path, "w") で開いた瞬間に中身が消える書き方だった)。"""
+    import json_store
+
+    json_store.write_json(CONFIG_PATH, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Gemini TTS の音声(2026-10-05追加)
+#
+# 2026年9月公開の Gemini 3.8 Flash TTS などは Cloud Text-to-Speech ではなく
+# Gemini API から呼ぶ(gemini_client.generate_speech_wav)。既存の呼び出し側
+# (local_tts_server.py / tts_gui.py)の引数を増やさずに使えるよう、音声名を
+#   "gemini:<モデル>:<音声>"   例: "gemini:gemini-3.8-flash-tts:Kore"
+# という形で表し、call_google_tts / call_google_tts_wav がこれを見て振り分ける。
+# **このときの api_key は Gemini API のキー**(config.json の gemini_api_key)。
+# 呼び出し側は tts_api_key_for_voice() でキーを選ぶこと。
+# ---------------------------------------------------------------------------
+
+GEMINI_VOICE_PREFIX = "gemini:"
+
+# Chirp 3: HD と Gemini TTS が共通で持つ30種のプリセット音声
+PREBUILT_VOICE_NAMES = [
+    "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
+    "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir", "Gacrux",
+    "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Puck", "Pulcherrima",
+    "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat", "Umbriel",
+    "Vindemiatrix", "Zephyr", "Zubenelgenubi",
+]
+
+# 一覧に出す Gemini TTS のモデル(新しいもの。古いプレビュー版は直接入力で使える)
+GEMINI_TTS_LIST_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]
+
+
+def make_gemini_voice(model: str, voice: str) -> str:
+    return f"{GEMINI_VOICE_PREFIX}{model}:{voice}"
+
+
+def parse_gemini_voice(voice_name: str):
+    """音声名が "gemini:<モデル>:<音声>" なら (モデル, 音声) を返す。それ以外は None。"""
+    if not (voice_name or "").startswith(GEMINI_VOICE_PREFIX):
+        return None
+    rest = voice_name[len(GEMINI_VOICE_PREFIX):]
+    model, sep, voice = rest.rpartition(":")
+    if not sep or not model or not voice:
+        return None
+    return model, voice
+
+
+def gemini_voice_options(models=None) -> list:
+    """一覧に出す Gemini TTS の音声名("gemini:モデル:音声")のリスト。"""
+    return [make_gemini_voice(m, v) for m in (models or GEMINI_TTS_LIST_MODELS)
+            for v in PREBUILT_VOICE_NAMES]
+
+
+def tts_api_key_for_voice(voice_name: str, cfg: dict) -> str:
+    """音声名に合わせて使うAPIキーを返す(Gemini TTS なら Gemini のキー)。"""
+    if parse_gemini_voice(voice_name):
+        return cfg.get("gemini_api_key", "")
+    return cfg.get("api_key", "")
+
+
+def _locale_of_voice(voice_name: str):
+    m = re.match(r"^([a-z]{2,3}-[A-Z]{2})-", voice_name or "")
+    return m.group(1) if m else None
+
+
+def voice_choices(cloud_names) -> list:
+    """音声のプルダウンに出す一覧(Cloud TTS の音声 + Gemini TTS の音声)。
+    言語コードの付いていない Cloud の名前("Kore" 等。APIキーでは使えない)は除く。"""
+    return [n for n in (cloud_names or []) if _locale_of_voice(n)] + gemini_voice_options()
 
 
 def list_google_voices(language_code: str, api_key: str) -> list:
+    """Cloud TTS の音声一覧。
+
+    2026-10-05: 言語コードの付いていない名前("Kore" など)は除くようにした。
+    voices.list には Cloud 経由の Gemini TTS 用の名前も混ざっているが、これは
+    Vertex AI の権限が別途必要で APIキーだけでは合成できない(選ぶと分かりにくい
+    400/403 になる)。Gemini の新しい音声は gemini_voice_options() のほうを使う。
+    """
     url = f"{VOICES_ENDPOINT}?languageCode={language_code}"
     req = urllib.request.Request(url, headers={"X-Goog-Api-Key": api_key})
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    names = sorted(v["name"] for v in data.get("voices", []))
+    names = sorted(v["name"] for v in data.get("voices", []) if _locale_of_voice(v["name"]))
     return names
 
 
@@ -639,13 +721,86 @@ def _call_tts_api(body: dict, api_key: str) -> bytes:
     raise last_error
 
 
+# ローカルで音量を上げるときに、ピークをここまでに抑える(約 -0.3dBFS)。
+_LIMITER_PEAK = 0.965
+
+
+def apply_gain_to_wav(wav_bytes: bytes, gain_db: float) -> bytes:
+    """WAV(16bit)に音量ゲインを掛ける(Gemini TTS 用、2026-10-05追加)。
+
+    Cloud TTS は合成時に Google 側でゲインを掛けられる(volumeGainDb)が、
+    Gemini TTS にはその指定が無いため PCM を直接増幅する。上げすぎて音割れ
+    しそうな分は自動で抑える(Gemini は呼ぶたびに音量が少し変わるので、
+    テスト再生で決めたゲインが別の文で音割れするのを防ぐため)。
+    Web版 docs/lib/tts.js の applyGainToWav と同じ考え方。"""
+    import array
+
+    if not gain_db:
+        return wav_bytes
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        params = wf.getparams()
+        frames = wf.readframes(wf.getnframes())
+    if params.sampwidth != 2:
+        return wav_bytes
+    samples = array.array("h")
+    samples.frombytes(frames)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    peak = max((abs(v) for v in samples), default=0) / 32768.0
+    factor = 10 ** (gain_db / 20.0)
+    if peak > 0 and factor > 1 and peak * factor > _LIMITER_PEAK:
+        factor = max(1.0, _LIMITER_PEAK / peak)
+    if factor == 1.0:
+        return wav_bytes
+    out = array.array("h", (max(-32768, min(32767, int(round(v * factor)))) for v in samples))
+    if sys.byteorder == "big":
+        out.byteswap()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(params.nchannels)
+        w.setsampwidth(2)
+        w.setframerate(params.framerate)
+        w.writeframes(out.tobytes())
+    return buf.getvalue()
+
+
+# Gemini TTS の「読み方の指示」(3.8以降)。呼び出し側(ローカルツール等)が
+# 設定に合わせて書き換える。空なら付けない。
+GEMINI_TTS_STYLE = ""
+
+
+def _gemini_tts_wav(text: str, voice_name: str, api_key: str, volume_gain_db: float) -> bytes:
+    import gemini_client
+
+    model, voice = parse_gemini_voice(voice_name)
+    try:
+        wav = gemini_client.generate_speech_wav(text, api_key, model, voice, style=GEMINI_TTS_STYLE)
+    except gemini_client.GeminiClientError as e:
+        # 呼び出し側は TtsApiError を想定しているので揃える(メッセージはそのまま)
+        raise TtsApiError(str(e)) from e
+    return apply_gain_to_wav(wav, volume_gain_db)
+
+
 def call_google_tts(
     text: str, voice_name: str, language_code: str, api_key: str, volume_gain_db: float = 0.0
 ) -> bytes:
+    """1回合成して MP3 を返す。
+
+    voice_name が "gemini:..." のときは Gemini TTS で合成して MP3 に変換する
+    (api_key は Gemini のキー)。それ以外は Cloud TTS。
+    Cloud TTS の言語コードは、音声名の先頭(en-GB-...)を優先する(2026-10-05)。
+    食い違っていると400になり、原因が分かりにくかったため。"""
+    if parse_gemini_voice(voice_name):
+        wav = _gemini_tts_wav(text, voice_name, api_key, volume_gain_db)
+        if not LAMEENC_AVAILABLE:
+            raise TtsApiError(
+                "Gemini TTS の音声をMP3にするには lameenc が必要です"
+                "(pip install lameenc を実行してください)。")
+        return wav_bytes_to_mp3(wav, 64)
     return _call_tts_api(
         {
             "input": {"text": text},
-            "voice": {"languageCode": language_code, "name": voice_name},
+            "voice": {"languageCode": _locale_of_voice(voice_name) or language_code, "name": voice_name},
             "audioConfig": {"audioEncoding": "MP3", "volumeGainDb": volume_gain_db},
         },
         api_key,
@@ -660,11 +815,14 @@ def call_google_tts_wav(
     sample_rate_hertz: int = 24000,
     volume_gain_db: float = 0.0,
 ) -> bytes:
-    """LINEAR16(WAV)形式で音声を取得する。文と文の間に無音を挟んで結合するために使う。"""
+    """LINEAR16(WAV)形式で音声を取得する。文と文の間に無音を挟んで結合するために使う。
+    Gemini TTS("gemini:..." の音声名)は常に 24kHz の WAV で返る。"""
+    if parse_gemini_voice(voice_name):
+        return _gemini_tts_wav(text, voice_name, api_key, volume_gain_db)
     return _call_tts_api(
         {
             "input": {"text": text},
-            "voice": {"languageCode": language_code, "name": voice_name},
+            "voice": {"languageCode": _locale_of_voice(voice_name) or language_code, "name": voice_name},
             "audioConfig": {
                 "audioEncoding": "LINEAR16",
                 "sampleRateHertz": sample_rate_hertz,

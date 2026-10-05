@@ -116,16 +116,20 @@ function describeError(status, detail) {
  *
  * @param {object} requestBody generateContent のリクエストボディ
  * @param {string} apiKey
- * @param {string} model 例: "gemini-2.0-flash"
+ * @param {string} model 例: "gemini-flash-latest"
+ * @param {{maxRetries?: number}} [options] maxRetries はTTS用(下の generateSpeech)。
+ *   音声は1フィールド=1回呼ぶため、.apkg 出力中に分あたりのレート制限へ
+ *   ぶつかりやすい。そこで止めずに retryDelay だけ待って続けられるよう、
+ *   テキスト生成より多めに試す。
  */
-async function postGeminiRequest(requestBody, apiKey, model) {
+async function postGeminiRequest(requestBody, apiKey, model, { maxRetries = MAX_RETRIES } = {}) {
   if (!apiKey) throw new GeminiError('Gemini APIキーが設定されていません。');
 
   const url = ENDPOINT_TMPL.replace('{model}', encodeURIComponent(model));
   const body = JSON.stringify(requestBody);
 
   let lastDetail = '';
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
     // 失敗したリクエストもGoogle側の割り当てを消費するため、成功時だけでなく
     // **fetchのたびに**数える(リトライも1回として数える)。
     recordRequest(model);
@@ -165,7 +169,7 @@ async function postGeminiRequest(requestBody, apiKey, model) {
           + `確認できます)。\n詳細: ${lastDetail}`,
         );
       }
-      if (attempt < MAX_RETRIES - 1) {
+      if (attempt < maxRetries - 1) {
         const delay = extractRetryDelayMs(lastDetail) ?? DEFAULT_RETRY_DELAY_MS;
         await sleep(Math.min(delay, MAX_RETRY_DELAY_MS));
         continue;
@@ -178,7 +182,7 @@ async function postGeminiRequest(requestBody, apiKey, model) {
       // demand」等、2026-07-28に片桐の環境で発生)。429と違い長期の割り当て
       // 超過ではなく数秒〜数十秒待てば解消することが多いため、429と同じ回数
       // だけ短い間隔でリトライする(gemini_client._post_gemini_requestと同じ考え方)。
-      if (attempt < MAX_RETRIES - 1) {
+      if (attempt < maxRetries - 1) {
         await sleep(2000 * (attempt + 1));
         continue;
       }
@@ -877,25 +881,130 @@ export function consolidateNoErrorCorrections(corrections) {
   return result;
 }
 
-/** generateContent に対応しているモデル名の一覧を取得する。 */
+/**
+ * generateContent に対応しているモデル名の一覧を取得する。
+ *
+ * 2026-10-05: ページ送り(nextPageToken)に対応した。以前は1ページ目しか
+ * 読んでおらず、モデルが増えると後ろの方(新しいモデルほど辞書順で後ろに
+ * 来やすい)が一覧から黙って消えていた。
+ */
 export async function listModels(apiKey) {
   if (!apiKey) throw new GeminiError('Gemini APIキーが設定されていません。');
-  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-    headers: { 'x-goog-api-key': apiKey },
-  });
-  if (!res.ok) {
-    const detail = await res.text();
-    const described = describeError(res.status, detail);
+  const names = [];
+  let pageToken = '';
+  // 念のための上限(ページ送りが止まらない応答で無限ループしないように)。
+  for (let page = 0; page < 20; page += 1) {
+    const url = new URL('https://generativelanguage.googleapis.com/v1beta/models');
+    url.searchParams.set('pageSize', '1000');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const res = await fetch(url.toString(), { headers: { 'x-goog-api-key': apiKey } });
+    if (!res.ok) {
+      const detail = await res.text();
+      const described = describeError(res.status, detail);
+      throw new GeminiError(
+        described
+          ? `${described}\n\n詳細: ${detail}`
+          : `Geminiモデル一覧の取得に失敗しました: ${detail}`,
+      );
+    }
+    const data = await res.json();
+    for (const m of data.models || []) {
+      if (!(m.supportedGenerationMethods || []).includes('generateContent')) continue;
+      const name = (m.name || '').replace(/^models\//, '');
+      if (name) names.push(name);
+    }
+    pageToken = data.nextPageToken || '';
+    if (!pageToken) break;
+  }
+  return [...new Set(names)].sort();
+}
+
+/**
+ * 文章生成(カード作り)に使えないモデルかどうか(2026-10-05追加)。
+ *
+ * 「一覧を取得」の結果には音声合成(TTS)・画像生成・音楽生成などの専用モデルも
+ * 混ざっている。これをモデル欄で選ぶと、カード生成が分かりにくいエラー
+ * (応答にテキストが無い等)で失敗するため、文章生成用の一覧からは外す。
+ * TTSモデルは⚙設定の「TTS音声」側の一覧に回す(isGeminiTtsModel)。
+ */
+export function isNonTextModel(name) {
+  return /tts|image|imagen|veo|lyria|embedding|aqa|robotics|computer-use|native-audio|live/i.test(name || '');
+}
+
+/** 音声合成(TTS)専用モデルか。 */
+export function isGeminiTtsModel(name) {
+  return /-tts(\b|-|$)/i.test(name || '');
+}
+
+// ---------------------------------------------------------------------------
+// Gemini TTS(音声合成、2026-10-05追加)
+//
+// 2026年9月に Gemini 3.8 Flash TTS / Flash-Lite TTS が公開された。これらは
+// Cloud Text-to-Speech API ではなく **Gemini API(このファイルが呼んでいる
+// generateContent)** から使う。そのため APIキーも Gemini 用のもの(カード生成と
+// 同じキー)を使い、呼び出し回数も同じ「Gemini APIの使用状況」に数えられる。
+//
+// 実際の応答(2026-10-05に gemini-3.8-flash-lite-tts で確認):
+//   candidates[0].content.parts[0].inlineData = { mimeType: 'audio/wav', data: <base64> }
+//   = RIFFヘッダー付きのWAV(24kHz・モノラル・16bit)。
+// 古いプレビュー版(gemini-2.5-*-preview-tts)はヘッダー無しの生PCM
+// ('audio/L16;codec=pcm;rate=24000')を返すため、WAVへの包み直しは
+// tts.js 側(toWavBytes)で吸収する。
+// ---------------------------------------------------------------------------
+
+/**
+ * 読み方の指示(speechMetadata.style)に対応しているモデルか。
+ *
+ * Gemini 3.8 から、話し方の指示を本文と分けて渡せるようになった
+ * (本文に指示を混ぜると、指示文まで読み上げられることがある)。古いモデルに
+ * このフィールドを送ると 400 になりうるので、対応モデルにだけ付ける。
+ */
+export function geminiTtsSupportsStyle(model) {
+  const m = /^gemini-(\d+)(?:\.(\d+))?/.exec(model || '');
+  if (!m) return false;
+  const major = Number(m[1]);
+  const minor = Number(m[2] || 0);
+  return major > 3 || (major === 3 && minor >= 8);
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Gemini TTS で text を読み上げた音声を返す。
+ *
+ * @param {object} p
+ * @param {string} p.text 読み上げる本文(HTMLを除いた平文)
+ * @param {string} p.apiKey Gemini APIキー
+ * @param {string} p.model 例: "gemini-3.8-flash-tts"
+ * @param {string} p.voiceName 例: "Kore"(30種のプリセット音声)
+ * @param {string} [p.style] 読み方の指示(3.8以降のみ。空なら付けない)
+ * @returns {Promise<{bytes: Uint8Array, mimeType: string}>}
+ */
+export async function generateSpeech({ text, apiKey, model, voiceName, style = '' }) {
+  const part = { text };
+  if (style && geminiTtsSupportsStyle(model)) part.speechMetadata = { style };
+  const data = await postGeminiRequest({
+    contents: [{ role: 'user', parts: [part] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+    },
+  }, apiKey, model, { maxRetries: 4 });
+
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const audio = parts.find((p) => p?.inlineData?.data);
+  if (!audio) {
+    const reason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || '不明';
     throw new GeminiError(
-      described
-        ? `${described}\n\n詳細: ${detail}`
-        : `Geminiモデル一覧の取得に失敗しました: ${detail}`,
+      `Gemini TTSから音声が返ってきませんでした(理由: ${reason})。`
+      + 'TTS用のモデル(名前が -tts で終わるもの)を選んでいるか確認してください。\n'
+      + `詳細: ${JSON.stringify(data).slice(0, 300)}`,
     );
   }
-  const data = await res.json();
-  return (data.models || [])
-    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-    .map((m) => (m.name || '').replace(/^models\//, ''))
-    .filter(Boolean)
-    .sort();
+  return { bytes: base64ToBytes(audio.inlineData.data), mimeType: audio.inlineData.mimeType || '' };
 }

@@ -42,6 +42,55 @@ PORT = 8765
 ALLOWED_ORIGINS = {"http://127.0.0.1:%d" % PORT, "http://localhost:%d" % PORT}
 OUTPUT_DIR = os.path.join(tts_core.BASE_DIR, "output")
 WORK_DIR = os.path.join(tts_core.BASE_DIR, "pending_decks")
+DEFAULT_VOICE = "en-US-Chirp3-HD-Iapetus"
+
+# 画面で選べる Gemini TTS のモデル(新しい順)
+GEMINI_MODEL_CHOICES = [
+    {"id": "gemini-3.8-flash-tts", "label": "Gemini 3.8 Flash TTS(最新・高品質)"},
+    {"id": "gemini-3.8-flash-lite-tts", "label": "Gemini 3.8 Flash-Lite TTS(最新・高速/低コスト)"},
+    {"id": "gemini-3.1-flash-tts-preview", "label": "Gemini 3.1 Flash TTS(プレビュー)"},
+    {"id": "gemini-2.5-pro-preview-tts", "label": "Gemini 2.5 Pro TTS(プレビュー)"},
+]
+
+# 画面の設定名 → config.json のキー(「この設定を次回も使う」で保存するもの)
+SAVABLE_SETTINGS = {
+    "voice": "voice",
+    "language_code": "language_code",
+    "volume_gain_db": "volume_gain_db",
+    "sentence_gap": "sentence_gap",
+    "mp3_bitrate": "mp3_bitrate",
+    "per_sentence_tags": "per_sentence_tags",
+    "exclude_japanese": "exclude_japanese_sentences",
+    "gemini_style": "gemini_tts_style",
+}
+
+
+def _missing_key_message(settings):
+    """選んだ音声に必要なAPIキーが無ければ、その説明を返す(あれば空文字)。"""
+    if settings.get("api_key"):
+        return ""
+    if tts_core.parse_gemini_voice(settings.get("voice", "")):
+        return ("Gemini TTS を使うには Gemini のAPIキーが必要です。"
+                "config.json の gemini_api_key を確認してください。")
+    return ("Cloud Text-to-Speech のAPIキーが未設定です。"
+            "config.json の api_key を確認してください。")
+
+
+def synthesize_test_wav(settings, text=""):
+    """テスト再生用の音声(WAV)を作る。文と文の間隔も本番と同じに挟む。
+
+    text が空なら tts_core の固定のサンプル文2つを使う。"""
+    tts_core.GEMINI_TTS_STYLE = settings.get("gemini_style", "")
+    sentences = [s for s in tts_core.split_into_sentences(text or "") if s.strip()]
+    if not sentences:
+        sentences = list(tts_core.TEST_SAMPLE_SENTENCES)
+    chunks = [
+        tts_core.call_google_tts_wav(
+            sent, settings["voice"], settings["language_code"], settings["api_key"],
+            volume_gain_db=float(settings.get("volume_gain_db") or 0.0))
+        for sent in sentences[:5]   # 長い文章を貼られても呼び出しすぎないよう5文まで
+    ]
+    return tts_core.concat_wav_with_silence(chunks, float(settings.get("sentence_gap") or 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +370,9 @@ def _run_generate(targets, options, settings):
     job = STATE.job
     col = STATE.col
     error = ""
+    # Gemini TTS の「読み方の指示」(3.8以降)。tts_core はモジュール変数で受け取る
+    # (既存の関数の引数を増やさずに済ませるため。Cloud TTS では使われない)。
+    tts_core.GEMINI_TTS_STYLE = settings.get("gemini_style", "")
     try:
         transform = _source_transform_for(options)
 
@@ -472,15 +524,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/settings":
             cfg = tts_core.load_config()
             self._json({
-                "voice": cfg.get("voice", "en-US-Chirp3-HD-Iapetus"),
+                "voice": cfg.get("voice", DEFAULT_VOICE),
                 "language_code": cfg.get("language_code", "en-US"),
                 "sentence_gap": cfg.get("sentence_gap", 0.5),
                 "mp3_bitrate": cfg.get("mp3_bitrate", 64),
                 "per_sentence_tags": cfg.get("per_sentence_tags", False),
                 "volume_gain_db": cfg.get("volume_gain_db", 0.0),
                 "exclude_japanese": cfg.get("exclude_japanese_sentences", False),
+                "gemini_style": cfg.get("gemini_tts_style", ""),
                 "force_regen": False,
+                # キーそのものは画面へ出さない(あるかどうかだけ)
                 "has_api_key": bool(cfg.get("api_key")),
+                "has_gemini_key": bool(cfg.get("gemini_api_key")),
+                # 画面の選択肢(2026-10-05追加)
+                "prebuilt_voices": tts_core.PREBUILT_VOICE_NAMES,
+                "gemini_models": GEMINI_MODEL_CHOICES,
+                "cloud_voice_cache": cfg.get("voices_cache", {}),
             })
         elif path == "/api/progress":
             self._json(STATE.job or _reset_job())
@@ -521,9 +580,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._json({"error": "apkgが読み込まれていません。"}, 400)
                     return
                 settings = self._merged_settings(payload.get("settings", {}))
-                if not settings["api_key"]:
-                    self._json({"error": "Cloud Text-to-Speech のAPIキーが未設定です。"
-                                         "config.json の api_key を確認してください。"}, 400)
+                missing = _missing_key_message(settings)
+                if missing:
+                    self._json({"error": missing}, 400)
                     return
                 STATE.cancel = False
                 STATE.job = _reset_job()
@@ -533,6 +592,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     args=(payload.get("targets", []), payload.get("options", {}), settings),
                     daemon=True,
                 ).start()
+                self._json({"ok": True})
+            elif path == "/api/test-tts":
+                # テスト再生(2026-10-05追加)。いまの画面の設定で短い文を読み上げ、
+                # WAV をそのまま返す(画面の <audio> で再生する)。
+                settings = self._merged_settings(payload.get("settings", {}))
+                missing = _missing_key_message(settings)
+                if missing:
+                    self._json({"error": missing}, 400)
+                    return
+                wav = synthesize_test_wav(settings, payload.get("text", ""))
+                peak = tts_core.compute_peak_amplitude(wav)
+                self._send(200, wav, "audio/wav", {
+                    "X-Peak": "%.4f" % peak,
+                    "X-Duration": "%.3f" % tts_core.wav_duration_seconds(wav),
+                })
+            elif path == "/api/voices":
+                # Cloud TTS の音声一覧(言語ごと)。config.json の voices_cache にも
+                # 保存するので、PC版と同じ一覧を共有できる。
+                lang = (payload.get("language_code") or "en-US").strip()
+                cfg = tts_core.load_config()
+                if not cfg.get("api_key"):
+                    self._json({"error": "config.json に api_key(Cloud TTS)がありません。"}, 400)
+                    return
+                names = tts_core.list_google_voices(lang, cfg["api_key"])
+                cache = cfg.get("voices_cache") or {}
+                cache[lang] = names
+                cfg["voices_cache"] = cache
+                tts_core.save_config(cfg)
+                self._json({"language_code": lang, "voices": names})
+            elif path == "/api/save-settings":
+                # 画面の設定を config.json に保存する(次回の既定にする)。
+                # APIキーには触れない。
+                incoming = payload.get("settings", {})
+                cfg = tts_core.load_config()
+                for key, cfg_key in SAVABLE_SETTINGS.items():
+                    if key in incoming:
+                        cfg[cfg_key] = incoming[key]
+                tts_core.save_config(cfg)
                 self._json({"ok": True})
             elif path == "/api/strip-template-tts":
                 if STATE.col is None:
@@ -576,9 +673,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         持ち出さなければ漏れようが無いため。
         """
         cfg = tts_core.load_config()
+        voice = incoming.get("voice") or cfg.get("voice", DEFAULT_VOICE)
         return {
-            "api_key": cfg.get("api_key", ""),
-            "voice": incoming.get("voice") or cfg.get("voice", "en-US-Chirp3-HD-Iapetus"),
+            # Gemini TTS("gemini:..." の音声)なら Gemini のキーを使う
+            "api_key": tts_core.tts_api_key_for_voice(voice, cfg),
+            "voice": voice,
+            "gemini_style": incoming.get("gemini_style", cfg.get("gemini_tts_style", "")),
             "language_code": incoming.get("language_code") or cfg.get("language_code", "en-US"),
             "sentence_gap": incoming.get("sentence_gap", cfg.get("sentence_gap", 0.5)),
             "mp3_bitrate": incoming.get("mp3_bitrate", cfg.get("mp3_bitrate", 64)),
@@ -586,6 +686,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                               cfg.get("per_sentence_tags", False)),
             "volume_gain_db": incoming.get("volume_gain_db", cfg.get("volume_gain_db", 0.0)),
         }
+
+
+class QuietServer(http.server.ThreadingHTTPServer):
+    """ブラウザ側が接続を切っただけ(タブを閉じた・再読み込みした)のときに、
+    ログへ長いトレースバックを残さない(2026-10-05)。本物のエラーは従来どおり出す。"""
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
 
 
 PAGE_HTML = ""  # main() で local_tts_page.html を読み込んで差し替える
@@ -611,6 +722,15 @@ def main():
         log_file = open(os.path.join(tts_core.BASE_DIR, "local_tts_server.log"),
                         "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stderr = log_file
+    else:
+        # 出力をファイルへリダイレクトして起動すると、日本語Windowsでは cp932 に
+        # なり、起動時の表示(「—」など)で UnicodeEncodeError になって落ちていた
+        # (2026-10-05修正)。表示できない文字は置き換えて続行する。
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
 
     url = "http://127.0.0.1:%d/" % PORT
 
@@ -626,7 +746,7 @@ def main():
     with open(os.path.join(here, "local_tts_page.html"), "r", encoding="utf-8") as f:
         PAGE_HTML = f.read()
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = QuietServer(("127.0.0.1", PORT), Handler)
     SERVER = server
     print("=" * 62)
     print("  ANKI出力ツール — apkgにTTS音声を付ける(ローカル)")

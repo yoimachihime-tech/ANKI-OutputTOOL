@@ -285,8 +285,8 @@ console.log('\n[4] synthesizeExampleAudioTags(例文ごとに個別のMP3・タ�
 
 // --- computeWaveformMinMax / computePeakAmplitude / isClipped ---
 // tts_core.compute_waveform_minmax / compute_peak_amplitude / is_clipped の
-// Web版。デスクトップ版と違い16bit PCMではなくWeb Audio APIがデコードする
-// -1.0〜+1.0のFloat32を直接扱うため、正規化(32768で割る)は不要。
+// Web版。2026-10-05からは parseWav() の戻り値(WAV を読んだもの)を受け取る
+// (getChannelData(0) が -1.0〜+1.0 を返す形なので、ここでは配列のフェイクで足りる)。
 console.log('\n[5] computeWaveformMinMax / computePeakAmplitude / isClipped');
 
 {
@@ -335,6 +335,241 @@ console.log('\n[5] computeWaveformMinMax / computePeakAmplitude / isClipped');
     ok('isClippedは閾値(0.999)以上でtrueを返す');
   } else {
     fail('isClippedの閾値判定が想定外');
+  }
+}
+
+// --- WAV の読み書き・音量ゲイン(2026-10-05追加) ---
+// テスト再生の波形は、Web Audio API を使わずに WAV の PCM を直接読むように
+// なった(iOS で AudioContext が <audio> の再生と干渉するのを避けるため)。
+console.log('\n[6] parseWav / pcmToWav / toWavBytes / applyGainToWav');
+
+const {
+  parseWav, pcmToWav, toWavBytes, applyGainToWav, encodeWavToMp3,
+  synthesizeSpeech, synthesizeTestSampleWav, findSafeVolumeGainDb, listCloudVoices,
+  languageCodeFromVoiceName, PREBUILT_VOICES, GEMINI_TTS_MODELS, geminiTtsSupportsStyle,
+} = await import(new URL('../docs/lib/tts.js', import.meta.url));
+
+/** -1.0〜+1.0 のサンプル列から 16bit PCM のバイト列を作る。 */
+function pcm16(samples) {
+  const out = new Uint8Array(samples.length * 2);
+  const dv = new DataView(out.buffer);
+  samples.forEach((v, i) => dv.setInt16(i * 2, Math.round(v * 32767), true));
+  return out;
+}
+
+{
+  const wav = pcmToWav(pcm16([0, 0.5, -0.5, 0.25]), 24000);
+  const parsed = parseWav(wav);
+  const ch = parsed.getChannelData(0);
+  if (parsed.sampleRate === 24000 && parsed.length === 4 && Math.abs(ch[1] - 0.5) < 0.001
+      && Math.abs(ch[2] + 0.5) < 0.001 && Math.abs(parsed.duration - 4 / 24000) < 1e-9) {
+    ok('pcmToWav で作った WAV を parseWav で読み戻せる(サンプル値・長さ・秒数)');
+  } else {
+    fail(`parseWav の結果が想定外: ${JSON.stringify({ sr: parsed.sampleRate, len: parsed.length })}`);
+  }
+}
+
+{
+  // fmt と data の間に別のチャンク(LIST)が挟まっていても読める
+  const base = pcmToWav(pcm16([0.1, 0.2]), 16000);
+  const list = new Uint8Array([0x4c, 0x49, 0x53, 0x54, 4, 0, 0, 0, 1, 2, 3, 4]);
+  const withList = new Uint8Array(base.length + list.length);
+  withList.set(base.subarray(0, 36), 0);
+  withList.set(list, 36);
+  withList.set(base.subarray(36), 36 + list.length);
+  const parsed = parseWav(withList);
+  if (parsed.length === 2 && parsed.sampleRate === 16000) ok('余分なチャンクがあっても data チャンクを探して読む');
+  else fail('LIST チャンク入りの WAV を読めない');
+}
+
+{
+  // 古いプレビュー版の Gemini TTS はヘッダー無しの PCM を返す
+  const wav = toWavBytes(pcm16([0.1, 0.2, 0.3]), 'audio/L16;codec=pcm;rate=24000');
+  const parsed = parseWav(wav);
+  if (parsed.sampleRate === 24000 && parsed.length === 3) ok('ヘッダー無しの PCM(audio/L16)を WAV に包み直す');
+  else fail('PCM から WAV への包み直しが想定外');
+  const already = pcmToWav(pcm16([0.1]), 24000);
+  if (toWavBytes(already, 'audio/wav') === already) ok('すでに WAV ならそのまま返す');
+  else fail('WAV をさらに包み直している');
+}
+
+{
+  const wav = pcmToWav(pcm16([0.1, -0.2]), 24000);
+  const { bytes, limited } = applyGainToWav(wav, 6);
+  const ch = parseWav(bytes).getChannelData(0);
+  if (!limited && Math.abs(ch[1] - (-0.2 * 10 ** (6 / 20))) < 0.002) ok('+6dB で振幅が約2倍になる');
+  else fail(`ゲインの掛かり方が想定外: ${ch[1]}`);
+  if (parseWav(wav).getChannelData(0)[1] < -0.19 && parseWav(wav).getChannelData(0)[1] > -0.21) {
+    ok('元の WAV は書き換えない(コピーに掛ける)');
+  } else {
+    fail('applyGainToWav が元の WAV を書き換えている');
+  }
+}
+
+{
+  // 上げすぎて音割れする分は自動で抑える(Gemini は呼ぶたびに音量が少し変わるため)
+  const wav = pcmToWav(pcm16([0.5, -0.5]), 24000);
+  const { bytes, limited } = applyGainToWav(wav, 16);
+  const peak = computePeakAmplitude(parseWav(bytes));
+  if (limited && peak < CLIPPING_THRESHOLD && peak > 0.9) ok(`音割れしないところで止める(ピーク ${peak.toFixed(3)})`);
+  else fail(`リミッターが効いていない: peak=${peak} limited=${limited}`);
+}
+
+{
+  globalThis.lamejs = {
+    Mp3Encoder: class {
+      constructor(ch, rate, kbps) { this.args = [ch, rate, kbps]; globalThis.__lameArgs = this.args; }
+      encodeBuffer(l) { return new Int8Array([l.length % 7]); }
+      flush() { return new Int8Array([9]); }
+    },
+  };
+  const mp3 = await encodeWavToMp3(pcmToWav(pcm16(new Array(3000).fill(0.1)), 24000), 64);
+  if (mp3 instanceof Uint8Array && mp3.length === 4 && deepEq(globalThis.__lameArgs, [1, 24000, 64])) {
+    ok('lamejs があれば WAV を 1152 サンプルずつ MP3 に圧縮する(モノラル・元のサンプルレート)');
+  } else {
+    fail(`MP3 圧縮の呼び方が想定外: len=${mp3 && mp3.length} args=${globalThis.__lameArgs}`);
+  }
+  globalThis.lamejs = null;
+  if (await encodeWavToMp3(pcmToWav(pcm16([0.1]), 24000)) === null) ok('lamejs が使えなければ null(WAV のまま使う)');
+  else fail('lamejs が無いのに MP3 を返した');
+}
+
+// --- 音声エンジン(2026-10-05追加) ---
+console.log('\n[7] synthesizeSpeech(Cloud / Gemini TTS の切り替え)');
+
+{
+  let body = null;
+  globalThis.fetch = async (url, init) => {
+    body = JSON.parse(init.body);
+    return { ok: true, status: 200, json: async () => ({ audioContent: Buffer.from('mp3').toString('base64') }) };
+  };
+  // 音声名と言語コードが食い違っていても、音声名の言語を使う(以前は400になっていた)
+  await callGoogleTts('hi', { voiceName: 'en-GB-Chirp3-HD-Kore', languageCode: 'en-US', apiKey: 'k' });
+  if (body.voice.languageCode === 'en-GB') ok('言語コードは音声名の先頭(en-GB-…)に合わせる');
+  else fail(`languageCode: ${body.voice.languageCode}`);
+  const res = await synthesizeSpeech('hi', { voiceName: 'en-US-Chirp3-HD-Kore', apiKey: 'k' }, { purpose: 'apkg' });
+  if (res.ext === 'mp3' && body.audioConfig.audioEncoding === 'MP3') ok('Cloud(既定)は従来どおり MP3 を受け取る');
+  else fail(`Cloud の合成結果: ${res.ext} / ${body.audioConfig.audioEncoding}`);
+
+  globalThis.fetch = async (url, init) => {
+    body = JSON.parse(init.body);
+    return { ok: true, status: 200, json: async () => ({ audioContent: Buffer.from(pcmToWav(pcm16([0.1]), 24000)).toString('base64') }) };
+  };
+  const wav = await synthesizeSpeech('hi', { voiceName: 'en-US-Chirp3-HD-Kore', apiKey: 'k' }, { purpose: 'wav' });
+  if (wav.ext === 'wav' && body.audioConfig.audioEncoding === 'LINEAR16') ok('テスト再生用は Cloud でも WAV(LINEAR16)で受け取る');
+  else fail(`テスト再生用の形式: ${wav.ext} / ${body.audioConfig.audioEncoding}`);
+}
+
+{
+  const requests = [];
+  const geminiWav = pcmToWav(pcm16([0.25, -0.25, 0.1]), 24000);
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(init.body), headers: init.headers });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/wav', data: Buffer.from(geminiWav).toString('base64') } }] } }] }),
+    };
+  };
+  globalThis.lamejs = null;
+  const opts = {
+    engine: 'gemini', geminiApiKey: 'gk', model: 'gemini-3.8-flash-lite-tts', voiceName: 'Puck', style: 'calm', volumeGainDb: 6,
+  };
+  const res = await synthesizeSpeech('Hello there.', opts, { purpose: 'apkg' });
+  const req = requests[0];
+  if (req.url.endsWith('/models/gemini-3.8-flash-lite-tts:generateContent') && req.headers['x-goog-api-key'] === 'gk') {
+    ok('Gemini TTS は Gemini API(generateContent)を Gemini のキーで呼ぶ');
+  } else {
+    fail(`Gemini TTS の呼び先: ${req.url}`);
+  }
+  const cfg = req.body.generationConfig;
+  if (deepEq(cfg.responseModalities, ['AUDIO']) && cfg.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName === 'Puck'
+      && req.body.contents[0].parts[0].speechMetadata?.style === 'calm') {
+    ok('音声・読み方の指示(3.8以降)をリクエストに入れる');
+  } else {
+    fail(`Gemini TTS のリクエスト: ${JSON.stringify(req.body)}`);
+  }
+  const peak = computePeakAmplitude(parseWav(res.bytes));
+  if (res.ext === 'wav' && Math.abs(peak - 0.25 * 10 ** (6 / 20)) < 0.005) {
+    ok('音量ゲインはローカルで掛ける(Gemini TTS に音量の指定が無いため)');
+  } else {
+    fail(`ゲイン適用後のピーク: ${peak} ext=${res.ext}`);
+  }
+
+  requests.length = 0;
+  await synthesizeSpeech('Hi.', { ...opts, model: 'gemini-2.5-pro-preview-tts' });
+  if (!('speechMetadata' in requests[0].body.contents[0].parts[0])) {
+    ok('読み方の指示は対応していない古いモデルには送らない(400を避ける)');
+  } else {
+    fail('古いモデルにも speechMetadata を送っている');
+  }
+
+  // 自動調整: Gemini はゲインを自分で掛けるので、1回合成すれば計算だけで決まる
+  requests.length = 0;
+  const gain = await findSafeVolumeGainDb(opts);
+  const expected = 20 * Math.log10(10 ** (-1 / 20) / 0.25);
+  if (requests.length === 1 && Math.abs(gain - expected) < 0.05) {
+    ok(`Gemini の自動調整は1回の呼び出しで済む(${gain.toFixed(1)}dB)`);
+  } else {
+    fail(`Gemini の自動調整: ${requests.length} 回 / ${gain}`);
+  }
+
+  requests.length = 0;
+  await synthesizeTestSampleWav(opts, '  ');
+  if (requests[0].body.contents[0].parts[0].text.startsWith('This is a short test sentence.')) {
+    ok('テスト再生の文が空なら既定のサンプル文を読む');
+  } else {
+    fail('テスト再生の既定の文が使われていない');
+  }
+
+  // 音声が返ってこない応答(テキストだけ・ブロック等)は分かりやすいエラーにする
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ candidates: [{ finishReason: 'OTHER', content: { parts: [{ text: 'hmm' }] } }] }) });
+  try {
+    await synthesizeSpeech('Hi.', opts);
+    fail('音声の無い応答で例外にならなかった');
+  } catch (e) {
+    if (e.message.includes('音声が返ってきませんでした')) ok('音声の無い応答は理由付きのエラーにする');
+    else fail(`想定外のエラー: ${e.message}`);
+  }
+
+  try {
+    await synthesizeSpeech('Hi.', { ...opts, geminiApiKey: '' });
+    fail('Gemini のキーが無いのに例外にならなかった');
+  } catch (e) {
+    if (e instanceof TtsError && e.message.includes('Gemini APIキー')) ok('Gemini のキーが無ければ分かりやすいエラーにする');
+    else fail(`想定外のエラー: ${e}`);
+  }
+}
+
+{
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      voices: [
+        { name: 'Kore', languageCodes: ['en-US'], ssmlGender: 'FEMALE' },
+        { name: 'en-US-Chirp3-HD-Kore', languageCodes: ['en-US'], ssmlGender: 'FEMALE' },
+        { name: 'en-US-Neural2-A', languageCodes: ['en-US'], ssmlGender: 'MALE' },
+      ],
+    }),
+  });
+  const voices = await listCloudVoices('en-US', 'k');
+  if (deepEq(voices.map((v) => v.name), ['en-US-Chirp3-HD-Kore', 'en-US-Neural2-A'])
+      && voices[1].family === 'Neural2' && voices[1].gender === 'M') {
+    ok('音声一覧から言語コードの無い名前(Cloud経由の Gemini 用。APIキーでは使えない)を除く');
+  } else {
+    fail(`音声一覧: ${JSON.stringify(voices)}`);
+  }
+}
+
+{
+  if (PREBUILT_VOICES.length === 30 && GEMINI_TTS_MODELS[0].id === 'gemini-3.8-flash-tts'
+      && geminiTtsSupportsStyle('gemini-3.8-flash-tts') && geminiTtsSupportsStyle('gemini-4-flash-tts')
+      && !geminiTtsSupportsStyle('gemini-3.1-flash-tts-preview')
+      && languageCodeFromVoiceName('en-AU-Chirp3-HD-Leda') === 'en-AU' && languageCodeFromVoiceName('Kore') === null) {
+    ok('音声30種・新しいモデル一覧・読み方の指示の対応判定・音声名からの言語の取り出し');
+  } else {
+    fail('音声・モデルの定義が想定外');
   }
 }
 

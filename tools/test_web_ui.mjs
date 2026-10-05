@@ -319,6 +319,21 @@ let lastCorrectionPrompt = '';
 
 let geminiMode = 'word';
 let geminiCalls = 0;
+/** Gemini TTS へのリクエスト(URL と本文)。音声エンジンのテストで中身を確かめる。 */
+const geminiTtsRequests = [];
+
+/** Gemini TTS が返す想定の WAV(24kHz・モノラル・16bit、0.1秒の正弦波・振幅0.5)。 */
+const FAKE_WAV_BASE64 = (() => {
+  const rate = 24000;
+  const n = 2400;
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVE', 8);
+  buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+  buf.write('data', 36); buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i += 1) buf.writeInt16LE(Math.round(Math.sin(i / 10) * 16384), 44 + i * 2);
+  return buf.toString('base64');
+})();
 // 添削(correctEnglishText)呼び出しだけを数える別カウンタ(2026-07-29追加)。
 // onDailyCorrect()が添削の後に続けて習熟用(音読)候補生成も呼ぶようになり、
 // geminiCallsの値だけでは「添削が正確に1回だけ呼ばれたか」を、両呼び出しが
@@ -336,6 +351,18 @@ globalThis.fetch = async (url, init = {}) => {
     return { ok: true, status: 200, text: async () => body };
   }
   if (u.includes('generativelanguage.googleapis.com')) {
+    // Gemini TTS(音声合成、2026-10-05追加)。テキスト生成とは別に数え、
+    // 他のセクションの geminiCalls の期待値に影響させない。
+    if (typeof init.body === 'string' && init.body.includes('"responseModalities":["AUDIO"]')) {
+      geminiTtsRequests.push({ url: u, body: JSON.parse(init.body) });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/wav', data: FAKE_WAV_BASE64 } }] } }],
+        }),
+      };
+    }
     geminiCalls += 1;
     const isCorrectionRequest = typeof init.body === 'string' && init.body.includes('system_instruction');
     if (isCorrectionRequest) {
@@ -469,8 +496,10 @@ if ($('app-version').textContent.trim()) {
   // 一覧を取得していない状態でも、保存済み/既定のモデルは選択できていること
   // (<select>は options に無い値を代入しても空になるため、ここが空だと
   //  APIに空のモデル名を送ってしまう)。
-  if (sel.value === 'gemini-2.0-flash') {
-    ok('一覧未取得でも既定のモデルが選択されている');
+  // 既定は gemini-flash-latest(2026-10-05に gemini-2.0-flash から変更。
+  // 2.0 は提供が終わっており、新しい端末で最初の生成が必ず失敗していた)。
+  if (sel.value === 'gemini-flash-latest') {
+    ok('一覧未取得でも既定のモデル(gemini-flash-latest)が選択されている');
   } else {
     fail(`起動直後のモデル: ${JSON.stringify(sel.value)}`);
   }
@@ -2173,6 +2202,301 @@ if (!downloaded) {
 $('shuujuku-clear-stock').click();
 $('shuujuku-input').value = '';
 await sleep(20);
+
+// ===========================================================================
+// TTS音声の設定(2026-10-05追加: 音声エンジン・Gemini TTS の新しい音声)
+// ===========================================================================
+console.log('\n[30] TTS音声の設定(エンジン・音声の選択肢)');
+{
+  const engine = $('tts-engine');
+  if ([...engine.options].map((o) => o.value).join(',') === 'cloud,gemini' && engine.value === 'cloud') {
+    ok('音声エンジンは Cloud / Gemini の2択で、既定は従来どおり Cloud');
+  } else {
+    fail(`音声エンジンの選択肢が想定外: ${[...engine.options].map((o) => o.value)} / ${engine.value}`);
+  }
+  const models = [...$('tts-gemini-model').options].map((o) => o.value);
+  if (models.includes('gemini-3.8-flash-tts') && models.includes('gemini-3.8-flash-lite-tts')
+      && $('tts-gemini-model').value === 'gemini-3.8-flash-tts') {
+    ok('Gemini TTS のモデルに Gemini 3.8 Flash TTS / Flash-Lite TTS があり、既定は 3.8 Flash TTS');
+  } else {
+    fail(`Gemini TTS のモデルの選択肢が想定外: ${models} / ${$('tts-gemini-model').value}`);
+  }
+  const gv = [...$('tts-gemini-voice').options].filter((o) => o.value !== '__custom__');
+  if (gv.length === 30 && $('tts-gemini-voice').value === 'Iapetus') {
+    ok('Gemini TTS の音声はプリセット30種類から選べる(既定 Iapetus)');
+  } else {
+    fail(`Gemini TTS の音声の選択肢: ${gv.length} 件 / 既定 ${$('tts-gemini-voice').value}`);
+  }
+  const cv = [...$('tts-voice').options].filter((o) => o.value.includes('-Chirp3-HD-'));
+  if ($('tts-voice').tagName === 'SELECT' && cv.length === 30
+      && $('tts-voice').value === 'en-US-Chirp3-HD-Iapetus') {
+    ok('Cloud の音声も入力欄ではなく一覧(Chirp 3: HD の30種類)から選べる');
+  } else {
+    fail(`Cloud の音声の選択肢: ${$('tts-voice').tagName} / ${cv.length} 件 / ${$('tts-voice').value}`);
+  }
+
+  // 言語を変えると、音声も同じ名前の別の言語のものに切り替わる
+  // (音声名と言語が食い違うと Cloud TTS が400を返すため)。
+  $('tts-lang').value = 'en-GB';
+  $('tts-lang').dispatchEvent(new window.Event('change'));
+  if ($('tts-voice').value === 'en-GB-Chirp3-HD-Iapetus'
+      && localStorage.getItem('anki_tool_tts_voice') === 'en-GB-Chirp3-HD-Iapetus') {
+    ok('言語をイギリス英語にすると、音声も en-GB の同じ名前に切り替わる');
+  } else {
+    fail(`言語変更後の音声: ${$('tts-voice').value}`);
+  }
+  $('tts-lang').value = 'en-US';
+  $('tts-lang').dispatchEvent(new window.Event('change'));
+
+  // キーが無いまま Cloud を選んでいると、各タブの③に「音声無しで出力する」と出る。
+  $('tts-api-key').value = '';
+  $('tts-api-key').dispatchEvent(new window.Event('change'));
+  const line = window.document.querySelector('#tab-word [data-tts-summary]');
+  if (line && line.textContent.includes('音声無しで出力') && line.classList.contains('warn')) {
+    ok('音声が付かない状態のとき、③にその理由が出る(黙って音声無しにしない)');
+  } else {
+    fail(`③の音声の状態表示: ${line && line.textContent}`);
+  }
+
+  // Gemini TTS に切り替えると、Gemini 用の欄だけが表示される。
+  engine.value = 'gemini';
+  engine.dispatchEvent(new window.Event('change'));
+  if ($('tts-gemini-box').hidden === false && $('tts-cloud-box').hidden === true
+      && localStorage.getItem('anki_tool_tts_engine') === 'gemini') {
+    ok('Gemini TTS を選ぶと Gemini 用の設定欄に切り替わり、選択が保存される');
+  } else {
+    fail('エンジン切り替え時の表示/保存が想定外');
+  }
+  if (line.textContent.includes('Gemini 3.8 Flash TTS / Iapetus')) {
+    ok(`③に使う音声が表示される: ${line.textContent}`);
+  } else {
+    fail(`③の音声の状態表示: ${line.textContent}`);
+  }
+
+  // 読み方の指示は Gemini 3.8 以降だけ(古いモデルに送ると400になりうる)。
+  $('tts-gemini-model').value = 'gemini-2.5-pro-preview-tts';
+  $('tts-gemini-model').dispatchEvent(new window.Event('change'));
+  const disabledForOld = $('tts-gemini-style').disabled;
+  $('tts-gemini-model').value = 'gemini-3.8-flash-tts';
+  $('tts-gemini-model').dispatchEvent(new window.Event('change'));
+  if (disabledForOld && !$('tts-gemini-style').disabled) {
+    ok('読み方の指示の欄は Gemini 3.8 以降のときだけ使える');
+  } else {
+    fail('読み方の指示の欄の有効/無効が想定外');
+  }
+}
+
+console.log('\n[31] Gemini TTS で音声を付けて .apkg を出力する');
+{
+  geminiMode = 'word';
+  geminiCalls = 0;
+  geminiTtsRequests.length = 0;
+  $('tts-gemini-voice').value = 'Kore';
+  $('tts-gemini-voice').dispatchEvent(new window.Event('change'));
+  $('tts-gemini-style').value = 'slow and clear';
+  $('tts-gemini-style').dispatchEvent(new window.Event('change'));
+  // MP3 への圧縮(lamejs)は使わない設定にして、WAV のまま入る経路を確かめる。
+  globalThis.lamejs = null;
+
+  $('word-input').value = 'resilient | She remained resilient.';
+  $('word-generate').click();
+  for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
+  await sleep(200);
+
+  downloaded = null;
+  $('word-export').click();
+  for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+  if (!downloaded) {
+    fail('Gemini TTS 付きの .apkg が生成されなかった');
+  } else {
+    const req = geminiTtsRequests[0];
+    if (geminiTtsRequests.length === 1 && req.url.includes('/models/gemini-3.8-flash-tts:generateContent')) {
+      ok('例文1フィールドにつき Gemini TTS(gemini-3.8-flash-tts)を1回呼ぶ');
+    } else {
+      fail(`Gemini TTS の呼び出し: ${geminiTtsRequests.length} 回 / ${req && req.url}`);
+    }
+    const part = req?.body?.contents?.[0]?.parts?.[0] || {};
+    const voice = req?.body?.generationConfig?.speechConfig?.voiceConfig?.prebuiltVoiceConfig?.voiceName;
+    if (voice === 'Kore' && part.speechMetadata?.style === 'slow and clear' && !part.text.includes('[sound:')) {
+      ok('選んだ音声(Kore)と読み方の指示が送られ、本文には音声タグを含めない');
+    } else {
+      fail(`Gemini TTS のリクエスト本文が想定外: ${JSON.stringify(req && req.body).slice(0, 300)}`);
+    }
+    const zip = await window.JSZip.loadAsync(Buffer.from(await downloaded.arrayBuffer()));
+    const mediaMap = JSON.parse(await zip.file('media').async('string'));
+    const names = Object.values(mediaMap);
+    if (names.length === 1 && names[0].endsWith('.wav')) {
+      ok(`MP3にできないときは WAV のまま埋め込む: ${names[0]}`);
+    } else {
+      fail(`埋め込まれた音声: ${JSON.stringify(mediaMap)}`);
+    }
+    const wav = await zip.file('0').async('nodebuffer');
+    if (wav.subarray(0, 4).toString() === 'RIFF') ok('埋め込まれた音声は正しいWAV(RIFFヘッダー付き)');
+    else fail('埋め込まれた音声がWAVになっていない');
+  }
+
+  // lamejs があれば MP3 に圧縮して入れる(容量が約1/6になる)。
+  globalThis.lamejs = {
+    Mp3Encoder: class {
+      encodeBuffer() { return new Int8Array([1, 2, 3]); }
+      flush() { return new Int8Array([4]); }
+    },
+  };
+  $('word-reset-exported').click();
+  await sleep(20);
+  geminiTtsRequests.length = 0;
+  downloaded = null;
+  $('word-export').click();
+  for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+  if (downloaded) {
+    const zip = await window.JSZip.loadAsync(Buffer.from(await downloaded.arrayBuffer()));
+    const names = Object.values(JSON.parse(await zip.file('media').async('string')));
+    if (names.length >= 1 && names.every((n) => n.endsWith('.mp3'))) {
+      ok('lamejs が使えるときは MP3 に圧縮して埋め込む');
+    } else {
+      fail(`MP3 になっていない: ${names}`);
+    }
+  } else {
+    fail('2回目の出力ができなかった');
+  }
+  delete globalThis.lamejs;
+
+  // 後片付け: 既定(Cloud・音声付けない状態)に戻す
+  $('tts-engine').value = 'cloud';
+  $('tts-engine').dispatchEvent(new window.Event('change'));
+  $('word-clear-stock').click();
+  await sleep(20);
+}
+
+console.log('\n[32] 使い勝手(すべて選択・タブの件数・下書き保存・設定への案内)');
+{
+  geminiMode = 'word';
+  geminiCalls = 0;
+  $('word-input').value = 'slated | It is slated.\ngive up';
+  $('word-generate').click();
+  for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
+  await sleep(200);
+
+  const badge = window.document.querySelector('[data-count-for="word"]');
+  if (badge && badge.hidden === false && badge.textContent === '2') {
+    ok('タブに「まだ出力していない件数」(2)が出る');
+  } else {
+    fail(`タブの件数表示: hidden=${badge && badge.hidden} text=${badge && badge.textContent}`);
+  }
+
+  const selectAll = window.document.querySelector('input[data-select-all="word-stock-list"]');
+  selectAll.checked = true;
+  selectAll.dispatchEvent(new window.Event('change', { bubbles: true }));
+  const boxes = [...$('word-stock-list').querySelectorAll('input[type="checkbox"]')];
+  if (boxes.length === 2 && boxes.every((b) => b.checked)) ok('「すべて選択」で一覧の行がまとめて選ばれる');
+  else fail(`すべて選択の結果: ${boxes.map((b) => b.checked)}`);
+  $('word-delete-selected').click();
+  await sleep(20);
+  if (JSON.parse(localStorage.getItem('anki_tool_word_stock') || '[]').length === 0
+      && badge.hidden === true && selectAll.checked === false) {
+    ok('まとめて削除でき、件数バッジと「すべて選択」も元に戻る');
+  } else {
+    fail('すべて選択→削除の後の状態が想定外');
+  }
+
+  // 入力途中の文章は保存され、生成に成功して欄が空になったら保存も消える。
+  $('ai-ask-input').value = 'draft question';
+  $('ai-ask-input').dispatchEvent(new window.Event('input'));
+  await sleep(500);
+  if (localStorage.getItem('anki_tool_draft_ai-ask-input') === 'draft question') {
+    ok('入力途中の文章がこの端末に保存される(再読み込みしても消えない)');
+  } else {
+    fail('入力途中の文章が保存されていない');
+  }
+  $('ai-ask-input').value = '';
+  $('ai-ask-input').dispatchEvent(new window.Event('input'));
+  await sleep(500);
+
+  // Ctrl+Enter で生成ボタンを押せる
+  geminiCalls = 0;
+  $('word-input').value = 'resilient';
+  $('word-input').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+  for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
+  await sleep(200);
+  if (geminiCalls === 1 && localStorage.getItem('anki_tool_draft_word-input') === null) {
+    ok('Ctrl+Enter で生成でき、成功して欄が空になると下書きも消える');
+  } else {
+    fail(`Ctrl+Enter の結果: geminiCalls=${geminiCalls} draft=${localStorage.getItem('anki_tool_draft_word-input')}`);
+  }
+  $('word-clear-stock').click();
+  await sleep(20);
+
+  // APIキーが無いまま生成しようとすると、設定がきちんと開いてキー欄に案内される
+  // (以前は設定が通常画面の上に重なって出るだけで、ボタンの表示も変わらなかった)。
+  const savedKey = $('api-key').value;
+  $('api-key').value = '';
+  $('word-input').value = 'test';
+  $('word-generate').click();
+  await sleep(20);
+  if ($('settings').hidden === false && $('main-content').hidden === true
+      && $('settings-toggle').textContent.includes('閉じる')
+      && window.document.activeElement === $('api-key')
+      && $('app-notice').hidden === false) {
+    ok('APIキーが無いときは設定を開いてキー欄にフォーカスし、上部に理由を出す');
+  } else {
+    fail(`APIキー未設定時の案内が想定外(settings.hidden=${$('settings').hidden}, `
+      + `main.hidden=${$('main-content').hidden}, focus=${window.document.activeElement?.id})`);
+  }
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
+  if ($('settings').hidden === true && $('main-content').hidden === false) ok('Esc で設定を閉じられる');
+  else fail('Esc で設定が閉じない');
+  $('api-key').value = savedKey;
+  $('word-input').value = '';
+
+  // 設定の目次は、実在するグループだけを指している
+  const targets = [...$('settings-nav').querySelectorAll('button[data-target]')].map((b) => b.dataset.target);
+  if (targets.length >= 6 && targets.every((id) => $(id) && $(id).classList.contains('settings-group'))) {
+    ok(`設定の目次(${targets.length}項目)がすべて実在するグループを指している`);
+  } else {
+    fail(`設定の目次の移動先がおかしい: ${targets.filter((id) => !$(id))}`);
+  }
+  if ($('sync-auto-pull').closest('label').classList.contains('checkbox')) {
+    ok('「起動時に自動で読み込む」のチェックボックスが他と同じ見た目(label.checkbox)');
+  } else {
+    fail('「起動時に自動で読み込む」のラベルのクラスが想定外');
+  }
+}
+
+console.log('\n[33] プレビューで、ノートから作られるすべてのカードを切り替えて見られる');
+{
+  geminiMode = 'grammar_multi';
+  geminiCalls = 0;
+  $('ai-ask-input').value = 'patience と patient の違い';
+  $('ai-ask-generate').click();
+  for (let i = 0; i < 100 && geminiCalls < 2; i += 1) await sleep(50);
+  await sleep(200);
+  // 1問目(選択肢あり・穴あき例文あり)は4種類すべてのカードが作られる
+  const first = $('ai-ask-stock-list').querySelector('li button');
+  first.click();
+  const tabs = [...$('preview-templates').querySelectorAll('button')];
+  if (dialogOpened && $('preview-templates').hidden === false && tabs.length === 4) {
+    ok(`カードの種類ごとのボタンが出る: ${tabs.map((b) => b.textContent).join(' / ')}`);
+  } else {
+    fail(`プレビューのカード切り替え: hidden=${$('preview-templates').hidden} 件数=${tabs.length}`);
+  }
+  const before = $('preview-frame').srcdoc;
+  tabs[3].click();
+  if ($('preview-frame').srcdoc !== before && tabs[3].classList.contains('active')) {
+    ok('ボタンでプレビューするカードが切り替わる');
+  } else {
+    fail('プレビューのカードが切り替わらない');
+  }
+  $('preview-close').click();
+  // 2問目(選択肢なし)は「選択肢を見ずに答える」等が作られないので、そのボタンも出ない
+  $('ai-ask-stock-list').querySelectorAll('li button')[1].click();
+  const tabs2 = [...$('preview-templates').querySelectorAll('button')];
+  if (tabs2.length < 4) ok(`作られないカードはボタンに出さない(${tabs2.length} 種類)`);
+  else fail(`選択肢の無い問題でも4種類のボタンが出ている: ${tabs2.length}`);
+  $('preview-close').click();
+  $('ai-ask-clear-stock').click();
+  $('shuujuku-clear-stock').click();
+  await sleep(20);
+}
 
 console.log(failures
   ? `\n❌ ${failures} 件の問題があります。`

@@ -140,5 +140,46 @@ console.log('\n[3] 無料枠の上限超過を「前払いクレジット切れ�
   }
 }
 
+// 2026-10-05追加: モデル一覧のページ送り・文章生成に使えないモデルの除外
+console.log('\n[4] listModels / isNonTextModel / isGeminiTtsModel');
+{
+  const { listModels, isNonTextModel, isGeminiTtsModel } = await import(new URL('../docs/lib/gemini.js', import.meta.url));
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    const page2 = String(url).includes('pageToken=NEXT');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => (page2
+        ? { models: [{ name: 'models/gemini-3.8-flash-tts', supportedGenerationMethods: ['generateContent'] }] }
+        : {
+          models: [
+            { name: 'models/gemini-flash-latest', supportedGenerationMethods: ['generateContent'] },
+            { name: 'models/text-embedding-004', supportedGenerationMethods: ['embedContent'] },
+          ],
+          nextPageToken: 'NEXT',
+        }),
+    };
+  };
+  const names = await listModels('k');
+  if (urls.length === 2 && JSON.stringify(names) === JSON.stringify(['gemini-3.8-flash-tts', 'gemini-flash-latest'])) {
+    ok('ページ送り(nextPageToken)をたどって全件を取得する(2ページ目のモデルも落とさない)');
+  } else {
+    fail(`listModels: ${urls.length} 回 / ${JSON.stringify(names)}`);
+  }
+  const textOk = ['gemini-flash-latest', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview'].every((n) => !isNonTextModel(n));
+  const nonText = ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-image', 'lyria-3-pro-preview']
+    .every((n) => isNonTextModel(n));
+  if (textOk && nonText) ok('音声合成・画像・音楽生成のモデルは、カード生成用のモデル一覧から外す');
+  else fail('isNonTextModel の判定が想定外');
+  if (isGeminiTtsModel('gemini-3.8-flash-lite-tts') && isGeminiTtsModel('gemini-2.5-pro-preview-tts')
+      && !isGeminiTtsModel('gemini-flash-latest')) {
+    ok('TTS用モデル(-tts)を見分けられる');
+  } else {
+    fail('isGeminiTtsModel の判定が想定外');
+  }
+}
+
 console.log(`\n${failures === 0 ? '✅ 全テスト成功' : `❌ ${failures} 件失敗`}`);
 process.exit(failures === 0 ? 0 : 1);
