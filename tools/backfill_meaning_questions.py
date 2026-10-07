@@ -27,14 +27,20 @@ Ankiのノートには元の質問文が残っていない。ただし1つの質
    読むだけ**。途中で失敗しても成功した分は保存され、再実行すると足りない分
    だけを取りに行く。
 2. --apply  … キャッシュから意味・本質問題のノートを作り、コレクションへ
-   追加する。例文に音声(PC版の config.json の音声設定)を付け、新規カードの
-   位置を「文法・用法」デッキの末尾に並べる。引数なしは下見のみ。
+   追加する。例文に音声(PC版の config.json の音声設定)を付け、**元の問題の
+   組の直後**に出題されるよう新規カードの位置を並べ直す(--align と同じ処理)。
+   引数なしは下見のみ。
+3. --align  … 追加済みの意味・本質問題を、元の問題の組の直後へ並べ直す
+   (2026-10-07追加。最初の実行では「文法・用法」デッキの末尾に入れたため、
+   元の組から離れて出題される状態になっていた。片桐の指摘で直した)。
 
 どちらも**Ankiを終了してから**、Anki本体と同じ版の anki パッケージで動かす。
 
     C:\\Python314\\python.exe tools/backfill_meaning_questions.py --generate
     C:\\Python314\\python.exe tools/backfill_meaning_questions.py           # 下見
     C:\\Python314\\python.exe tools/backfill_meaning_questions.py --apply
+    C:\\Python314\\python.exe tools/backfill_meaning_questions.py --align          # 下見
+    C:\\Python314\\python.exe tools/backfill_meaning_questions.py --align --apply
 
 【作る問題の質】
 プロンプトの規則は docs/shared/grammar_multi_prompt.txt の意味・本質問題の節を
@@ -323,6 +329,106 @@ def build_items(cache: dict, skip_targets=()) -> list:
     return out
 
 
+def _deck_ids(col) -> list:
+    return [d.id for d in col.decks.all_names_and_ids()
+            if d.name == DECK_NAME or d.name.startswith(DECK_NAME + "::")]
+
+
+def _meaning_nids_by_group(col, cache: dict) -> dict:
+    """{group_key: [意味・本質問題のnid, ...]}。
+
+    guid は「backfill <group_key>」+ 組の中の番号 + batch_key から決まる
+    (build_items → grammar_multi_builder.build_guid)。--skip-target で外した
+    問題があると組の中の番号がずれるので、番号は 0〜2 をすべて試して突き合わせる
+    (外した問題の指定を覚えていなくても対応が取れるように)。"""
+    import grammar_multi_builder
+    guid_to_key = {}
+    for key, group in cache["groups"].items():
+        topic_key = " ".join(("backfill %s" % key).strip().casefold().split())
+        for i in range(gemini_client.MAX_MEANING_ITEMS):
+            guid_to_key[grammar_multi_builder.build_guid(topic_key, i, group["batch_key"])] = key
+    out = {}
+    for nid, guid in col.db.all("select id, guid from notes"):
+        key = guid_to_key.get(guid)
+        if key:
+            out.setdefault(key, []).append(nid)
+    return out
+
+
+def align_positions(col, cache: dict, apply: bool) -> int:
+    """意味・本質問題のノートを、元の問題の組の直後へ並べ直す。
+
+    「文法・用法」デッキの新規カードを位置の順に並べ、組の最後のノートの直後に
+    その組の意味・本質問題を差し込んでから、影響する範囲(最初に差し込む組の
+    位置から後ろ)だけ番号を振り直す。それより前のカードの位置は変えない。
+    ほかのノートどうしの順番も変えない。番号は1ノート1つ(兄弟カードは同じ位置。
+    ツールが .apkg に書く位置と同じ)。並べ直す意味・本質問題の件数を返す。"""
+    dids = "(" + ",".join(str(i) for i in _deck_ids(col)) + ")"
+    note_min, note_max, note_cards = {}, {}, {}
+    for cid, nid, ord_, due in col.db.all(
+            "select id, nid, ord, due from cards where type = 0 and did in %s" % dids):
+        note_min[nid] = min(note_min.get(nid, due), due)
+        note_max[nid] = max(note_max.get(nid, due), due)
+        note_cards.setdefault(nid, []).append((ord_, cid))
+
+    meaning = _meaning_nids_by_group(col, cache)
+    all_meaning = {n for ns in meaning.values() for n in ns}
+    anchor = {}   # 組の最後のノート → その直後に置く意味・本質問題
+    for key, mnids in meaning.items():
+        topic = [n for n in cache["groups"][key]["nids"] if n in note_min and n not in all_meaning]
+        mnids = sorted(n for n in mnids if n in note_min)
+        if not topic or not mnids:
+            continue  # 元の問題がもう新規でない/意味・本質問題が出題済み → 動かさない
+        last = max(topic, key=lambda n: (note_min[n], n))
+        anchor.setdefault(last, []).extend(mnids)
+    if not anchor:
+        print("並べ直すものはありません。")
+        return 0
+    moving = {n for ns in anchor.values() for n in ns}
+
+    # 範囲の始まり: 最初に差し込む組の位置。範囲の手前にあるノートの兄弟カードが
+    # 範囲の中の番号を使っていると、振り直した番号と重なって交互に出題されて
+    # しまうので、そういうノートがあれば範囲をそのノートまで広げる。
+    start = min(note_min[a] for a in anchor)
+    changed = True
+    while changed:
+        changed = False
+        for n in note_min:
+            if n not in moving and note_min[n] < start <= note_max[n]:
+                start = note_min[n]
+                changed = True
+
+    stay = sorted((n for n in note_min if note_min[n] >= start and n not in moving),
+                  key=lambda n: (note_min[n], n))
+    order = []
+    for n in stay:
+        order.append(n)
+        order.extend(anchor.get(n, []))
+    new_pos = {n: start + i for i, n in enumerate(order)}
+
+    print("並べ直す範囲: 位置 %d 以降(%d ノート)。それより前は変えません。" % (start, len(order)))
+    for a, mnids in sorted(anchor.items(), key=lambda kv: note_min[kv[0]]):
+        print("  元の組の最後: 位置 %d → %d | 意味・本質問題: 位置 %s → %s"
+              % (note_min[a], new_pos[a],
+                 ",".join(str(note_min[m]) for m in mnids),
+                 ",".join(str(new_pos[m]) for m in mnids)))
+    if not apply:
+        print("下見のみで終了しました。実際に並べ直すには --apply を付けてください。")
+        return len(moving)
+
+    cids = [cid for n in order for _o, cid in sorted(note_cards[n])]
+    col.sched.reposition_new_cards(
+        card_ids=cids, starting_from=start, step_size=1, randomize=False, shift_existing=False)
+
+    # 確認: 振り直した結果が、狙った順番そのものになっているか
+    got = dict(col.db.all(
+        "select nid, min(due) from cards where type = 0 and did in %s group by nid" % dids))
+    wrong = [n for n in order if got.get(n) != new_pos[n]]
+    print("並べ直しました: %d ノート(狙いと違う位置になったもの: %d)" % (len(order), len(wrong)))
+    print("このデッキの新規カードの位置の最大: %d" % max(got.values()))
+    return len(moving)
+
+
 def backup_collection(col_path: str, backup_dir: str) -> str:
     os.makedirs(backup_dir, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -368,13 +474,6 @@ def run_apply(args) -> int:
         names = [f["name"] for f in nt["flds"]]
         existing_guids = set(col.db.list("select guid from notes"))
 
-        # 新規カードの位置: 「文法・用法」デッキ(とその下)の新規カードの末尾に続ける。
-        deck_ids = [d.id for d in col.decks.all_names_and_ids() if d.name == DECK_NAME
-                    or d.name.startswith(DECK_NAME + "::")]
-        start_due = (col.db.scalar(
-            "select max(due) from cards where type = 0 and did in %s"
-            % ("(" + ",".join(str(i) for i in deck_ids) + ")")) or 0) + 1
-
         added = []
         for _key, it in pairs:
             guid = grammar_multi_builder.build_guid(it["topic_key"], it["note_index"], it["batch_key"])
@@ -391,20 +490,9 @@ def run_apply(args) -> int:
         if not added:
             return 0
 
-        cids = col.db.list(
-            "select id from cards where nid in %s order by nid, ord"
-            % ("(" + ",".join(str(n) for n in added) + ")"))
-        # Ankiはノート単位で番号を振る(兄弟カードは同じ位置になる。ツールが
-        # .apkgに書く位置と同じ「1ノート1番号」)。
-        col.sched.reposition_new_cards(
-            card_ids=cids, starting_from=start_due, step_size=1,
-            randomize=False, shift_existing=False)
-        end_due = col.db.scalar(
-            "select max(due) from cards where id in %s" % ("(" + ",".join(str(c) for c in cids) + ")"))
-        print("新規カード %d 枚を位置 %d〜%d に並べました(文法・用法デッキの末尾)。"
-              % (len(cids), start_due, end_due))
-        print("Web版の⚙設定「新規カードの位置」(AIに質問)は %d にしてください"
-              "(次に出力するカードと位置が重ならないように)。" % (end_due + 1))
+        # 元の問題の組の直後に出題されるよう並べ直す(2026-10-07。最初は末尾に
+        # 入れていたため、元の組から離れて出題されていた)。
+        align_positions(col, cache, apply=True)
 
         if args.skip_tts:
             print("音声は付けませんでした(--skip-tts)。")
@@ -435,6 +523,23 @@ def run_apply(args) -> int:
         col.close()
 
 
+def run_align(args) -> int:
+    from anki.collection import Collection
+
+    cache = load_cache(args.cache)
+    if not cache["groups"]:
+        print("キャッシュが空です: %s" % args.cache)
+        return 1
+    if args.apply:
+        print("バックアップを作成しました: %s" % backup_collection(args.collection, args.backup_dir))
+    col = Collection(args.collection)
+    try:
+        align_positions(col, cache, apply=args.apply)
+        return 0
+    finally:
+        col.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="未出題の「AIに質問」に意味・本質問題を追加する")
     ap.add_argument("--collection", default=default_collection_path())
@@ -445,6 +550,8 @@ def main() -> int:
     ap.add_argument("--gemini-api-key", default="")
     ap.add_argument("--gemini-model", default="")
     ap.add_argument("--apply", action="store_true", help="コレクションへ追加する(既定は下見のみ)")
+    ap.add_argument("--align", action="store_true",
+                    help="追加済みの意味・本質問題を元の問題の組の直後へ並べ直す(--applyで実行)")
     ap.add_argument("--skip-tts", action="store_true", help="音声を付けない(試験用)")
     ap.add_argument("--skip-target", action="append", default=[],
                     help="入れない問題の target(複数回指定できる)")
@@ -458,6 +565,8 @@ def main() -> int:
         return 1
     if args.generate:
         return run_generate(args)
+    if args.align:
+        return run_align(args)
     return run_apply(args)
 
 
