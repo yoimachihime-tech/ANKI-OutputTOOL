@@ -10,6 +10,9 @@
 # 作った24ノートは「1. 判断問題」1枚しか生えず、それ以前の131ノートは4枚、
 # という不揃いな状態になっていた。片桐の判断で**実態(4テンプレート)に
 # 合わせる**ことにし、このファイルに4つとも定義している。
+# → 2026-10-07に「3. 誤答理由の想起」を廃止し、**3テンプレート**
+#   (1. 判断問題 / 2. セルフチェック / 4. 例文穴埋め)になった。
+#   理由はテンプレート定義の直前のコメントを参照。
 #
 # 【2026-08-21の「例文穴埋め」の作り直し】
 # 旧「4. 例文穴埋め」は、表で `{{Example}}` を `.masked` クラス付きで出し、
@@ -334,69 +337,22 @@ SELFCHECK_TEMPLATE_BACK = r"""{{FrontSide}}
 </div>
 {{/WhyNot}}
 """ + SCROLL_SCRIPT
-# 「3. 誤答理由の想起」: 正解を選び、**他の選択肢がなぜ誤りかを言えるか**を
-# 問う。選択肢のあるノート(選択問題)にだけ生える(req が all[Choices])。
+# 「3. 誤答理由の想起」は2026-10-07に廃止した(テンプレートごと削除)。
 #
-# 【2026-09-08の作り直し】このスロットは元々「3. 理由想起」で、表に
-# Question + Choices + AnswerPlain(正解文)を出し「なぜこの答えになるのか
-# 説明できますか?」と問う設計だった。答えを見せるのは意図どおりだったが、
-# 片桐から**「選択問題の表面に答えが出てきてしまっている」**と報告された。
-# 実データでも、このカードのうち目にした61枚中47枚が保留され、しかも
-# **46枚は一度も回答せずに保留**されていた(見た瞬間に問題として成立して
-# いないと判断されていた)。
+# 表が Question + Choices で、カード1「1. 判断問題」と最後の1行
+# (「正解を選び、他の選択肢がなぜ誤りかを説明できますか?」)しか違わず、
+# 見た目には同じ問題が2回出ていた(片桐の指摘)。このスロットは2026-08-29に
+# 「3. 理由想起」、2026-09-08に「3. 誤答理由の想起」と2度作り直したが、
+# どちらも表がカード1と重なる形から抜け出せなかった。
 #
-# 表から答えを外すと「1. 判断問題」と同一内容になるため、答えを外すのではなく
-# **出題形式そのものを差し替えた**(片桐の選択: 「削除して他の出題方法を検討」)。
-# 「誤答がなぜ誤りかを説明する」技能は他の3枚のどれもテストしていないので、
-# 重複にならない。
+# 代わりに、語句の本質的な意味を日本語の3択で問う「意味・本質問題」を
+# **独立したノート**として足す(Pattern = "意味・本質問題"。カードは
+# 「1. 判断問題」のテンプレートでそのまま描ける。生成は gemini_client.py /
+# docs/lib/gemini.js の build_grammar_multi_items)。
 #
-# **テンプレートを削除せずスロットを作り直しているのは意図的**。削除して
-# 別のテンプレートを足すと ord がずれ、既存175枚のカードIDと復習履歴を
-# 捨てることになる。作り直しなら、選択問題の87枚はIDのまま新しい出題形式に
-# 変わり、履歴も残る(残る9枚は復習済み)。
-#
-# なお req が all[Choices] になるため、**選択肢を持たない88枚(誤り訂正・
-# 記述式)はこのカードが空になる**。移行スクリプトを当てた後、Ankiの
-# [ツール]→[空のカードを削除] で消すこと(このうち復習履歴があるのは6枚)。
-#
-# 表に出すのは Question と Choices だけで、**Answer も AnswerPlain も
-# 出さない**。Answer には [sound:] タグが入るため、表に置くと正解が
-# 読み上げられてしまう(隠したいものと音声を物理的に分離する、という
-# CLAUDE.mdの原則)。
-WHYNOT_TEMPLATE_FRONT = r"""
-{{#Choices}}
-<div class="pattern-tag">{{Pattern}}</div>
-<div class="block question-block">
-  <div class="question-label">Question</div>
-  {{Question}}
-  <div class="choices">
-  {{Choices}}
-  </div>
-</div>
-<div class="question-label" style="margin-top:14px;">正解を選び、他の選択肢がなぜ誤りかを説明できますか?</div>
-{{/Choices}}
-"""
-
-WHYNOT_TEMPLATE_BACK = r"""{{FrontSide}}
-
-<hr class="sep">
-<div class="block answer-block" id="answer-target">
-  <div class="label">Answer</div>
-  <div class="sentence">{{Answer}}</div>
-</div>
-
-{{#WhyNot}}
-<div class="block whynot-block">
-  <div class="label">Why not the others?</div>
-  {{WhyNot}}
-</div>
-{{/WhyNot}}
-
-<div class="block why-block">
-  <div class="label">Why</div>
-  {{Why}}
-</div>
-""" + SCROLL_SCRIPT
+# 削除で「4. 例文穴埋め」の ord は 3 → 2 になる。名前は変えていない
+# (欠番の「3」が、廃止したことを示している)。既存コレクションの移行は
+# tools/migrate_grammar_multi_retire_card3.py。
 
 # 「4. 例文穴埋め」: 表は穴あき版(ExampleBlank)だけ。**音声タグを持つ
 # Exampleは表に出さない**(隠した語が音声で漏れるのを構造的に防ぐ)。
@@ -459,7 +415,6 @@ GRAMMAR_MODEL = genanki.Model(
     templates=[
         {'name': '1. 判断問題', 'qfmt': QUESTION_TEMPLATE_FRONT, 'afmt': QUESTION_TEMPLATE_BACK},
         {'name': '2. セルフチェック', 'qfmt': SELFCHECK_TEMPLATE_FRONT, 'afmt': SELFCHECK_TEMPLATE_BACK},
-        {'name': '3. 誤答理由の想起', 'qfmt': WHYNOT_TEMPLATE_FRONT, 'afmt': WHYNOT_TEMPLATE_BACK},
         {'name': '4. 例文穴埋め', 'qfmt': BLANK_TEMPLATE_FRONT, 'afmt': BLANK_TEMPLATE_BACK},
     ],
     css=CSS,

@@ -383,13 +383,6 @@
             2,
             "all",
             [
-              2
-            ]
-          ],
-          [
-            3,
-            "all",
-            [
               8
             ]
           ]
@@ -420,21 +413,10 @@
             "did": null
           },
           {
-            "name": "3. 誤答理由の想起",
-            "qfmt": "\n{{#Choices}}\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Question</div>\n  {{Question}}\n  <div class=\"choices\">\n  {{Choices}}\n  </div>\n</div>\n<div class=\"question-label\" style=\"margin-top:14px;\">正解を選び、他の選択肢がなぜ誤りかを説明できますか?</div>\n{{/Choices}}\n",
-            "afmt": "{{FrontSide}}\n\n<hr class=\"sep\">\n<div class=\"block answer-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"sentence\">{{Answer}}</div>\n</div>\n\n{{#WhyNot}}\n<div class=\"block whynot-block\">\n  <div class=\"label\">Why not the others?</div>\n  {{WhyNot}}\n</div>\n{{/WhyNot}}\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
-            "ord": 2,
-            "bafmt": "",
-            "bqfmt": "",
-            "bfont": "",
-            "bsize": 0,
-            "did": null
-          },
-          {
             "name": "4. 例文穴埋め",
             "qfmt": "\n{{#ExampleBlank}}\n<div class=\"pattern-tag\">{{Pattern}}</div>\n<div class=\"block question-block\">\n  <div class=\"question-label\">Fill in the blank</div>\n  <div class=\"example-sentence\">{{ExampleBlank}}</div>\n  {{#ExampleJA}}<div class=\"example-ja\">{{ExampleJA}}</div>{{/ExampleJA}}\n</div>\n{{/ExampleBlank}}\n",
             "afmt": "{{FrontSide}}\n\n<hr class=\"sep\">\n<div class=\"block example-block\" id=\"answer-target\">\n  <div class=\"label\">Answer</div>\n  <div class=\"example-sentence\">{{Example}}</div>\n</div>\n\n<div class=\"block why-block\">\n  <div class=\"label\">Why</div>\n  {{Why}}\n</div>\n\n<script>\n(function() {\n  function scrollToAnswer() {\n    var el = document.getElementById('answer-target');\n    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }\n  }\n  setTimeout(scrollToAnswer, 50);\n})();\n</script>\n",
-            "ord": 3,
+            "ord": 2,
             "bafmt": "",
             "bqfmt": "",
             "bfont": "",

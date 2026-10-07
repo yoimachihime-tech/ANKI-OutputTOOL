@@ -409,6 +409,33 @@ def strip_japanese_sentences(raw_field_text: str) -> str:
     return "<br>".join(kept)
 
 
+# 日本語を含む文を常に読み上げないノートタイプ(2026-10-07追加)。
+#
+# Grammar Multi(「AIに質問」タブの出力先)は、読み上げ対象の Answer / Example が
+# 英文の前提だが、2026-10-07に足した「意味・本質問題」だけは**Answerが日本語**
+# (「(B) それとは別の方法で」)になる。そのままでは英語の音声で日本語を読み上げて
+# しまうので、このノートタイプでは日本語を含む文を外す(英文の解答・例文には
+# 影響しない。意味・本質問題の解答は文がすべて外れて空になり、音声が付かない)。
+# Web版は docs/app.js の embedTtsAudioIntoItems が、itemの種類を見て同じことをする。
+#
+# **全ノートタイプで日本語を外す、にはしないこと**。言語コードは ja-JP や
+# zh-CN も選べるので(COMMON_LANGUAGE_CODES)、日本語を読み上げたい使い方を壊す。
+# 名前の前方一致にしているのは、取り込みの都合でAnkiが「…+」付きの別名を
+# 作った場合にも効かせるため。
+NO_JAPANESE_TTS_NOTETYPE_PREFIXES = ("Grammar Multi (文法・複数出題形式)",)
+
+
+def default_source_transform(nt_name: str, exclude_japanese: bool = False):
+    """analyze_targets / generate_tts_for_collection に渡す source_transform を選ぶ。
+
+    exclude_japanese(③の「日本語を含む文を除外」)がONか、日本語を読み上げない
+    ノートタイプなら strip_japanese_sentences を、それ以外は None を返す。
+    tts_gui と local_tts_server が同じ規則を使うための共通の入口。"""
+    if exclude_japanese or (nt_name or "").startswith(NO_JAPANESE_TTS_NOTETYPE_PREFIXES):
+        return strip_japanese_sentences
+    return None
+
+
 # ---------------------------------------------------------------------------
 # カードプレビュー(ブラウザ表示用HTML生成)
 # ---------------------------------------------------------------------------

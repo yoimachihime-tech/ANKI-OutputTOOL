@@ -21,25 +21,26 @@ import {
   generateShuujukuItemsFromSentences, generateShuujukuItemFromPhrases,
   phraseExampleCount, phraseExamplesMayOmit, MAX_PHRASE_EXAMPLES,
   correctEnglishText, consolidateNoErrorCorrections, listModels, isNonTextModel, isGeminiTtsModel,
+  isMeaningItem,
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21に付けた。穴あき例文 example_blank の生成を足したため、古い
 //  gemini.js を掴んだままだと ExampleBlank が空のカードが出力される)。
 // 2026-10-05: lib/tts.js も Gemini TTS のために gemini.js を import するように
 // なった。**tts.js 側の `?v=` と必ず同じ値にすること**(URLが違うと同じ
 // モジュールが2つ読み込まれる)。
-} from './lib/gemini.js?v=20261005a';
+} from './lib/gemini.js?v=20261007a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21: 一括出力タブのために buildApkg を複数種別対応にしたため、
 // 古い apkg.js が使われると groups 指定が無視されてしまう)。
 // apkg.js は app.js からしか import されていない。
-import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20261005a';
+import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20261007a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-20: 習熟用のフィールド構成をv2へ変えた際、ここが無かったために
 // ブラウザが古い lib/shuujuku.js を読み続け、旧Num/Content形式のカードが
 // 出力され続けた)。shuujuku.js は app.js からしか import されていない。
 import {
   buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum,
-} from './lib/shuujuku.js?v=20261005a';
+} from './lib/shuujuku.js?v=20261007a';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
 } from './lib/dueCounter.js';
@@ -53,7 +54,7 @@ import {
   listCloudVoices, PREBUILT_VOICES, prebuiltVoiceLabel, chirp3VoiceName, languageCodeFromVoiceName,
   GEMINI_TTS_MODELS, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE, DEFAULT_CLOUD_VOICE,
   geminiTtsSupportsStyle, TTS_ENGINE_GEMINI, TTS_ENGINE_CLOUD, DEFAULT_TEST_TEXT,
-} from './lib/tts.js?v=20261005a';
+} from './lib/tts.js?v=20261007a';
 import {
   getAccessToken, clearAccessToken, signOut, isSignedIn,
   beginAuthCodeFlow, completeAuthCodeFlowIfReturning,
@@ -306,6 +307,7 @@ function onLaunchLocalTool(event) {
 const shared = {
   wordPrompt: null,
   grammarMultiPrompt: null,
+  grammarMultiResponseSchema: null,
   shuujukuPrompt: null,
   shuujukuSentencePrompt: null,
   shuujukuPhrasePrompt: null,
@@ -416,12 +418,13 @@ async function init() {
   updateGoogleAuthStatus();
 
   const [
-    wordPrompt, grammarMultiPrompt, shuujukuPrompt, shuujukuDailyconvPrompt, shuujukuSentencePrompt,
-    shuujukuPhrasePrompt,
+    wordPrompt, grammarMultiPrompt, grammarMultiResponseSchema, shuujukuPrompt, shuujukuDailyconvPrompt,
+    shuujukuSentencePrompt, shuujukuPhrasePrompt,
     correctionSystemInstruction, correctionResponseSchema, cardDefsJson, ankiSchema,
   ] = await Promise.all([
     fetchText('./shared/word_card_prompt.txt'),
     fetchText('./shared/grammar_multi_prompt.txt'),
+    fetchJson('./shared/grammar_multi_response_schema.json'),
     fetchText('./shared/shuujuku_prompt.txt'),
     fetchText('./shared/shuujuku_dailyconv_prompt.txt'),
     fetchText('./shared/shuujuku_sentence_prompt.txt'),
@@ -433,6 +436,7 @@ async function init() {
   ]);
   shared.wordPrompt = wordPrompt;
   shared.grammarMultiPrompt = grammarMultiPrompt;
+  shared.grammarMultiResponseSchema = grammarMultiResponseSchema;
   shared.shuujukuPrompt = shuujukuPrompt;
   shared.shuujukuDailyconvPrompt = shuujukuDailyconvPrompt;
   shared.shuujukuSentencePrompt = shuujukuSentencePrompt;
@@ -1927,6 +1931,11 @@ async function embedTtsAudioIntoItems(items, fieldKeys, tabKey, status) {
     const item = { ...items[i] };
     for (const key of fieldKeys) {
       if (!item[key]) continue;
+      // 「AIに質問」の意味・本質問題(2026-10-07追加)は解答が日本語なので、
+      // 解答には音声を付けない(英語の音声で日本語を読み上げてしまうため)。
+      // 例文は英文なので付ける。デスクトップ版・ローカルのTTSツールは
+      // tts_core.default_source_transform が同じことをする。
+      if (key === 'answer' && isMeaningItem(item)) continue;
       showLoading(status, `音声を生成中... (${i + 1}/${items.length})`);
       item[key] = await synthesizeFieldWithTags(
         item[key],
@@ -2244,12 +2253,13 @@ async function onAiAskGenerate() {
   const model = currentTextModel();
 
   try {
-    showLoading(status, 'AIに質問中...(3問生成には数十秒かかることがあります)');
+    showLoading(status, 'AIに質問中...(問題の生成には数十秒かかることがあります)');
     const items = await generateGrammarMultiItems({
       question,
       apiKey,
       model,
       promptTemplate: shared.grammarMultiPrompt,
+      responseSchema: shared.grammarMultiResponseSchema,
     });
     const generatedAt = new Date().toISOString();
     aiAskStock = aiAskStock.concat(items.map((it) => ({
@@ -2285,7 +2295,9 @@ async function onAiAskGenerate() {
 
     hideLoading(status);
     setInputValue('ai-ask-input', '');
-    setStatus(status, `${items.length} 件のカードを生成しました${shuujukuNote}${quotaSuffix()}`);
+    const meaningCount = items.filter(isMeaningItem).length;
+    const meaningNote = meaningCount ? `(うち意味・本質問題 ${meaningCount} 件)` : '';
+    setStatus(status, `${items.length} 件のカードを生成しました${meaningNote}${shuujukuNote}${quotaSuffix()}`);
   } catch (e) {
     hideLoading(status);
     setStatus(status, e.message, true);

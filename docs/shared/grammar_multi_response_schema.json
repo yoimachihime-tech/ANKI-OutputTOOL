@@ -1,0 +1,103 @@
+{
+  "type": "OBJECT",
+  "properties": {
+    "problems": {
+      "type": "ARRAY",
+      "description": "出題形式の異なる練習問題3問",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "OBJECT",
+        "properties": {
+          "pattern": { "type": "STRING", "description": "出題形式のラベルのみ" },
+          "question": { "type": "STRING", "description": "日本語の指示文+英語の対象文" },
+          "choices": {
+            "type": "ARRAY",
+            "description": "選択問題のみ3択。それ以外は空配列",
+            "items": {
+              "type": "OBJECT",
+              "properties": {
+                "opt": { "type": "STRING" },
+                "text": { "type": "STRING" }
+              },
+              "required": ["opt", "text"],
+              "propertyOrdering": ["opt", "text"]
+            }
+          },
+          "answer": { "type": "STRING", "description": "完全な英文1文" },
+          "answer_ja": { "type": "STRING", "description": "answerの自然な日本語訳" },
+          "correct_opt": { "type": "STRING", "description": "選択問題のみ正解のopt。それ以外は空文字" },
+          "examples": {
+            "type": "ARRAY",
+            "description": "[英文, 日本語訳] の組を1〜2個",
+            "items": {
+              "type": "ARRAY",
+              "items": { "type": "STRING" }
+            }
+          },
+          "why": { "type": "STRING" },
+          "whynot": {
+            "type": "ARRAY",
+            "description": "選択問題のみ、各誤答の理由。それ以外は空配列",
+            "items": {
+              "type": "OBJECT",
+              "properties": {
+                "opt": { "type": "STRING" },
+                "reason": { "type": "STRING" }
+              },
+              "required": ["opt", "reason"],
+              "propertyOrdering": ["opt", "reason"]
+            }
+          }
+        },
+        "required": ["pattern", "question", "choices", "answer", "answer_ja", "correct_opt", "examples", "why", "whynot"],
+        "propertyOrdering": ["pattern", "question", "choices", "answer", "answer_ja", "correct_opt", "examples", "why", "whynot"]
+      }
+    },
+    "meaning": {
+      "type": "ARRAY",
+      "description": "意味・本質問題0〜3問。問える語句が無ければ空配列",
+      "maxItems": 3,
+      "items": {
+        "type": "OBJECT",
+        "properties": {
+          "target": { "type": "STRING", "description": "問う語・熟語・機能語(接頭辞・接尾辞は不可)" },
+          "question": { "type": "STRING", "description": "「英語の語句(和訳)」を示し、targetの意味・働きを問う日本語" },
+          "choices": {
+            "type": "ARRAY",
+            "description": "日本語だけの3択",
+            "items": {
+              "type": "OBJECT",
+              "properties": {
+                "opt": { "type": "STRING" },
+                "text": { "type": "STRING" }
+              },
+              "required": ["opt", "text"],
+              "propertyOrdering": ["opt", "text"]
+            }
+          },
+          "correct_opt": { "type": "STRING" },
+          "core_image": { "type": "STRING" },
+          "whynot": {
+            "type": "ARRAY",
+            "items": {
+              "type": "OBJECT",
+              "properties": {
+                "opt": { "type": "STRING" },
+                "reason": { "type": "STRING" }
+              },
+              "required": ["opt", "reason"],
+              "propertyOrdering": ["opt", "reason"]
+            }
+          },
+          "example_en": { "type": "STRING", "description": "questionの「」内の英語をそのまま含む英文。targetを<b>で囲む" },
+          "example_ja": { "type": "STRING" }
+        },
+        "required": ["target", "question", "choices", "correct_opt", "core_image", "whynot", "example_en", "example_ja"],
+        "propertyOrdering": ["target", "question", "choices", "correct_opt", "core_image", "whynot", "example_en", "example_ja"]
+      }
+    }
+  },
+  "required": ["problems", "meaning"],
+  "propertyOrdering": ["problems", "meaning"]
+}

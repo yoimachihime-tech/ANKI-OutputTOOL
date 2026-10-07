@@ -259,11 +259,11 @@ def strip_template_tts(col):
     return removed
 
 
-def _source_transform_for(options):
-    """TTSに渡す前のテキスト変換。tts_gui._get_source_transform_for と同じ考え方。"""
-    if options.get("exclude_japanese"):
-        return tts_core.strip_japanese_sentences
-    return None
+def _source_transform_for(options, nt_name=""):
+    """TTSに渡す前のテキスト変換。tts_gui._get_source_transform_for と同じ規則
+    (tts_core.default_source_transform)。ノートタイプによって変わるので
+    (Grammar Multi は日本語を読み上げない)、ノートタイプごとに求めること。"""
+    return tts_core.default_source_transform(nt_name, bool(options.get("exclude_japanese")))
 
 
 def _tts_text(raw_field, transform):
@@ -287,7 +287,6 @@ def _build_plan(col, targets, options):
     force_regen すると、大半を占める1文だけのフィールドまで作り直して
     無駄に時間と割り当てを使うため、該当分だけを選べるようにしてある。
     """
-    transform = _source_transform_for(options)
     redo_multi = bool(options.get("redo_multi_audio"))
     force = True if redo_multi else bool(options.get("force_regen"))
     per_sentence = bool(options.get("per_sentence_tags"))
@@ -298,6 +297,7 @@ def _build_plan(col, targets, options):
         fields = [int(i) for i in t.get("fields", [])]
         if not fields:
             continue
+        transform = _source_transform_for(options, name)
 
         to_process, skip_audio, skip_empty, chars = tts_core.analyze_targets(
             col, name, fields, force, source_transform=transform
@@ -374,8 +374,6 @@ def _run_generate(targets, options, settings):
     # (既存の関数の引数を増やさずに済ませるため。Cloud TTS では使われない)。
     tts_core.GEMINI_TTS_STYLE = settings.get("gemini_style", "")
     try:
-        transform = _source_transform_for(options)
-
         # 先に全ノートタイプ分の対象を数えてから走る(進捗の分母を最初に確定させるため)。
         # ドライランと同じ _build_plan を使うので、「件数を数える」で見た数と
         # 実際に処理される数が食い違うことはない。
@@ -421,7 +419,7 @@ def _run_generate(targets, options, settings):
                 per_sentence=bool(settings["per_sentence_tags"]),
                 force_regen=force,
                 volume_gain_db=float(settings["volume_gain_db"]),
-                source_transform=transform,
+                source_transform=_source_transform_for(options, name),
                 log=_log,
                 on_progress=on_progress,
                 should_cancel=lambda: STATE.cancel,

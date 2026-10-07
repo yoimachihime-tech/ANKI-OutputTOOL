@@ -948,7 +948,7 @@ class AnkiTTSApp(_BaseTk):
         self.ai_ask_text = tk.Text(tab_ai_ask, height=4, wrap="word")
         self.ai_ask_text.pack(fill="x", padx=8, pady=(0, 4))
         self.ai_ask_generate_btn = ttk.Button(
-            tab_ai_ask, text="AIに生成させる(3問セットを生成)", command=self.on_ai_ask_clicked
+            tab_ai_ask, text="AIに生成させる(3問+意味・本質問題)", command=self.on_ai_ask_clicked
         )
         self.ai_ask_generate_btn.pack(anchor="w", padx=8, pady=(0, 4))
         ttk.Label(
@@ -4092,7 +4092,11 @@ class AnkiTTSApp(_BaseTk):
                 self.log(f"AIに質問中: {question[:50]}...")
                 items = gemini_client.generate_grammar_multi_items_from_question(question, api_key, model)
                 grammar_multi_stock.add_pending_items(items)
-                self.log(f"Grammar Multiストックに {len(items)} 件追加しました。")
+                meaning_count = sum(1 for it in items if gemini_client.is_meaning_item(it))
+                self.log(
+                    f"Grammar Multiストックに {len(items)} 件追加しました"
+                    f"(うち意味・本質問題 {meaning_count} 件)。"
+                )
                 self.refresh_ai_ask_stock_view()
 
                 # 3問(Grammar Multi)とは別に、4問目として習熟用(音読)向けの
@@ -4770,11 +4774,12 @@ class AnkiTTSApp(_BaseTk):
         v1のContentフィールドは英語例文と日本語の意味・和訳・解説が1つの
         フィールドに混在していたためだが、v2で1文=1フィールドに分けた
         (英文フィールドだけをTTS対象に選べばよくなった)ので不要になった。
-        引数のnt_nameは、将来またノートタイプ固有の変換が必要になったときの
-        ために残してある。"""
-        if not self.exclude_japanese_var.get():
-            return None
-        return tts_core.strip_japanese_sentences
+
+        2026-10-07からは、チェックがOFFでも Grammar Multi では日本語を含む文を
+        外す(意味・本質問題の解答が日本語のため)。規則は
+        tts_core.default_source_transform にまとめてあり、ローカルのTTSツールも
+        同じものを使う。"""
+        return tts_core.default_source_transform(nt_name, self.exclude_japanese_var.get())
 
     def on_dry_run_clicked(self):
         if not self.apkg_path.get():

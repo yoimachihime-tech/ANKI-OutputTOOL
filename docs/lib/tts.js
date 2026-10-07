@@ -43,7 +43,7 @@
 // `?v=` は app.js が gemini.js を読むときと**必ず同じ値**にすること
 // (URLが違うと同じモジュールが2つ読み込まれる。gemini.js 自体は状態を
 // 持たないので実害は小さいが、無駄なので揃えておく)。
-import { generateSpeech, geminiTtsSupportsStyle } from './gemini.js?v=20261005a';
+import { generateSpeech, geminiTtsSupportsStyle } from './gemini.js?v=20261007a';
 
 const TTS_ENDPOINT = 'https://texttospeech.googleapis.com/v1/text:synthesize';
 const VOICES_ENDPOINT = 'https://texttospeech.googleapis.com/v1/voices';

@@ -8,6 +8,7 @@
 // 同じ後処理をかけて item を突き合わせる。
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -59,6 +60,110 @@ const RAW_NOTES = [
   },
 ];
 
+// 意味・本質問題(2026-10-07追加)として Gemini が返す想定の生JSON。
+// 採用されるもの・捨てられるものを混ぜ、どちらの判定も Python 版と一致することを
+// 確かめる。期待する結果は各要素のコメントのとおり(最大3問なので最後の1件は落ちる)。
+const RAW_MEANING = [
+  { // 採用: 例文に問題文の英語がそのまま入っている
+    target: 'otherwise',
+    question: '「unless otherwise instructed(別段の指示がない限り)」における otherwise の本質的な意味として、最も適切なものを1つ選びなさい。',
+    choices: [
+      { opt: 'A', text: 'そうではない状況では(さもないと)' },
+      { opt: 'B', text: 'その指示された内容とは別の方法・方向で' },
+      { opt: 'C', text: 'これまでのすべての手順に従って忠実に' },
+    ],
+    correct_opt: 'B',
+    core_image: 'other(別の)+ wise(方向・様態)が原義。',
+    whynot: [{ opt: 'A', reason: '「さもないと」は別の用法。' }, { opt: 'C', reason: '指示に従う意味ではない。' }],
+    example_en: 'You must wear a helmet unless <b>otherwise</b> instructed.',
+    example_ja: '別段の指示がない限り、ヘルメットを着用しなければならない。',
+  },
+  { // 捨てる: 接尾辞が対象(語源の説明が作り話になる)
+    target: '-ce と -t',
+    question: '「difference(違い)」の語尾 -ce の本質的な働きとして、最も適切なものを1つ選びなさい。',
+    choices: [{ opt: 'A', text: 'あ' }, { opt: 'B', text: 'い' }, { opt: 'C', text: 'う' }],
+    correct_opt: 'A',
+    core_image: '...',
+    whynot: [],
+    example_en: 'It makes a <b>difference</b>.',
+    example_ja: '違いを生む。',
+  },
+  { // 採用(例文は捨てる): 例文が問題文の英語を含まない。
+    // 誤答の理由のキー名が "text" になっている取り違えも読み替える。
+    target: 'deny',
+    question: '「He denied stealing the money(彼はお金を盗んだことを否定した)」における deny の本質的な働きとして、最も適切なものを1つ選びなさい。',
+    choices: [
+      { opt: 'A', text: 'すでに起きた事実を打ち消す' },
+      { opt: 'B', text: 'これからの計画を断る' },
+      { opt: 'C', text: '相手に意志を押し付ける' },
+    ],
+    correct_opt: 'A',
+    core_image: '動名詞は「すでにある現実」を表し、deny はそれを打ち消す。',
+    whynot: [{ opt: 'B', text: '未来の計画を断るのは refuse。' }, { opt: 'C', reason: '意志の押し付けではない。' }],
+    example_en: 'She <b>denied</b> taking the car.',
+    example_ja: '彼女は車を持ち出したことを否定した。',
+  },
+  { // 捨てる: 「」の中に英語の語句が無い
+    target: 'deny',
+    question: '動詞 deny の後ろに「動名詞(-ing)」が来る本質的な理由として、最も適切なものを1つ選びなさい。',
+    choices: [{ opt: 'A', text: 'あ' }, { opt: 'B', text: 'い' }, { opt: 'C', text: 'う' }],
+    correct_opt: 'A',
+    core_image: '...',
+    whynot: [],
+    example_en: '',
+    example_ja: '',
+  },
+  { // 捨てる: 正解の記号が選択肢に無い
+    target: 'used to',
+    question: '「I used to swim(以前は泳いでいた)」における used to の本質的な意味として、最も適切なものを1つ選びなさい。',
+    choices: [{ opt: 'A', text: 'あ' }, { opt: 'B', text: 'い' }, { opt: 'C', text: 'う' }],
+    correct_opt: 'D',
+    core_image: '...',
+    whynot: [],
+    example_en: 'I <b>used to</b> swim every day.',
+    example_ja: '以前は毎日泳いでいた。',
+  },
+  { // 捨てる: 正解だけが長く詳しく、読まずに当てられる
+    // (2026-10-07に実際に出た形: 26字/34字/45字(正解) = 誤答の平均の1.5倍)
+    target: 'said',
+    question: '「Tom said that he was tired(トムは疲れていると言った)」における said の本質的な働きとして、最も適切なものを1つ選びなさい。',
+    choices: [
+      { opt: 'A', text: '未来に起こる不確実な出来事を予想して相手に注意を促す' },
+      { opt: 'B', text: '相手に対して命令や強い要求を伝達し、その場の状況を強制的に変化させる' },
+      { opt: 'C', text: '過去に発せられた発言の事実を伝えるとともに、その後の従属節全体の時制を過去の基準に引き込む' },
+    ],
+    correct_opt: 'C',
+    core_image: '...',
+    whynot: [],
+    example_en: 'Tom <b>said</b> that he was tired.',
+    example_ja: 'トムは疲れていると言った。',
+  },
+  { // 採用
+    target: 'would',
+    question: '「I would rather stay home(むしろ家にいたい)」における would の本質的な働きとして、最も適切なものを1つ選びなさい。',
+    choices: [
+      { opt: 'A', text: '過去の習慣を表す' },
+      { opt: 'B', text: '控えめな意向を表す' },
+      { opt: 'C', text: '未来の予定を断定する' },
+    ],
+    correct_opt: 'B',
+    core_image: '仮定の距離を置いて、意向を控えめに示す。',
+    whynot: [{ opt: 'A', reason: '習慣の would とは別。' }, { opt: 'C', reason: '断定ではない。' }],
+    example_en: 'I would rather stay home tonight.',
+    example_ja: '今夜はむしろ家にいたい。',
+  },
+  { // 捨てる: 上限(3問)を超える4問目
+    target: 'rather',
+    question: '「I would rather stay home(むしろ家にいたい)」における rather の本質的な働きとして、最も適切なものを1つ選びなさい。',
+    choices: [{ opt: 'A', text: 'あ' }, { opt: 'B', text: 'い' }, { opt: 'C', text: 'う' }],
+    correct_opt: 'A',
+    core_image: '...',
+    whynot: [],
+    example_en: 'I would <b>rather</b> stay home.',
+    example_ja: 'むしろ家にいたい。',
+  },
+];
+
 // 実行するPythonコマンド。既定は `python3` だが、その名前で起動できる
 // Pythonが無い環境(片桐のWindows実機ではWindowsAppsのスタブが先に見つかり、
 // genankiの入った C:\Python314\python.exe とは別物になる)では、環境変数
@@ -84,48 +189,28 @@ sys.path.insert(0, r'${dirname(HERE)}')
 import gemini_client as gc
 
 raw = json.load(sys.stdin)
-question = raw['question']
-notes = raw['notes']
-batch_key = raw['batch_key']
-topic_key = " ".join(question.strip().casefold().split())
-items = []
-for i, note in enumerate(notes):
-    choices = note.get('choices') or []
-    whynot = note.get('whynot') or []
-    examples = [tuple(ex) for ex in note.get('examples', [])]
-    items.append({
-        'pattern': note.get('pattern', ''),
-        'question': gc._format_question_html(note.get('question', '')),
-        'choices': ''.join(
-            gc._grammar_multi_canon.choice(c.get('opt', ''), c.get('text', '')) for c in choices
-        ),
-        'answer': gc._prefix_answer_with_correct_opt(
-            note.get('answer', ''), choices, note.get('correct_opt', '')
-        ),
-        'example': gc._grammar_multi_canon.example_en(examples) if examples else '',
-        'example_ja': gc._grammar_multi_canon.example_ja(examples) if examples else '',
-        'example_blank': gc._grammar_multi_canon.example_blank(examples) if examples else '',
-        # 2026-08-29追加。「3. 理由想起」の表に出す正解文。answerと違い
-        # **正解の選択肢ラベル「(A) 」を付けない**(1問目のフィクスチャは
-        # answer='patience' / correct_opt='B' なので、answer='(B) patience'
-        # に対し answer_plain='patience' となり、両者の違いが固定される)。
-        'answer_plain': note.get('answer', ''),
-        # 2026-09-08追加。「2. セルフチェック」の表に出す正解文の日本語訳。
-        # 後処理は掛けず素通しするだけなので、ここではPython版とWeb版で
-        # 同じ値が同じフィールドへ入ることだけを固定する。
-        'answer_ja': note.get('answer_ja', ''),
-        'why': note.get('why', ''),
-        'whynot': ''.join(
-            gc._grammar_multi_canon.whynot_item(w.get('opt', ''), w.get('reason', '')) for w in whynot
-        ),
-        'topic_key': topic_key,
-        'note_index': i,
-        'batch_key': batch_key,
-    })
+# 後処理は実装そのもの(gemini_client.build_grammar_multi_items)を呼ぶ
+# (2026-10-07に変更。以前はここに後処理を書き写しており、実装側だけ
+#  直してもテストが気づけない形だった)。
+items = gc.build_grammar_multi_items(raw['notes'], raw['meaning'], raw['question'], raw['batch_key'])
+for it in items:
+    it.pop('source_key', None)
+    it.pop('source_label', None)
+
+# 応答の形の読み取り: 新しい形({problems, meaning})も、以前の形(3問の配列だけ)も読める。
+new_shape = gc._parse_grammar_multi_response(json.dumps({'problems': raw['notes'], 'meaning': raw['meaning']}))
+# (このPythonはJSのテンプレート文字列の中にあるので、バッククォートと改行は
+#  chr() で組み立てる)
+fence, nl = chr(96) * 3, chr(10)
+old_shape = gc._parse_grammar_multi_response(fence + 'json' + nl + json.dumps(raw['notes']) + nl + fence)
+assert new_shape == (raw['notes'], raw['meaning']), 'new shape'
+assert old_shape == (raw['notes'], []), 'old shape'
 json.dump(items, sys.stdout, ensure_ascii=False)
 `],
   {
-    input: Buffer.from(JSON.stringify({ question: QUESTION, notes: RAW_NOTES, batch_key: BATCH_KEY }), 'utf8'),
+    input: Buffer.from(JSON.stringify({
+      question: QUESTION, notes: RAW_NOTES, meaning: RAW_MEANING, batch_key: BATCH_KEY,
+    }), 'utf8'),
     env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     maxBuffer: 8 * 1024 * 1024,
   },
@@ -136,20 +221,28 @@ const expected = JSON.parse(pyStdout.toString('utf8'));
 globalThis.window = globalThis;
 const { generateGrammarMultiItems } = await import(new URL('../docs/lib/gemini.js', import.meta.url));
 
-globalThis.fetch = async () => ({
-  ok: true,
-  status: 200,
-  json: async () => ({
-    candidates: [{ content: { parts: [{ text: JSON.stringify(RAW_NOTES) }] } }],
-  }),
-});
+let lastRequestBody = null;
+globalThis.fetch = async (_url, init = {}) => {
+  lastRequestBody = JSON.parse(init.body);
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ problems: RAW_NOTES, meaning: RAW_MEANING }) }] } }],
+    }),
+  };
+};
 
 const promptTemplate = 'ダミープロンプト {{question}}'; // 実プロンプト全文は不要(整形処理だけを検証する)
+const RESPONSE_SCHEMA = JSON.parse(readFileSync(
+  join(dirname(HERE), 'docs', 'shared', 'grammar_multi_response_schema.json'), 'utf8',
+));
 const actual = await generateGrammarMultiItems({
   question: QUESTION,
   apiKey: 'DUMMY',
   model: 'gemini-2.0-flash',
   promptTemplate,
+  responseSchema: RESPONSE_SCHEMA,
   batchKey: BATCH_KEY,
 });
 
@@ -174,6 +267,54 @@ for (let i = 0; i < Math.min(actual.length, expected.length); i += 1) {
     }
   }
   if (itemOk) console.log(`  ✅ ${label}: 全フィールド一致`);
+}
+
+// --- 意味・本質問題の判定そのもの(Python版と一致するだけでなく、狙いどおりか) ---
+const check = (cond, okMsg, ngMsg) => {
+  if (cond) console.log(`  ✅ ${okMsg}`);
+  else { console.error(`❌ ${ngMsg}`); failures += 1; }
+};
+const meaningItems = actual.filter((it) => it.pattern === '意味・本質問題');
+check(actual.length === 6 && meaningItems.length === 3,
+  '意味・本質問題は使えるものだけ・最大3問が残る(3問+3問=6件)',
+  `件数が想定外: 全${actual.length}件 / 意味・本質問題${meaningItems.length}件`);
+check(meaningItems.map((it) => it.note_index).join(',') === '3,4,5',
+  '意味・本質問題は3問の後ろに続き番号で並ぶ',
+  `note_index: ${meaningItems.map((it) => it.note_index)}`);
+check(lastRequestBody?.generationConfig?.responseMimeType === 'application/json'
+  && JSON.stringify(lastRequestBody?.generationConfig?.responseSchema) === JSON.stringify(RESPONSE_SCHEMA),
+  '応答の構造を共有スキーマで指定している(長い応答でJSONが壊れないように)',
+  `generationConfig: ${JSON.stringify(lastRequestBody?.generationConfig).slice(0, 200)}`);
+{
+  const [otherwise, deny, would] = meaningItems;
+  // 正解の文はどこに並べ替えられても、解答の記号と選択肢の記号が一致する。
+  const labelOf = (item, text) => {
+    const m = item.choices.match(/<div class="choice">\((\w)\) ([^<]*)<\/div>/g) || [];
+    for (const div of m) {
+      const [, label, body] = div.match(/\((\w)\) ([^<]*)</);
+      if (body === text) return label;
+    }
+    return '';
+  };
+  const otherwiseLabel = labelOf(otherwise, 'その指示された内容とは別の方法・方向で');
+  check(otherwiseLabel && otherwise.answer === `(${otherwiseLabel}) その指示された内容とは別の方法・方向で`,
+    `並べ替え後も解答の記号が正解の選択肢と一致する(${otherwiseLabel})`,
+    `解答と選択肢が食い違う: ${otherwise.answer} / ${otherwise.choices}`);
+  check(!otherwise.whynot.includes(`(${otherwiseLabel})`),
+    '誤答の理由に正解の記号が混ざらない',
+    `whynot: ${otherwise.whynot}`);
+  check(otherwise.example.includes('unless <b>otherwise</b> instructed') && otherwise.example_blank.includes('class="blank"'),
+    '例文が問題文の英語を含めば採用され、穴埋めカードも作られる',
+    `example: ${otherwise.example}`);
+  check(deny.example === '' && deny.example_blank === '',
+    '問題文の英語を含まない例文は捨てる(誤った英文を覚えないように)',
+    `example: ${deny.example}`);
+  check(deny.whynot.includes('未来の計画を断るのは refuse。'),
+    '誤答の理由のキー名が "text" でも読み替える',
+    `whynot: ${deny.whynot}`);
+  check(would.answer_ja === '' && would.why.includes('控えめ'),
+    '日本語訳は空(解答が日本語のため)、Whyにはコアイメージが入る',
+    `answer_ja: ${would.answer_ja} / why: ${would.why}`);
 }
 
 console.log(failures

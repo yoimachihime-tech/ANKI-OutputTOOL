@@ -222,13 +222,25 @@ def _post_gemini_request(url: str, body: dict, api_key: str, timeout: int,
     raise GeminiClientError(f"Gemini API呼び出しに失敗しました: {last_detail}")
 
 
-def call_gemini(prompt: str, api_key: str, model: str, timeout: int = 60) -> str:
-    """Gemini APIにプロンプトを送り、生成されたテキストをそのまま返す。"""
+def call_gemini(prompt: str, api_key: str, model: str, timeout: int = 60,
+                response_schema: dict = None) -> str:
+    """Gemini APIにプロンプトを送り、生成されたテキストをそのまま返す。
+
+    response_schema を渡すと構造化出力になり、応答がそのスキーマどおりの
+    JSONに限定される(2026-10-07追加)。出力が長い呼び出しでは、JSONを
+    「頼む」だけだと途中で壊れることがあった: 「AIに質問」に意味・本質問題を
+    足したとき、gemini-3.5-flash-lite で指定なしだと2回中1回、
+    responseMimeType だけ指定しても3回中1回壊れた。"""
     if not api_key:
         raise GeminiClientError("Gemini APIキーが設定されていません。")
 
     url = GEMINI_ENDPOINT_TMPL.format(model=model)
     body = {"contents": [{"parts": [{"text": prompt}]}]}
+    if response_schema:
+        body["generationConfig"] = {
+            "responseMimeType": "application/json",
+            "responseSchema": response_schema,
+        }
     result = _post_gemini_request(url, body, api_key, timeout)
 
     try:
@@ -580,6 +592,8 @@ except ImportError:
 # プロンプトはWeb版と共有するため外部ファイルに切り出してある
 # (2026-07-28、単語カードと同じ方式。docs/shared/grammar_multi_prompt.txt)。
 GRAMMAR_MULTI_PROMPT_PATH = os.path.join(SHARED_DIR, "grammar_multi_prompt.txt")
+# 応答の構造(2026-10-07追加)。Web版の docs/lib/gemini.js も同じファイルを使う。
+GRAMMAR_MULTI_RESPONSE_SCHEMA_PATH = os.path.join(SHARED_DIR, "grammar_multi_response_schema.json")
 
 
 def _extract_json_array(text: str) -> list:
@@ -651,12 +665,246 @@ def _prefix_answer_with_correct_opt(answer: str, choices: list, correct_opt: str
     return f"({opt}) {answer}"
 
 
+# ---------------------------------------------------------------------------
+# 意味・本質問題(2026-10-07追加)
+# ---------------------------------------------------------------------------
+#
+# 「AIに質問」の3問に加えて、質問の核心にある語句が**本質的に何を意味するか**を
+# 日本語の3択で問う問題を0〜3問作る。片桐の提案した形式:
+#
+#   「unless otherwise instructed（別段の指示がない限り）」における otherwise の
+#   本質的な意味として最も適切なものはどれ？
+#   (A) そうではない状況では（さもないと） (B) それとは別の方法で …
+#
+# それまでのカード3「3. 誤答理由の想起」は、表がカード1と同じ(Question+選択肢)
+# で重複していたため廃止し、意味・本質問題は**独立したノート**として足す
+# (1ノート=1カードの運用ルールどおり)。既存のフィールドにそのまま収まるので
+# ノートタイプのフィールドは増えない。詳細はCLAUDE.mdの同名の節。
+#
+# 試作(gemini-3.5-flash-lite、4テーマ×2回)で見えた弱点は、プロンプトで
+# 頼むだけでは守られなかったので、ここで機械的に確かめる:
+#   - 正解の位置が(B)に偏る(9問中7問)        → 位置はこちらで並べ替える
+#   - 正解の選択肢だけが長く詳しい             → 他の平均の1.4倍以上なら捨てる
+#   - 接頭辞・接尾辞や語源の説明は作り話になる → targetが「-」で始まる/終わるものは捨てる
+#   - 問題文に英語の語句が入らない            → 「英語(和訳)」が無ければ捨てる
+#   - 例文の英語が誤っている(unlessが抜けた)  → 問題文の英語を含まない例文は捨てる
+#   - 誤答の理由のキー名が"text"になる         → "reason"が無ければ"text"を読む
+#
+# **docs/lib/gemini.js の同名の処理と結果が一致すること**
+# (tools/verify_grammar_multi_parity.mjs で固定している)。
+
+GRAMMAR_MULTI_MEANING_PATTERN = "意味・本質問題"
+MAX_MEANING_ITEMS = 3
+
+# docs/lib/tts.js の JAPANESE_CHAR_RE と同じ範囲
+# (ひらがな/カタカナ/CJK統合漢字/半角カタカナ)。
+_JA_CHAR_RE = re.compile(r"[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ]")
+_KAGI_RE = re.compile(r"「([^」]+)」")
+_OPT_LETTERS = "ABCD"
+# 正解の選択肢が、誤答の平均の何倍以上長ければ捨てるか。正解だけが長く
+# 詳しいと、読まずに当てられる。プロンプトで「長さをそろえる」と頼んでも
+# 守られないことがあった(2026-10-07、「時制の一致」の質問で said を問う
+# 問題が 26字/34字/45字(正解) = 平均の1.5倍で出た)。試作で良いと判断した
+# 問題はどれも1.3倍未満だった。
+_MAX_CORRECT_LENGTH_RATIO = 1.4
+
+
+def _english_phrase_in_question(question: str) -> str:
+    """問題文の「英語の語句(和訳)」から英語の語句を取り出す。無ければ空文字。
+
+    「」が複数あるときは、英字を含み日本語を含まない最初のものを使う
+    (「動名詞(-ing)」のような日本語の用語を拾わないため)。"""
+    for m in _KAGI_RE.finditer(question or ""):
+        inner = re.split(r"[（(]", m.group(1), maxsplit=1)[0].strip()
+        if re.search(r"[A-Za-z]", inner) and not _JA_CHAR_RE.search(inner):
+            return inner
+    return ""
+
+
+def _normalize_for_match(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text or "")
+    text = text.replace("’", "'").replace("‘", "'")
+    return " ".join(text.lower().split())
+
+
+def _seeded_permutation(n: int, seed_text: str) -> list:
+    """seed_textから決まる 0..n-1 の並べ替えを返す。
+
+    **docs/lib/gemini.js の seededPermutation() と同じ並びになること**
+    (Python版とWeb版で同じ入力から同じカードを作るため)。乱数ライブラリは
+    言語ごとに系列が違うので使わず、文字列ハッシュ+MINSTD(乗数48271)の
+    線形合同法で Fisher-Yates を回す。積は 2^31×48271 ≈ 1.0e14 で、
+    JavaScriptの数値でも誤差なく計算できる範囲に収まる。"""
+    h = 0
+    for ch in seed_text:
+        h = (h * 31 + ord(ch)) % 4294967296
+    state = h % 2147483646 + 1
+    order = list(range(n))
+    for i in range(n - 1, 0, -1):
+        state = state * 48271 % 2147483647
+        j = state % (i + 1)
+        order[i], order[j] = order[j], order[i]
+    return order
+
+
+def _meaning_note_from_raw(raw, seed_text: str):
+    """Geminiが返した意味・本質問題1件を、3問と同じ形の生ノートへ直す。
+    使えないものはNone(呼び出し側で捨てる)。"""
+    if not isinstance(raw, dict):
+        return None
+    target = str(raw.get("target") or "").strip()
+    # 接頭辞・接尾辞(-ce / -ing など)は対象外。語源の説明がもっともらしい
+    # 作り話になり、プロンプトで止めても止まらなかった(試作で2回とも)。
+    if not target or target.startswith("-") or target.endswith("-"):
+        return None
+    question = str(raw.get("question") or "").strip()
+    phrase = _english_phrase_in_question(question)
+    if not phrase:
+        return None
+
+    choices = [c for c in (raw.get("choices") or [])
+               if isinstance(c, dict) and str(c.get("text") or "").strip()]
+    opts = [str(c.get("opt") or "").strip().upper() for c in choices]
+    if not 2 <= len(choices) <= len(_OPT_LETTERS) or len(set(opts)) != len(opts):
+        return None
+    correct = str(raw.get("correct_opt") or "").strip().upper()
+    if correct not in opts:
+        return None
+    texts = [str(c["text"]).strip() for c in choices]
+    others = [len(t) for t, o in zip(texts, opts) if o != correct]
+    if len(texts[opts.index(correct)]) >= _MAX_CORRECT_LENGTH_RATIO * (sum(others) / len(others)):
+        return None
+
+    order = _seeded_permutation(len(choices), seed_text)
+    mapping = {}
+    new_choices = []
+    for new_i, old_i in enumerate(order):
+        letter = _OPT_LETTERS[new_i]
+        mapping[opts[old_i]] = letter
+        new_choices.append({"opt": letter, "text": str(choices[old_i]["text"]).strip()})
+    correct_text = str(choices[opts.index(correct)]["text"]).strip()
+
+    whynot = []
+    for w in raw.get("whynot") or []:
+        if not isinstance(w, dict):
+            continue
+        old = str(w.get("opt") or "").strip().upper()
+        reason = str(w.get("reason") or w.get("text") or "").strip()
+        if old in mapping and old != correct and reason:
+            whynot.append({"opt": mapping[old], "reason": reason})
+    whynot.sort(key=lambda w: w["opt"])
+
+    example_en = str(raw.get("example_en") or "").strip()
+    example_ja = str(raw.get("example_ja") or "").strip()
+    examples = []
+    if example_en and _normalize_for_match(phrase) in _normalize_for_match(example_en):
+        examples = [(example_en, example_ja)]
+
+    return {
+        "pattern": GRAMMAR_MULTI_MEANING_PATTERN,
+        "question": question,
+        "choices": new_choices,
+        "answer": correct_text,
+        # 解答がもともと日本語なので訳は無い。「2. セルフチェック」の表は
+        # 問題文だけになり、「意味を自分の言葉で言えるか」を問うカードになる。
+        "answer_ja": "",
+        "correct_opt": mapping[correct],
+        "examples": examples,
+        "why": str(raw.get("core_image") or "").strip(),
+        "whynot": whynot,
+    }
+
+
+def _meaning_notes(meaning: list, batch_key: str) -> list:
+    notes = []
+    for j, raw in enumerate(meaning or []):
+        if len(notes) >= MAX_MEANING_ITEMS:
+            break
+        note = _meaning_note_from_raw(raw, f"{batch_key}:{j}")
+        if note:
+            notes.append(note)
+    return notes
+
+
+def is_meaning_item(item: dict) -> bool:
+    """意味・本質問題のitemか(解答が日本語なので音声を付けない判定に使う)。"""
+    return (item or {}).get("pattern") == GRAMMAR_MULTI_MEANING_PATTERN
+
+
+def _parse_grammar_multi_response(text: str):
+    """Geminiの応答から (3問の配列, 意味・本質問題の配列) を取り出す。
+
+    2026-10-07から応答は {"problems": [...], "meaning": [...]} の形。以前の
+    形(3問の配列だけ)が返ってきても、意味・本質問題が0問として扱う。"""
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    candidate = fence.group(1) if fence else text.strip()
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as e:
+        raise GeminiClientError(f"Gemini応答をJSONとして解析できませんでした: {text[:300]}") from e
+    if isinstance(parsed, list):
+        return parsed, []
+    if isinstance(parsed, dict):
+        problems = parsed.get("problems")
+        meaning = parsed.get("meaning")
+        return (problems if isinstance(problems, list) else []), (meaning if isinstance(meaning, list) else [])
+    return [], []
+
+
+def build_grammar_multi_items(problems: list, meaning: list, question: str, batch_key: str) -> list:
+    """Geminiの応答(3問+意味・本質問題)を、grammar_multi_builder.build_deck()に
+    そのまま渡せるitemのリストにする。通信を伴わない後処理だけを行う
+    (tools/verify_grammar_multi_parity.mjs がWeb版と突き合わせるのはここ)。"""
+    topic_key = " ".join(question.strip().casefold().split())
+    notes = list(problems or []) + _meaning_notes(meaning, batch_key)
+    items = []
+    for i, note in enumerate(notes):
+        choices = note.get("choices") or []
+        whynot = note.get("whynot") or []
+        examples = [tuple(ex) for ex in note.get("examples", [])]
+        items.append({
+            "pattern": note.get("pattern", ""),
+            "question": _format_question_html(note.get("question", "")),
+            "choices": "".join(
+                _grammar_multi_canon.choice(c.get("opt", ""), c.get("text", "")) for c in choices
+            ),
+            "answer": _prefix_answer_with_correct_opt(
+                note.get("answer", ""), choices, note.get("correct_opt", "")
+            ),
+            # 選択肢ラベル「(A) 」を付けない正解文(2026-08-29追加)。TTS対象
+            # からも外してあるので[sound:]タグも入らない(「AIに質問」タブの
+            # TTS対象はAnswer+Exampleのみ)。どのテンプレートからも参照されて
+            # いないが、フィールドの並びを崩さないため出力し続ける。
+            "answer_plain": note.get("answer", ""),
+            # 正解文の日本語訳(2026-09-08追加)。「2. セルフチェック」は
+            # 選択肢を伏せるため、これが空所の候補を絞る唯一の手がかりになる。
+            # Geminiが返してこなかった場合は空文字になり、そのカードの表は
+            # 従来どおり日本語訳なしになる(カード自体は作られる)。
+            "answer_ja": note.get("answer_ja", ""),
+            "example": _grammar_multi_canon.example_en(examples) if examples else "",
+            "example_ja": _grammar_multi_canon.example_ja(examples) if examples else "",
+            # 穴あき版(2026-08-21追加)。Geminiが例文中の学習対象語を<b>で
+            # 囲んでこなかった場合は空文字になり、穴埋めカードは作られない。
+            "example_blank": _grammar_multi_canon.example_blank(examples) if examples else "",
+            "why": note.get("why", ""),
+            "whynot": "".join(
+                _grammar_multi_canon.whynot_item(w.get("opt", ""), w.get("reason", "")) for w in whynot
+            ),
+            "topic_key": topic_key,
+            "note_index": i,
+            "batch_key": batch_key,
+            "source_key": ("chat_grammar", f"{topic_key}::{i}::{batch_key}"),
+            "source_label": "由来: AIに質問",
+        })
+    return items
+
+
 def generate_grammar_multi_items_from_question(
     question: str, api_key: str, model: str, batch_key: str = None
 ) -> list:
     """「AIに質問」タブの質問文から、Grammar Multi(文法・複数出題形式)の
-    独立ノート3件分のitem dictを生成する(grammar_multi_builder.build_deck()
-    にそのまま渡せる形式)。
+    独立ノート(3問+意味・本質問題0〜3問)のitem dictを生成する
+    (grammar_multi_builder.build_deck()にそのまま渡せる形式)。
 
     戻り値の各dictは、build_grammar_multi_v1_updated.GRAMMAR_MODELの
     フィールド(pattern, question, choices, answer, example, example_ja,
@@ -678,58 +926,20 @@ def generate_grammar_multi_items_from_question(
             "genankiがインストールされていません。"
         )
     prompt = _fill_placeholders(_load_shared_prompt(GRAMMAR_MULTI_PROMPT_PATH), question=question)
-    text = call_gemini(prompt, api_key, model)
-    parsed = _extract_json_array(text)
-    if not parsed:
-        raise GeminiClientError(f"Gemini応答が空、または配列ではありません: {text[:300]}")
+    text = call_gemini(
+        prompt, api_key, model, timeout=120,
+        response_schema=_load_shared_json(GRAMMAR_MULTI_RESPONSE_SCHEMA_PATH),
+    )
+    problems, meaning = _parse_grammar_multi_response(text)
+    if not problems:
+        raise GeminiClientError(f"Gemini応答に問題が含まれていません: {text[:300]}")
 
-    topic_key = " ".join(question.strip().casefold().split())
     # このバッチを識別する値。itemに保存され、以後変わらない(guidの安定性は
-    # これに依存するので、あとから振り直さないこと)。
+    # これに依存するので、あとから振り直さないこと)。意味・本質問題の
+    # 選択肢の並べ替えもこの値から決まる。
     if not batch_key:
         batch_key = uuid.uuid4().hex[:12]
-    items = []
-    for i, note in enumerate(parsed):
-        choices = note.get("choices") or []
-        whynot = note.get("whynot") or []
-        examples = [tuple(ex) for ex in note.get("examples", [])]
-        items.append({
-            "pattern": note.get("pattern", ""),
-            "question": _format_question_html(note.get("question", "")),
-            "choices": "".join(
-                _grammar_multi_canon.choice(c.get("opt", ""), c.get("text", "")) for c in choices
-            ),
-            "answer": _prefix_answer_with_correct_opt(
-                note.get("answer", ""), choices, note.get("correct_opt", "")
-            ),
-            # 選択肢ラベル「(A) 」を付けない正解文(2026-08-29追加)。TTS対象
-            # からも外してあるので[sound:]タグも入らない(「AIに質問」タブの
-            # TTS対象はAnswer+Exampleのみ)。2026-09-08にord=2を
-            # 「3. 誤答理由の想起」へ作り直して以降テンプレートからは
-            # 参照されていないが、フィールドの並びを崩さないため出力し続ける。
-            "answer_plain": note.get("answer", ""),
-            # 正解文の日本語訳(2026-09-08追加)。「2. セルフチェック」は
-            # 選択肢を伏せるため、これが空所の候補を絞る唯一の手がかりになる。
-            # Geminiが返してこなかった場合は空文字になり、そのカードの表は
-            # 従来どおり日本語訳なしになる(カード自体は作られる)。
-            "answer_ja": note.get("answer_ja", ""),
-            "example": _grammar_multi_canon.example_en(examples) if examples else "",
-            "example_ja": _grammar_multi_canon.example_ja(examples) if examples else "",
-            # 穴あき版(2026-08-21追加)。Geminiが例文中の学習対象語を<b>で
-            # 囲んでこなかった場合は空文字になり、4枚目(例文穴埋め)の
-            # カードは作られない。
-            "example_blank": _grammar_multi_canon.example_blank(examples) if examples else "",
-            "why": note.get("why", ""),
-            "whynot": "".join(
-                _grammar_multi_canon.whynot_item(w.get("opt", ""), w.get("reason", "")) for w in whynot
-            ),
-            "topic_key": topic_key,
-            "note_index": i,
-            "batch_key": batch_key,
-            "source_key": ("chat_grammar", f"{topic_key}::{i}::{batch_key}"),
-            "source_label": "由来: AIに質問",
-        })
-    return items
+    return build_grammar_multi_items(problems, meaning, question, batch_key)
 
 
 # ---------------------------------------------------------------------------

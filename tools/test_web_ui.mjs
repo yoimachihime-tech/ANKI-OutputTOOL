@@ -74,6 +74,37 @@ const FAKE_GRAMMAR_MULTI_NOTES = [
   },
 ];
 
+// 「AIに質問」の応答に意味・本質問題が入った形(2026-10-07追加)。
+// 1件目は採用され、2件目は接尾辞が対象なので捨てられる。
+const FAKE_MEANING_ITEMS = [
+  {
+    target: 'otherwise',
+    question: '「unless otherwise instructed(別段の指示がない限り)」における otherwise の本質的な意味として、最も適切なものを1つ選びなさい。',
+    choices: [
+      { opt: 'A', text: 'そうではない状況では(さもないと)' },
+      { opt: 'B', text: 'その指示された内容とは別の方法・方向で' },
+      { opt: 'C', text: 'これまでのすべての手順に従って忠実に' },
+    ],
+    correct_opt: 'B',
+    core_image: 'other(別の)+ wise(方向・様態)が原義。',
+    whynot: [{ opt: 'A', reason: '「さもないと」は別の用法。' }, { opt: 'C', reason: '指示に従う意味ではない。' }],
+    example_en: 'You must wear a helmet unless <b>otherwise</b> instructed.',
+    example_ja: '別段の指示がない限り、ヘルメットを着用しなければならない。',
+  },
+  {
+    target: '-ce',
+    question: '「difference(違い)」の語尾 -ce の本質的な働きとして、最も適切なものを1つ選びなさい。',
+    choices: [{ opt: 'A', text: '状態' }, { opt: 'B', text: '動作' }, { opt: 'C', text: '人' }],
+    correct_opt: 'A',
+    core_image: '...',
+    whynot: [],
+    example_en: 'It makes a <b>difference</b>.',
+    example_ja: '違いを生む。',
+  },
+];
+/** 「AIに質問」に送ったリクエスト本文(JSONに限定して頼んでいるかを確かめる)。 */
+let lastGrammarMultiBody = null;
+
 // AIに質問タブの「4問目」(習熟用/音読)としてGeminiが返す想定の応答。
 const FAKE_SHUUJUKU_ITEM = {
   pattern: "She doesn't 動詞",
@@ -375,6 +406,15 @@ globalThis.fetch = async (url, init = {}) => {
     let text;
     if (geminiMode === 'grammar_multi') {
       text = geminiCalls === 1 ? JSON.stringify(FAKE_GRAMMAR_MULTI_NOTES) : JSON.stringify(FAKE_SHUUJUKU_ITEM);
+    } else if (geminiMode === 'grammar_multi_meaning') {
+      // 2026-10-07からの応答の形({problems, meaning})。上の 'grammar_multi' は
+      // 以前の形(3問の配列だけ)のままにしてあり、そちらも読めることを兼ねて確かめる。
+      if (geminiCalls === 1) {
+        lastGrammarMultiBody = JSON.parse(init.body);
+        text = JSON.stringify({ problems: FAKE_GRAMMAR_MULTI_NOTES, meaning: FAKE_MEANING_ITEMS });
+      } else {
+        text = JSON.stringify(FAKE_SHUUJUKU_ITEM);
+      }
     } else if (geminiMode === 'correction') {
       // onDailyCorrect()は添削の後、続けて追記した行(「誤りなし」を除く)
       // をまとめて習熟用(音読)候補としても生成する。添削リクエストにだけ
@@ -536,10 +576,13 @@ if (localStorage.getItem('anki_tool_gemini_api_key') === 'DUMMY-KEY-FOR-TEST') {
 }
 
 async function dumpApkgAndCheck(blob, { expectedNoteCount, expectedCardCount,
-  firstFieldEquals, tmpName, expectedOrdCounts }) {
+  firstFieldEquals, tmpName, expectedOrdCounts, mediaCount = 0 }) {
   const zip = await window.JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
   const names = Object.keys(zip.files).sort();
-  if (names.join(',') === 'collection.anki2,media') ok(`zip の中身: ${names.join(', ')}`);
+  // 音声を埋め込んだときは、音声ファイルが 0, 1, 2 … の名前で入る(mediaCount 個)。
+  const expectedNames = [...Array.from({ length: mediaCount }, (_, i) => String(i)),
+    'collection.anki2', 'media'].sort();
+  if (names.join(',') === expectedNames.join(',')) ok(`zip の中身: ${names.join(', ')}`);
   else fail(`zip の中身が想定外: ${names}`);
 
   const { DatabaseSync } = await import('node:sqlite');
@@ -907,18 +950,14 @@ if (!downloaded) {
     //   ord1「2. セルフチェック」: req = all[Choices]。**選択肢を持つノートだけ**
     //        (囲む前は選択肢なしノートにも生え、Choicesが空だとord0と表・裏が
     //         完全に同一のカードが2枚できていた)。モックでは1件目だけ → 1枚
-    //   ord2「3. 誤答理由の想起」: req = all[Choices]。**選択肢を持つノートだけ**
-    //        → 1枚。2026-09-08にこのスロットを「3. 理由想起」から作り直した
-    //        (旧版は req = all[AnswerPlain] で3件とも生え、表に正解文を
-    //         出していた。「選択問題の表面に答えが出てきてしまっている」と
-    //         報告され、表から答えを外すとord0と同一になるため出題形式ごと
-    //         差し替えた)。ここが3に戻っていたら、答えを表に出す旧版へ
-    //        退行している。
-    //   ord3「4. 例文穴埋め」: req = all[ExampleBlank]。examples に <b> があるのは
+    //   ord2「4. 例文穴埋め」: req = all[ExampleBlank]。examples に <b> があるのは
     //        1件目だけ → 1枚
-    // 合計 3+1+1+1 = 6 枚。
-    expectedCardCount: 6,
-    expectedOrdCounts: { 0: 3, 1: 1, 2: 1, 3: 1 },
+    // 2026-10-07に「3. 誤答理由の想起」を廃止した(表がord0と同じで重複していた)。
+    // テンプレートごと削除したので「4. 例文穴埋め」のordが 3 → 2 になった。
+    // ord3 のカードが現れたら、廃止したテンプレートが戻っている。
+    // 合計 3+1+1 = 5 枚。
+    expectedCardCount: 5,
+    expectedOrdCounts: { 0: 3, 1: 1, 2: 1 },
     firstFieldEquals: '選択問題',
     tmpName: '.uitest_ai_ask.anki2',
   });
@@ -2470,18 +2509,19 @@ console.log('\n[33] プレビューで、ノートから作られるすべての
   $('ai-ask-generate').click();
   for (let i = 0; i < 100 && geminiCalls < 2; i += 1) await sleep(50);
   await sleep(200);
-  // 1問目(選択肢あり・穴あき例文あり)は4種類すべてのカードが作られる
+  // 1問目(選択肢あり・穴あき例文あり)は3種類すべてのカードが作られる
+  // (2026-10-07に「3. 誤答理由の想起」を廃止して4種類→3種類)
   const first = $('ai-ask-stock-list').querySelector('li button');
   first.click();
   const tabs = [...$('preview-templates').querySelectorAll('button')];
-  if (dialogOpened && $('preview-templates').hidden === false && tabs.length === 4) {
+  if (dialogOpened && $('preview-templates').hidden === false && tabs.length === 3) {
     ok(`カードの種類ごとのボタンが出る: ${tabs.map((b) => b.textContent).join(' / ')}`);
   } else {
     fail(`プレビューのカード切り替え: hidden=${$('preview-templates').hidden} 件数=${tabs.length}`);
   }
   const before = $('preview-frame').srcdoc;
-  tabs[3].click();
-  if ($('preview-frame').srcdoc !== before && tabs[3].classList.contains('active')) {
+  tabs[2].click();
+  if ($('preview-frame').srcdoc !== before && tabs[2].classList.contains('active')) {
     ok('ボタンでプレビューするカードが切り替わる');
   } else {
     fail('プレビューのカードが切り替わらない');
@@ -2490,8 +2530,8 @@ console.log('\n[33] プレビューで、ノートから作られるすべての
   // 2問目(選択肢なし)は「選択肢を見ずに答える」等が作られないので、そのボタンも出ない
   $('ai-ask-stock-list').querySelectorAll('li button')[1].click();
   const tabs2 = [...$('preview-templates').querySelectorAll('button')];
-  if (tabs2.length < 4) ok(`作られないカードはボタンに出さない(${tabs2.length} 種類)`);
-  else fail(`選択肢の無い問題でも4種類のボタンが出ている: ${tabs2.length}`);
+  if (tabs2.length < 3) ok(`作られないカードはボタンに出さない(${tabs2.length} 種類)`);
+  else fail(`選択肢の無い問題でも3種類のボタンが出ている: ${tabs2.length}`);
   $('preview-close').click();
   $('ai-ask-clear-stock').click();
   $('shuujuku-clear-stock').click();
@@ -2564,6 +2604,109 @@ console.log('\n[34] 「🔊 TTS」(ankitts:)を押しても起動しないとき
 
   document.removeEventListener('click', stopNavigation);
   delete globalThis.localToolLaunchWaitMs;
+}
+
+// ===========================================================================
+// 意味・本質問題(2026-10-07追加)
+// ===========================================================================
+console.log('\n[35] AIに質問: 意味・本質問題の生成と .apkg への出力');
+{
+  $('ai-ask-clear-stock').click();
+  $('shuujuku-clear-stock').click();
+  await sleep(20);
+
+  geminiMode = 'grammar_multi_meaning';
+  geminiCalls = 0;
+  geminiTtsRequests.length = 0;
+  $('ai-ask-input').value = 'unless otherwise instructed の otherwise はどういう意味?';
+  $('ai-ask-generate').click();
+  for (let i = 0; i < 100 && geminiCalls < 2; i += 1) await sleep(50);
+  await sleep(200);
+
+  const schema = lastGrammarMultiBody?.generationConfig?.responseSchema;
+  if (lastGrammarMultiBody?.generationConfig?.responseMimeType === 'application/json'
+      && schema?.properties?.problems && schema?.properties?.meaning) {
+    ok('問題の生成は共有スキーマで応答の構造を指定する(長い応答でJSONが壊れないように)');
+  } else {
+    fail(`generationConfig: ${JSON.stringify(lastGrammarMultiBody?.generationConfig)}`);
+  }
+  const stock = JSON.parse(localStorage.getItem('anki_tool_ai_ask_stock') || '[]');
+  const meaning = stock.filter((it) => it.pattern === '意味・本質問題');
+  if (stock.length === 4 && meaning.length === 1) {
+    ok('3問に意味・本質問題1問が加わる(接尾辞を対象にした1問は捨てられる)');
+  } else {
+    fail(`ストック: ${JSON.stringify(stock.map((it) => it.pattern))}`);
+  }
+  if ($('ai-ask-generate-status').textContent.includes('うち意味・本質問題 1 件')) {
+    ok('完了メッセージに意味・本質問題の件数が出る');
+  } else {
+    fail(`完了メッセージ: ${$('ai-ask-generate-status').textContent}`);
+  }
+
+  // Gemini TTS(テスト用の偽の音声)で音声を付けて出力する。
+  $('tts-engine').value = 'gemini';
+  $('tts-engine').dispatchEvent(new window.Event('change'));
+  globalThis.lamejs = null;
+  downloaded = null;
+  $('ai-ask-export').click();
+  for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+  if (!downloaded) {
+    fail('意味・本質問題を含む .apkg が生成されなかった');
+  } else {
+    // ord0「1. 判断問題」: 4件とも / ord1「2. セルフチェック」: 選択肢のある
+    // 選択問題と意味・本質問題 / ord2「4. 例文穴埋め」: <b> のある例文を持つ
+    // 選択問題と意味・本質問題。
+    await dumpApkgAndCheck(downloaded, {
+      expectedNoteCount: 4,
+      expectedCardCount: 8,
+      expectedOrdCounts: { 0: 4, 1: 2, 2: 2 },
+      firstFieldEquals: '選択問題',
+      tmpName: '.uitest_meaning.anki2',
+      // 音声: 選択問題の解答と例文 / 誤り訂正・記述式の解答 / 意味・本質問題の
+      // 例文だけ(解答は日本語なので付けない) = 5
+      mediaCount: 5,
+    });
+
+    const ttsTexts = geminiTtsRequests.map((r) => r.body?.contents?.[0]?.parts?.[0]?.text || '');
+    if (ttsTexts.length > 0 && ttsTexts.every((t) => !/[\u3040-\u30ff\u4e00-\u9fff]/.test(t))) {
+      ok(`音声にする文章に日本語が1つも含まれない(${ttsTexts.length} 件)`);
+    } else {
+      fail(`日本語を読み上げようとしている: ${JSON.stringify(ttsTexts)}`);
+    }
+    if (ttsTexts.some((t) => t.includes('unless otherwise instructed'))) {
+      ok('意味・本質問題の例文(英文)には音声を付ける');
+    } else {
+      fail(`意味・本質問題の例文に音声が付いていない: ${JSON.stringify(ttsTexts)}`);
+    }
+
+    const zip = await window.JSZip.loadAsync(Buffer.from(await downloaded.arrayBuffer()));
+    const { DatabaseSync } = await import('node:sqlite');
+    const { writeFileSync, unlinkSync } = await import('node:fs');
+    const tmp = join(HERE, '.uitest_meaning_fields.anki2');
+    writeFileSync(tmp, await zip.file('collection.anki2').async('nodebuffer'));
+    try {
+      const db = new DatabaseSync(tmp);
+      const rows = db.prepare('SELECT flds FROM notes ORDER BY id').all().map((r) => r.flds.split('\x1f'));
+      db.close();
+      const m = rows.find((f) => f[0] === '意味・本質問題');
+      // フィールドの並び: Pattern, Question, Choices, Answer, Example, ...
+      if (m && !m[3].includes('[sound:') && m[4].includes('[sound:')) {
+        ok('意味・本質問題の解答(日本語)には音声タグが無く、例文には付いている');
+      } else {
+        fail(`意味・本質問題のフィールド: Answer=${m && m[3]} / Example=${m && m[4]}`);
+      }
+    } finally {
+      try { unlinkSync(tmp); } catch { /* 残っても検証結果に影響しない */ }
+    }
+  }
+
+  // 後片付け
+  delete globalThis.lamejs;
+  $('tts-engine').value = 'cloud';
+  $('tts-engine').dispatchEvent(new window.Event('change'));
+  $('ai-ask-clear-stock').click();
+  $('shuujuku-clear-stock').click();
+  await sleep(20);
 }
 
 console.log(failures

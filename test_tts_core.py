@@ -133,6 +133,28 @@ def main():
        "This is English. Another English one.")
 
     print()
+    print("[6] Grammar Multi では日本語を読み上げない(2026-10-07、意味・本質問題)")
+    gm = "Grammar Multi (文法・複数出題形式)"
+
+    def tts_text(nt_name, raw, exclude=False):
+        transform = tts_core.default_source_transform(nt_name, exclude)
+        return tts_core.strip_html_for_tts(transform(raw) if transform else raw)
+
+    eq("意味・本質問題の解答(日本語)は空になり、音声が付かない",
+       tts_text(gm, "(B) その指示された内容とは別の方法・方向で"), "")
+    eq("英文の解答はそのまま読む(選択肢記号だけ落とす)",
+       tts_text(gm, "(B) She showed great patience."), "She showed great patience.")
+    eq("意味・本質問題の例文(英文)は読む",
+       tts_text(gm, '<span class="ex-num">Ex1.</span> You must wear a helmet unless <b>otherwise</b> instructed.'),
+       "You must wear a helmet unless otherwise instructed.")
+    eq("取り込みでAnkiが「+」付きの別名を作っても効く",
+       tts_text(gm + "+", "(A) そうではない状況では"), "")
+    check("他のノートタイプでは日本語を外さない(ja-JP の音声で読む使い方を壊さない)",
+          tts_core.default_source_transform("Vocab (単語 v1)", False) is None)
+    check("③のチェックがONなら、どのノートタイプでも外す(従来どおり)",
+          tts_core.default_source_transform("Vocab (単語 v1)", True) is tts_core.strip_japanese_sentences)
+
+    print()
     if all(_results):
         print(f"✅ 全テスト成功 ({len(_results)} 件)")
         return 0

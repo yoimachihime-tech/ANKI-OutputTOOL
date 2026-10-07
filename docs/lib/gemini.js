@@ -216,11 +216,17 @@ function textFromResponse(data) {
  * @param {string} prompt
  * @param {string} apiKey
  * @param {string} model 例: "gemini-2.0-flash"
+ * @param {{responseSchema?: object}} [options] responseSchema を渡すと構造化
+ *   出力になり、応答がそのスキーマどおりのJSONに限定される(2026-10-07追加)。
+ *   JSONを「頼む」だけだと、出力が長い呼び出しで途中で壊れることがあった
+ *   (gemini_client.call_gemini() の response_schema と同じ。経緯もそちら)。
  */
-export async function callGemini(prompt, apiKey, model) {
-  return textFromResponse(
-    await postGeminiRequest({ contents: [{ parts: [{ text: prompt }] }] }, apiKey, model),
-  );
+export async function callGemini(prompt, apiKey, model, { responseSchema = null } = {}) {
+  const body = { contents: [{ parts: [{ text: prompt }] }] };
+  if (responseSchema) {
+    body.generationConfig = { responseMimeType: 'application/json', responseSchema };
+  }
+  return textFromResponse(await postGeminiRequest(body, apiKey, model));
 }
 
 /** 応答から JSON オブジェクトを取り出す(```json フェンス付きにも対応)。 */
@@ -486,36 +492,177 @@ function prefixAnswerWithCorrectOpt(answer, choices, correctOpt) {
   return opt ? `(${opt}) ${answer}` : answer;
 }
 
-/**
- * 質問文から、Grammar Multi(文法・複数出題形式)の独立ノート3件分の
- * item を生成する(gemini_client.generate_grammar_multi_items_from_question
- * に対応)。戻り値の各itemはdocs/shared/card_defs.jsonの"grammar_multi"定義の
- * fields(pattern/question/choices/answer/example/example_ja/why/whynot/
- * example_blank/answer_plain/answer_ja)に加え、guid計算・重複検出用の
- * topic_key/note_index/batch_keyを持つ。
- *
- * batch_key(2026-08-29追加)は**この1回の生成を識別する値**で、guidの末尾に
- * 足される。同じ質問を投げ直すとGeminiは毎回違う問題を作るのに、以前は
- * guidが「質問文+問題番号」だけで決まっていたため、後から生成した問題を
- * 別のapkgで取り込むと既存ノートと同じguidと判定されて**取り込まれず黙って
- * 捨てられていた**。省略すると新しい値を採番する(テストから固定値を渡せる
- * ようにするための引数で、通常の呼び出しでは指定しない)。
- */
-export async function generateGrammarMultiItems({
-  question, apiKey, model, promptTemplate, batchKey,
-}) {
-  const prompt = fillPlaceholders(promptTemplate, { question });
-  const text = await callGemini(prompt, apiKey, model);
-  const parsed = extractJsonArray(text);
-  if (!parsed || parsed.length === 0) {
-    throw new GeminiError(`Gemini応答が空、または配列ではありません: ${text.slice(0, 300)}`);
-  }
+// ---------------------------------------------------------------------------
+// 意味・本質問題(2026-10-07追加)
+//
+// 「AIに質問」の3問に加えて、質問の核心にある語句が**本質的に何を意味するか**を
+// 日本語の3択で問う問題を0〜3問作る。それまでのカード3「3. 誤答理由の想起」は、
+// 表がカード1と同じで重複していたため廃止し、意味・本質問題は独立したノートと
+// して足す。gemini_client.py の同名の処理と**結果が一致すること**
+// (tools/verify_grammar_multi_parity.mjs で固定している)。
+//
+// 試作で見えた弱点はプロンプトで頼むだけでは守られなかったので、ここで
+// 機械的に確かめる(正解位置の偏り/接辞・語源の作り話/英語の語句が無い問題/
+// 誤った例文/誤答の理由のキー名の取り違え)。詳細は gemini_client.py の
+// 同じ節のコメント。
+// ---------------------------------------------------------------------------
 
+export const GRAMMAR_MULTI_MEANING_PATTERN = '意味・本質問題';
+const MAX_MEANING_ITEMS = 3;
+// gemini_client._JA_CHAR_RE と同じ範囲(ひらがな/カタカナ/CJK統合漢字/半角カタカナ)。
+const GM_JA_CHAR_RE = /[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ]/;
+const OPT_LETTERS = 'ABCD';
+// 正解の選択肢が誤答の平均の何倍以上長ければ捨てるか
+// (gemini_client._MAX_CORRECT_LENGTH_RATIO と同じ。経緯もそちら)。
+const MAX_CORRECT_LENGTH_RATIO = 1.4;
+
+/** 意味・本質問題のitemか(解答が日本語なので音声を付けない判定に使う)。 */
+export function isMeaningItem(item) {
+  return (item && item.pattern) === GRAMMAR_MULTI_MEANING_PATTERN;
+}
+
+/** gemini_client._english_phrase_in_question() と同一。 */
+function englishPhraseInQuestion(question) {
+  for (const m of String(question || '').matchAll(/「([^」]+)」/g)) {
+    const inner = m[1].split(/[（(]/)[0].trim();
+    if (/[A-Za-z]/.test(inner) && !GM_JA_CHAR_RE.test(inner)) return inner;
+  }
+  return '';
+}
+
+/** gemini_client._normalize_for_match() と同一。 */
+function normalizeForMatch(text) {
+  return String(text || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[‘’]/g, "'")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * gemini_client._seeded_permutation() と同一。seedText から決まる 0..n-1 の
+ * 並べ替え。乱数ライブラリは言語ごとに系列が違うので使わず、文字列ハッシュ+
+ * MINSTD(乗数48271)で Fisher-Yates を回す。積は最大でも約1.0e14で、
+ * Number の整数精度(2^53)に収まる。
+ */
+function seededPermutation(n, seedText) {
+  let h = 0;
+  for (const ch of String(seedText)) h = (h * 31 + ch.codePointAt(0)) % 4294967296;
+  let state = (h % 2147483646) + 1;
+  const order = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i -= 1) {
+    state = (state * 48271) % 2147483647;
+    const j = state % (i + 1);
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
+
+/** gemini_client._meaning_note_from_raw() と同一。使えないものは null。 */
+function meaningNoteFromRaw(raw, seedText) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const target = String(raw.target || '').trim();
+  // 接頭辞・接尾辞(-ce / -ing など)は対象外(語源の説明が作り話になるため)。
+  if (!target || target.startsWith('-') || target.endsWith('-')) return null;
+  const question = String(raw.question || '').trim();
+  const phrase = englishPhraseInQuestion(question);
+  if (!phrase) return null;
+
+  const choices = (Array.isArray(raw.choices) ? raw.choices : [])
+    .filter((c) => c && typeof c === 'object' && String(c.text || '').trim());
+  const opts = choices.map((c) => String(c.opt || '').trim().toUpperCase());
+  if (choices.length < 2 || choices.length > OPT_LETTERS.length || new Set(opts).size !== opts.length) {
+    return null;
+  }
+  const correct = String(raw.correct_opt || '').trim().toUpperCase();
+  if (!opts.includes(correct)) return null;
+  // 文字数は Python の len() と同じくコードポイント単位で数える。
+  const lengths = choices.map((c) => [...String(c.text).trim()].length);
+  const others = lengths.filter((_, i) => opts[i] !== correct);
+  const othersAvg = others.reduce((a, b) => a + b, 0) / others.length;
+  if (lengths[opts.indexOf(correct)] >= MAX_CORRECT_LENGTH_RATIO * othersAvg) return null;
+
+  const order = seededPermutation(choices.length, seedText);
+  const mapping = {};
+  const newChoices = order.map((oldI, newI) => {
+    mapping[opts[oldI]] = OPT_LETTERS[newI];
+    return { opt: OPT_LETTERS[newI], text: String(choices[oldI].text).trim() };
+  });
+  const correctText = String(choices[opts.indexOf(correct)].text).trim();
+
+  const whynot = [];
+  for (const w of (Array.isArray(raw.whynot) ? raw.whynot : [])) {
+    if (!w || typeof w !== 'object') continue;
+    const old = String(w.opt || '').trim().toUpperCase();
+    const reason = String(w.reason || w.text || '').trim();
+    if (Object.hasOwn(mapping, old) && old !== correct && reason) whynot.push({ opt: mapping[old], reason });
+  }
+  whynot.sort((a, b) => (a.opt < b.opt ? -1 : a.opt > b.opt ? 1 : 0));
+
+  const exampleEn = String(raw.example_en || '').trim();
+  const exampleJa = String(raw.example_ja || '').trim();
+  const examples = exampleEn && normalizeForMatch(exampleEn).includes(normalizeForMatch(phrase))
+    ? [[exampleEn, exampleJa]]
+    : [];
+
+  return {
+    pattern: GRAMMAR_MULTI_MEANING_PATTERN,
+    question,
+    choices: newChoices,
+    answer: correctText,
+    // 解答がもともと日本語なので訳は無い(gemini_client.py と同じ)。
+    answer_ja: '',
+    correct_opt: mapping[correct],
+    examples,
+    why: String(raw.core_image || '').trim(),
+    whynot,
+  };
+}
+
+function meaningNotes(meaning, batchKey) {
+  const notes = [];
+  (Array.isArray(meaning) ? meaning : []).forEach((raw, j) => {
+    if (notes.length >= MAX_MEANING_ITEMS) return;
+    const note = meaningNoteFromRaw(raw, `${batchKey}:${j}`);
+    if (note) notes.push(note);
+  });
+  return notes;
+}
+
+/**
+ * gemini_client._parse_grammar_multi_response() と同一。応答から
+ * [3問の配列, 意味・本質問題の配列] を取り出す。以前の形(3問の配列だけ)が
+ * 返ってきても、意味・本質問題が0問として扱う。
+ */
+function parseGrammarMultiResponse(text) {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  const candidate = fence ? fence[1] : text.trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch (e) {
+    throw new GeminiError(`Gemini応答をJSONとして解析できませんでした: ${text.slice(0, 300)}`);
+  }
+  if (Array.isArray(parsed)) return [parsed, []];
+  if (parsed && typeof parsed === 'object') {
+    return [
+      Array.isArray(parsed.problems) ? parsed.problems : [],
+      Array.isArray(parsed.meaning) ? parsed.meaning : [],
+    ];
+  }
+  return [[], []];
+}
+
+/**
+ * gemini_client.build_grammar_multi_items() と同一。Geminiの応答(3問+
+ * 意味・本質問題)を item のリストにする(通信を伴わない後処理だけ)。
+ */
+export function buildGrammarMultiItems({ problems, meaning, question, batchKey }) {
   const topicKey = question.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
-  // このバッチを識別する値。itemに保存され、以後変わらない(guidの安定性は
-  // これに依存するので、あとから振り直さないこと)。
-  const batch = batchKey || newBatchKey();
-  return parsed.map((note, i) => {
+  const notes = [...(problems || []), ...meaningNotes(meaning, batchKey)];
+  return notes.map((note, i) => {
     const choices = note.choices || [];
     const whynot = note.whynot || [];
     const examples = (note.examples || []).map((ex) => [ex[0], ex[1]]);
@@ -526,9 +673,8 @@ export async function generateGrammarMultiItems({
       answer: prefixAnswerWithCorrectOpt(note.answer || '', choices, note.correct_opt || ''),
       // 選択肢ラベル「(A) 」を付けない正解文(2026-08-29追加)。TTS対象
       // (TTS_FIELD_KEYS.ai_ask = ['answer', 'example'])にも入れていないので
-      // [sound:] タグも付かない。2026-09-08に ord=2 を
-      // 「3. 誤答理由の想起」へ作り直して以降テンプレートからは参照されて
-      // いないが、フィールドの並びを崩さないため出力し続ける。
+      // [sound:] タグも付かない。どのテンプレートからも参照されていないが、
+      // フィールドの並びを崩さないため出力し続ける。
       answer_plain: note.answer || '',
       // 正解文の日本語訳(2026-09-08追加)。「2. セルフチェック」は選択肢を
       // 伏せるため、これが空所の候補を絞る唯一の手がかりになる。Geminiが
@@ -542,9 +688,44 @@ export async function generateGrammarMultiItems({
       whynot: whynot.map((w) => gmWhynotItem(w.opt || '', w.reason || '')).join(''),
       topic_key: topicKey,
       note_index: i,
-      batch_key: batch,
+      batch_key: batchKey,
     };
   });
+}
+
+/**
+ * 質問文から、Grammar Multi(文法・複数出題形式)の独立ノート(3問+
+ * 意味・本質問題0〜3問)の item を生成する
+ * (gemini_client.generate_grammar_multi_items_from_question に対応)。
+ * 戻り値の各itemはdocs/shared/card_defs.jsonの"grammar_multi"定義の
+ * fields(pattern/question/choices/answer/example/example_ja/why/whynot/
+ * example_blank/answer_plain/answer_ja)に加え、guid計算・重複検出用の
+ * topic_key/note_index/batch_keyを持つ。
+ *
+ * batch_key(2026-08-29追加)は**この1回の生成を識別する値**で、guidの末尾に
+ * 足される。同じ質問を投げ直すとGeminiは毎回違う問題を作るのに、以前は
+ * guidが「質問文+問題番号」だけで決まっていたため、後から生成した問題を
+ * 別のapkgで取り込むと既存ノートと同じguidと判定されて**取り込まれず黙って
+ * 捨てられていた**。省略すると新しい値を採番する(テストから固定値を渡せる
+ * ようにするための引数で、通常の呼び出しでは指定しない)。
+ *
+ * responseSchema は docs/shared/grammar_multi_response_schema.json の中身
+ * (Python版も同じファイルを使う)。
+ */
+export async function generateGrammarMultiItems({
+  question, apiKey, model, promptTemplate, responseSchema, batchKey,
+}) {
+  const prompt = fillPlaceholders(promptTemplate, { question });
+  const text = await callGemini(prompt, apiKey, model, { responseSchema });
+  const [problems, meaning] = parseGrammarMultiResponse(text);
+  if (problems.length === 0) {
+    throw new GeminiError(`Gemini応答に問題が含まれていません: ${text.slice(0, 300)}`);
+  }
+  // このバッチを識別する値。itemに保存され、以後変わらない(guidの安定性は
+  // これに依存するので、あとから振り直さないこと)。意味・本質問題の
+  // 選択肢の並べ替えもこの値から決まる。
+  const batch = batchKey || newBatchKey();
+  return buildGrammarMultiItems({ problems, meaning, question, batchKey: batch });
 }
 
 // ---------------------------------------------------------------------------

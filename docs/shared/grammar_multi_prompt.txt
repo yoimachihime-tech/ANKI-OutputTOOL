@@ -66,41 +66,98 @@
 12. correct_optは選択問題の場合のみ、正解の選択肢のopt(例: "B")を
     入れること。選択問題以外では空文字""にすること。
 
-以下のJSON形式で、JSON以外の文字を含めずに出力してください(必ず3要素の配列。
-questionフィールドの書き方は例を参考に、日本語の指示文+英語の対象文の
-構成を必ず守ること):
-[
-  {
-    "pattern": "選択問題",
-    "question": "空所に入る最も適切な語を選択肢から選びなさい。'She showed great ___ when dealing with the difficult customers.'",
-    "choices": [{"opt": "A", "text": "..."}, {"opt": "B", "text": "patience"}, {"opt": "C", "text": "..."}],
-    "answer": "She showed great patience when dealing with the difficult customers.",
-    "answer_ja": "彼女は難しい客に対応する際、非常に辛抱強く振る舞った。",
-    "correct_opt": "B",
-    "examples": [["She showed great <b>patience</b> with the customers.", "日本語訳。"]],
-    "why": "...",
-    "whynot": [{"opt": "B", "reason": "..."}, {"opt": "C", "reason": "..."}]
-  },
-  {
-    "pattern": "誤り訂正問題",
-    "question": "次の英文を訂正してください。'I go to school yesterday. I very like it.'",
-    "choices": [],
-    "answer": "I went to school yesterday. I like it very much.",
-    "answer_ja": "私は昨日学校へ行きました。とても気に入っています。",
-    "correct_opt": "",
-    "examples": [["I <b>went</b> to school yesterday.", "私は昨日学校へ行きました。"]],
-    "why": "...",
-    "whynot": []
-  },
-  {
-    "pattern": "記述式・書き換え問題",
-    "question": "以下の2つの文を1文にまとめなさい。 (1) Good lighting helps. (2) It makes the room look spacious.",
-    "choices": [],
-    "answer": "Good lighting helps make the room look spacious.",
-    "answer_ja": "良い照明は部屋を広く見せるのに役立ちます。",
-    "correct_opt": "",
-    "examples": [["Good lighting <b>makes</b> the room look spacious.", "良い照明は部屋を広く見せます。"]],
-    "why": "...",
-    "whynot": []
-  }
-]
+【意味・本質問題(上の3問とは別に作る)】
+上の3問に加えて、「意味・本質問題」を0〜3問作ってください。
+意味・本質問題とは、質問の核心にある英語の語句が**本質的に何を意味するか
+(どういう働き・イメージを持つか)**を、日本語の3択で問う問題です。
+形を選ばせる問題(空所補充など)ではありません。
+
+例:
+  問題: 「unless otherwise instructed(別段の指示がない限り)」における otherwise の
+        本質的な意味として、最も適切なものを1つ選びなさい。
+  (A) そうではない状況では(さもないと)
+  (B) その指示された内容とは別の方法・方向で
+  (C) これまでのすべての手順に従って忠実に
+  正解: B
+
+M1. 問う対象(target)は、語・熟語・機能語のいずれか。構文や文法規則そのものを
+    説明させるのではなく、その中で鍵になる語の意味・働きを問うこと
+    (例: 「deny + 動名詞」なら deny の働き)。
+    **接頭辞・接尾辞(-ce, -ing, un- など)や語源は対象にしないこと**。
+    意味・働きを問える対象が2つ以上あれば、対象ごとに別の問題にする(最大3問)。
+    同じ対象を言い回しだけ変えて複数問にしないこと。
+    問う価値のある対象が無い質問では、空配列にすること(無理に作らないこと)。
+M2. questionは日本語で、必ず「英語の語句(和訳)」を「」で示したうえで、その中の
+    targetの意味・働き・ニュアンスを問い、「最も適切なものを1つ選びなさい。」で
+    終えること。「」の中の英語の語句は、実際によく使われる自然な表現にすること。
+M3. choicesは日本語の3択で、正解は1つ。選択肢には英単語を混ぜず、日本語だけで
+    書くこと。誤答は次の2種類にすること:
+    (a) 同じ語の別の意味、または学習者がよく取り違える表面的な訳
+        (例: otherwise の「さもないと」)
+    (b) もっともらしいが本質からずれた説明
+    3つの選択肢の**長さと詳しさをそろえること**(正解だけ長く詳しく書くと、
+    読まずに当てられてしまう)。「常に」「絶対に」「機械的に」のような極端な
+    言い切りで、すぐ消せる誤答を作らないこと。2つ以上が正解に読める選択肢に
+    しないこと。
+M4. core_imageは、正解の意味をイメージとして掴むための日本語の説明を1〜2文。
+    一般的な辞書・文法書で確認できる内容だけを書くこと。
+M5. whynotは各誤答について {"opt": "A", "reason": "..."} の形で、日本語1文ずつ。
+    キー名は必ず "reason" にすること。
+M6. example_enは、questionの「」の中の英語の語句を**そのまま(1字も変えずに)
+    含む**自然な英文を1文。target部分を<b></b>で囲むこと。example_jaはその
+    和訳(<b>は入れない)。
+
+以下のJSON形式で、JSON以外の文字を含めずに出力してください。
+problemsは必ず3要素の配列、meaningは0〜3要素の配列です。
+questionフィールドの書き方は例を参考に、problemsでは日本語の指示文+英語の
+対象文の構成を必ず守ること。出力例の内容(patience や otherwise)を
+そのまま使わず、質問の内容に合わせて作ること:
+{
+  "problems": [
+    {
+      "pattern": "選択問題",
+      "question": "空所に入る最も適切な語を選択肢から選びなさい。'She showed great ___ when dealing with the difficult customers.'",
+      "choices": [{"opt": "A", "text": "..."}, {"opt": "B", "text": "patience"}, {"opt": "C", "text": "..."}],
+      "answer": "She showed great patience when dealing with the difficult customers.",
+      "answer_ja": "彼女は難しい客に対応する際、非常に辛抱強く振る舞った。",
+      "correct_opt": "B",
+      "examples": [["She showed great <b>patience</b> with the customers.", "日本語訳。"]],
+      "why": "...",
+      "whynot": [{"opt": "B", "reason": "..."}, {"opt": "C", "reason": "..."}]
+    },
+    {
+      "pattern": "誤り訂正問題",
+      "question": "次の英文を訂正してください。'I go to school yesterday. I very like it.'",
+      "choices": [],
+      "answer": "I went to school yesterday. I like it very much.",
+      "answer_ja": "私は昨日学校へ行きました。とても気に入っています。",
+      "correct_opt": "",
+      "examples": [["I <b>went</b> to school yesterday.", "私は昨日学校へ行きました。"]],
+      "why": "...",
+      "whynot": []
+    },
+    {
+      "pattern": "記述式・書き換え問題",
+      "question": "以下の2つの文を1文にまとめなさい。 (1) Good lighting helps. (2) It makes the room look spacious.",
+      "choices": [],
+      "answer": "Good lighting helps make the room look spacious.",
+      "answer_ja": "良い照明は部屋を広く見せるのに役立ちます。",
+      "correct_opt": "",
+      "examples": [["Good lighting <b>makes</b> the room look spacious.", "良い照明は部屋を広く見せます。"]],
+      "why": "...",
+      "whynot": []
+    }
+  ],
+  "meaning": [
+    {
+      "target": "otherwise",
+      "question": "「unless otherwise instructed(別段の指示がない限り)」における otherwise の本質的な意味として、最も適切なものを1つ選びなさい。",
+      "choices": [{"opt": "A", "text": "そうではない状況では(さもないと)"}, {"opt": "B", "text": "その指示された内容とは別の方法・方向で"}, {"opt": "C", "text": "これまでのすべての手順に従って忠実に"}],
+      "correct_opt": "B",
+      "core_image": "other(別の)+ wise(方向・様態)が原義で、基準となる状態や指示から「それとは異なる方向・方法をとること」を表す。",
+      "whynot": [{"opt": "A", "reason": "「さもないと」は otherwise の別の用法で、ここでは instructed を修飾して「別のやり方で」を表している。"}, {"opt": "C", "reason": "指示に従うことではなく、例外の条件をつくる働きをしている。"}],
+      "example_en": "You must wear a helmet unless <b>otherwise</b> instructed.",
+      "example_ja": "別段の指示がない限り、ヘルメットを着用しなければならない。"
+    }
+  ]
+}
