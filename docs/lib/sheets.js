@@ -51,7 +51,7 @@
 // 同期データの分割保存(2026-08-05)。1キーの値が1セルの上限(50,000文字)を
 // 超えても書けるよう、B列以降へチャンクに分けて並べる。定数と分割・連結の
 // 処理そのものは sync.js が持つ(このファイルは Sheets API との入出力だけを担う)。
-import { splitIntoChunks, joinChunks, SYNC_MAX_CHUNKS } from './sync.js';
+import { splitIntoChunks, joinChunks, SYNC_MAX_CHUNKS } from './sync.js?v=20261026a';
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
@@ -718,9 +718,12 @@ function splitMultiline(cell) {
 /** _to_int_or_none() と同一(空欄・数値でないものは null)。 */
 function toIntOrNull(value) {
   const s = String(value ?? '').trim();
-  if (!s) return null;
-  const n = parseInt(s, 10);
-  return Number.isNaN(n) ? null : n;
+  // 整数として書かれた値だけを受け付ける(2026-10-26)。parseInt は "87.5" を 87、
+  // "80点" を 80 と読んでしまい、Python の int()(どちらも None)と食い違って
+  // いた。同じ行でもWeb版とデスクトップ版で Score の有無が変わり、どちらで
+  // 出力したかによってAnkiのカードの中身が入れ替わっていた。
+  if (!/^[+-]?\d+$/.test(s)) return null;
+  return Number(s);
 }
 
 /**
@@ -827,6 +830,19 @@ function newRowId() {
 }
 
 /** sheets_writer の datetime.now().strftime("%Y-%m-%d %H:%M:%S") と同じ形式。 */
+/**
+ * 文字列のセルが数式として解釈されないようにする(2026-10-26)。
+ *
+ * 追記は「日時」を日時として認識させるため USER_ENTERED で送っているが、
+ * そのせいで「- I goes to school.」のように = + - @ で始まる原文・解説が
+ * 数式として扱われ、#ERROR! になっていた(読み戻すとカードの中身も #ERROR! に
+ * なる)。先頭に ' を付けると文字列として入る(' 自体はセルに表示されず、
+ * 読み戻した値にも含まれない)。sheets_writer._as_literal_text と同じ規則。
+ */
+export function asLiteralText(value) {
+  return typeof value === 'string' && /^[=+\-@]/.test(value) ? `'${value}` : value;
+}
+
 function nowString(date = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} `
@@ -859,7 +875,9 @@ export async function appendCorrectionRows({
     newIds.push(rowId);
     return headers.map((header) => {
       const builder = CORRECTION_COLUMN_BUILDERS[header];
-      return builder ? builder(c, rowId, nowStr) : '';
+      const value = builder ? builder(c, rowId, nowStr) : '';
+      // 日時は USER_ENTERED で日時として認識させたいので、そのまま送る
+      return header === '日時' ? value : asLiteralText(value);
     });
   });
 

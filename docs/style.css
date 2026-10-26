@@ -150,6 +150,20 @@ body {
   border-radius: var(--radius);
   box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
   animation: notice-slide-in .18s ease-out;
+  /* タップ(クリック)で閉じられる(2026-10-26)。エラーは自動では消えないため、
+     閉じる手段が無いと、スクロールしても画面上端に貼り付いたまま内容を
+     覆い続けていた。右上の ✕ は「閉じられる」ことを示す目印。 */
+  position: relative;
+  padding-right: 36px;
+  cursor: pointer;
+}
+.notice::after {
+  content: '✕';
+  position: absolute;
+  top: 9px;
+  right: 12px;
+  color: var(--sub);
+  font-size: .85rem;
 }
 .notice.error { border-left-color: var(--danger); }
 
@@ -484,7 +498,8 @@ a.button-like { display: inline-block; text-decoration: none; }
 a.button-like[hidden] { display: none; }
 button.danger { color: var(--danger); border-color: var(--danger); }
 
-.status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; }
+/* overflow-wrap: エラー本文に長いURLやトークンが入っても、スマホで横にはみ出さない */
+.status { font-size: .85rem; color: var(--sub); margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .status.error { color: var(--danger); }
 /* 下の .status.loading が display:flex を直接指定しているため、hidden属性の
    既定スタイル(display:none)がそちらに負けて隠れなくなる(.tab-panel[hidden]と
@@ -571,6 +586,7 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   gap: 8px;
   padding: 4px 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .log-list li + li { border-top: 1px solid var(--border); }
 .log-list li.error { color: var(--danger); }
@@ -596,7 +612,13 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 }
 
 .stock li.duplicate { background: var(--warn-bg); }
-.stock input[type="checkbox"] { width: auto; margin-top: 4px; flex: none; }
+/* チェックボックス+本文を包む label(2026-10-26)。本文を押しても選択できる。 */
+.stock .pick {
+  display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; cursor: pointer;
+  /* 共通の label の見た目(太字・上下の余白)は打ち消す */
+  margin: 0; font-size: inherit; font-weight: inherit;
+}
+.stock input[type="checkbox"] { width: 20px; height: 20px; margin-top: 2px; flex: none; }
 .stock .body { flex: 1; min-width: 0; }
 .stock .dup-tag { color: var(--danger); font-size: .75rem; font-weight: 600; }
 /* 「✓ 出力済み」等、警告ではなく単なる状態表示のタグ(2026-07-29追加)。

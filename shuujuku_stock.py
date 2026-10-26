@@ -94,6 +94,16 @@ def get_pending(path: str = None) -> list:
     return load_stock(path)["pending"]
 
 
+def known_source_keys(path: str = None) -> set:
+    """ストックにある(未出力・出力済みの両方)source_keyの集合("kind:key"形式)。
+
+    同じシート行から候補を作り直さないために使う(2026-10-26)。DailyConversation
+    の読み込みのたびに、まだシート上で未出力のすべての行をAIへ送り直していた
+    ため、無料枠を使い切りやすく、同じ行の候補が重複して溜まっていた。"""
+    stock = load_stock(path)
+    return set(stock["exported_keys"]) | {_source_key_str(item) for item in stock["pending"]}
+
+
 def add_pending_items(new_items: list, path: str = None) -> int:
     """new_itemsを常にpendingへ追加する(重複していてもスキップしない、
     2026-07-27変更)。戻り値: 追加した件数(= len(new_items))。

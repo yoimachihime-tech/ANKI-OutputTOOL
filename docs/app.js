@@ -28,22 +28,22 @@ import {
 // 2026-10-05: lib/tts.js も Gemini TTS のために gemini.js を import するように
 // なった。**tts.js 側の `?v=` と必ず同じ値にすること**(URLが違うと同じ
 // モジュールが2つ読み込まれる)。
-} from './lib/gemini.js?v=20261007a';
+} from './lib/gemini.js?v=20261026a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21: 一括出力タブのために buildApkg を複数種別対応にしたため、
 // 古い apkg.js が使われると groups 指定が無視されてしまう)。
 // apkg.js は app.js からしか import されていない。
-import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20261007a';
+import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20261026a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-20: 習熟用のフィールド構成をv2へ変えた際、ここが無かったために
 // ブラウザが古い lib/shuujuku.js を読み続け、旧Num/Content形式のカードが
 // 出力され続けた)。shuujuku.js は app.js からしか import されていない。
 import {
   buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum,
-} from './lib/shuujuku.js?v=20261007a';
+} from './lib/shuujuku.js?v=20261026a';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
-} from './lib/dueCounter.js';
+} from './lib/dueCounter.js?v=20261026a';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21に付けた。読み上げテキストの組み立てを変えたため、古い tts.js を
 //  掴んだままだと「Ex1.」等が読み上げに残り続ける。tts.js を import している
@@ -54,7 +54,7 @@ import {
   listCloudVoices, PREBUILT_VOICES, prebuiltVoiceLabel, chirp3VoiceName, languageCodeFromVoiceName,
   GEMINI_TTS_MODELS, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE, DEFAULT_CLOUD_VOICE,
   geminiTtsSupportsStyle, TTS_ENGINE_GEMINI, TTS_ENGINE_CLOUD, DEFAULT_TEST_TEXT,
-} from './lib/tts.js?v=20261007a';
+} from './lib/tts.js?v=20261026a';
 import {
   getAccessToken, clearAccessToken, signOut, isSignedIn,
   beginAuthCodeFlow, completeAuthCodeFlowIfReturning,
@@ -64,15 +64,16 @@ import {
 // 更新しないため、これが無いとブラウザが古い lib/sheets.js を使い続ける。
 // **他から import されていないモジュールにだけ付けること**——同じモジュールを
 // 別々のURLで読むと実体が2つでき、ここでは accessToken などの状態が二重になる。
-} from './lib/sheets.js?v=20260813a';
-import * as dailyconv from './lib/dailyconv.js';
+} from './lib/sheets.js?v=20261026a';
+import * as dailyconv from './lib/dailyconv.js?v=20261026a';
 import {
   getAllUsage, usageSummary, clearCounts, clearLearnedLimits,
-} from './lib/quota.js';
+} from './lib/quota.js?v=20261026a';
 import {
   newSyncId, ensureItemIds, mergeStock, capacityPercent, parseIdArray,
   exceedsSyncLimit, SYNC_VALUE_LIMIT, CAPACITY_WARN_PERCENT, pruneTombstoneIds,
-} from './lib/sync.js';
+  isUnreadableJsonArray,
+} from './lib/sync.js?v=20261026a';
 
 // フィルターチェックボックスの状態をlocalStorageに永続化する際のキー接頭辞
 // (bindPersistentCheckbox()参照)。init()がモジュール読み込み直後に即時
@@ -367,6 +368,8 @@ function addTombstoneIds(storageKey, ids) {
  * ローカルに持つのは「一覧から除外した行ID」だけ(dailyconv.js)。
  */
 let dailyPendingRows = [];
+/** このページを開いてから一度でもシートを読み込めたか(空の一覧の文言を出し分けるため)。 */
+let dailyPendingLoaded = false;
 
 // ---------------------------------------------------------------------------
 // 起動
@@ -410,6 +413,7 @@ async function init() {
   renderShuujukuStock();
   renderBulkSummary();
   renderDailyPending();
+  restoreLastTab();
 
   // Googleの同意画面から `?code=...` を付けて戻ってきた直後なら、ここで
   // トークン交換まで済ませる(2026-08-05追加、Worker方式)。設定の読み込みが
@@ -417,6 +421,24 @@ async function init() {
   await handleAuthRedirectReturn();
   updateGoogleAuthStatus();
 
+  try {
+    await loadSharedFiles();
+  } catch (e) {
+    sharedLoadFailed = true;
+    notify(`起動時にカードの定義・プロンプトを読み込めませんでした: ${e.message}\n`
+      + '通信状態を確認して、ページを再読み込みしてください(作ったカードは消えていません)。', true);
+  }
+
+  // 他の端末が保存した内容を起動時に取り込む(2026-08-05追加、読み込みのみ)。
+  // **await しない**: 通信を待つ間アプリが使えないと不便なので、裏で進めて
+  // 完了したらヘッダーに件数を出すだけにする。失敗しても起動は妨げない
+  // (autoPullOnStartup 側で握り潰してステータス表示に留めている)。
+  // 共有ファイルの読み込みに失敗しても同期は行う(以前はここまで来なかった)。
+  autoPullOnStartup();
+}
+
+/** shared/ 配下のプロンプト・カード定義を読み込む(init から呼ぶ)。 */
+async function loadSharedFiles() {
   const [
     wordPrompt, grammarMultiPrompt, grammarMultiResponseSchema, shuujukuPrompt, shuujukuDailyconvPrompt,
     shuujukuSentencePrompt, shuujukuPhrasePrompt,
@@ -445,12 +467,6 @@ async function init() {
   shared.correctionResponseSchema = correctionResponseSchema;
   shared.cardDefs = cardDefsJson.defs;
   shared.ankiSchema = ankiSchema;
-
-  // 他の端末が保存した内容を起動時に取り込む(2026-08-05追加、読み込みのみ)。
-  // **await しない**: 通信を待つ間アプリが使えないと不便なので、裏で進めて
-  // 完了したらヘッダーに件数を出すだけにする。失敗しても起動は妨げない
-  // (autoPullOnStartup 側で握り潰してステータス表示に留めている)。
-  autoPullOnStartup();
 }
 
 /**
@@ -484,9 +500,33 @@ async function fetchText(url) {
   const versioned = APP_VERSION && !APP_VERSION.startsWith('(')
     ? `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(APP_VERSION)}`
     : url;
-  const res = await fetch(versioned);
-  if (!res.ok) throw new Error(`${url} を読み込めませんでした (HTTP ${res.status})`);
-  return res.text();
+  // スマホの通信が一瞬途切れただけで起動が失敗しないよう、1回だけ取り直す
+  // (2026-10-26)。失敗すると、どのタブも生成・出力できなくなるため。
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const res = await fetch(versioned);
+      if (!res.ok) throw new Error(`${url} を読み込めませんでした (HTTP ${res.status})`);
+      return await res.text();
+    } catch (e) {
+      if (attempt >= 1) throw e;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+}
+
+/** 起動時に shared/ の読み込みが失敗したか(true ならページの再読み込みが要る)。 */
+let sharedLoadFailed = false;
+
+/**
+ * 共有ファイル(プロンプト・カード定義)がまだ使えないときの文言。
+ * 起動時の読み込みが失敗していた場合、待っても読み直されないので、
+ * 「待って再試行」ではなく再読み込みを案内する(2026-10-26。以前は
+ * どのタブも「少し待って再試行してください」と出し続け、待っても直らなかった)。
+ */
+function notReadyMessage(what) {
+  return sharedLoadFailed
+    ? `${what}を読み込めませんでした(起動時の通信の失敗)。通信状態を確認して、ページを再読み込みしてください。`
+    : `${what}の読み込みが完了していません。少し待って再試行してください。`;
 }
 
 async function fetchJson(url) {
@@ -623,6 +663,31 @@ function setInputValue(id, value) {
   if (Object.prototype.hasOwnProperty.call(GENERATE_SHORTCUTS, id)) saveDraft(id, value);
 }
 
+/**
+ * 生成に使った分だけを入力欄から取り除く(2026-10-26、全タブ共通にした)。
+ *
+ * 生成は数十秒かかることがあり、その間も入力欄は編集できる。以前は成功すると
+ * 入力欄を無条件に空にしていたため、待ち時間に次の質問や単語を打ち始めて
+ * いると、それごと(下書きも含めて)消えていた。DailyConversationタブは
+ * 2026-08-06に同じ理由で直してあったので、その考え方を他のタブにも広げた:
+ * 送った内容が先頭にそのまま残っていれば、その分だけを取り除く。
+ * 判別できない形(送った分を自分で書き換えた等)なら、消さずに残す。
+ *
+ * @param {string} submitted 生成に使ったときの入力欄の内容(trim前でも後でもよい)
+ */
+function removeSubmittedInput(id, submitted) {
+  const el = $(id);
+  if (!el) return;
+  const sent = (submitted || '').trim();
+  const current = el.value.trimStart();
+  if (!sent || !current.startsWith(sent)) return;
+  // 送った分の直後が行の途中なら(待ち時間中に同じ行へ書き足した)、取り除かない。
+  // 取り除くと「| 文脈」や質問の後半だけが残ってしまう。
+  const rest = current.slice(sent.length);
+  if (rest && !/^\s*\n/.test(rest) && rest.trim()) return;
+  setInputValue(id, rest.replace(/^\s+/, ''));
+}
+
 function bindEvents() {
   // タブ切り替え
   document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -649,9 +714,25 @@ function bindEvents() {
     a.addEventListener('click', onLaunchLocalTool);
   });
   // Esc で設定を閉じる(プレビューのダイアログが開いているときは、そちらが
-  // 先に閉じるのでここには来ない)。
+  // 先に閉じるのでここには来ない)。日本語入力の変換中の Esc は変換の取り消し
+  // なので、設定ごと閉じてしまわないようにする(2026-10-26)。
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('settings').hidden) setSettingsOpen(false);
+    if (e.key === 'Escape' && !e.isComposing && !$('settings').hidden) setSettingsOpen(false);
+  });
+  window.addEventListener('beforeunload', onBeforeUnload);
+  // 画面を消している間に Wake Lock は外れるので、出力中に戻ってきたら取り直す
+  document.addEventListener('visibilitychange', () => {
+    if (apkgExportInProgress && document.visibilityState === 'visible' && !wakeLock) acquireWakeLock();
+  });
+  // ページ上端の通知はタップ(クリック)で閉じられる(2026-10-26)。エラーは
+  // 自動では消えない設計なので、閉じる手段が無いとスクロールしても画面上端に
+  // 貼り付いたまま内容を覆い続けていた。内容は⚙設定の「ログ」に残る。
+  document.querySelectorAll('#notice-banner .notice').forEach((el) => {
+    el.title = 'タップで閉じます(内容は⚙設定の「ログ」に残ります)';
+    el.addEventListener('click', () => {
+      cancelAutoHideStatus(el);
+      el.hidden = true;
+    });
   });
   bindGenerateShortcuts();
   bindDraftPersistence();
@@ -702,7 +783,10 @@ function bindEvents() {
     markSettingsChanged();
   });
   on('tts-volume-gain', 'change', (e) => {
-    localStorage.setItem(STORAGE.ttsVolumeGainDb, e.target.value.trim());
+    // 手入力は min/max を素通りするので、範囲内に収めてから保存する(2026-10-26。
+    // 例えば 50 と打つとそのまま送られ、Cloud TTS が 400 を返していた)。
+    e.target.value = String(clampVolumeGainDb(e.target.value));
+    localStorage.setItem(STORAGE.ttsVolumeGainDb, e.target.value);
     markSettingsChanged();
   });
   on('tts-exclude-japanese', 'change', (e) => {
@@ -778,7 +862,7 @@ function bindEvents() {
   // DailyConversationタブ(ログイン/ログアウトはヘッダーに一本化してあるため
   // ここには無い。下記「ヘッダーのログインボタン」を参照)
   on('daily-correct', 'click', onDailyCorrect);
-  on('daily-refresh', 'click', () => refreshDailyPending($('daily-export-status')));
+  on('daily-refresh', 'click', () => refreshDailyPending($('daily-refresh-status')));
   bindPersistentCheckbox('daily-filter-hide-no-error', false, renderDailyPending);
   bindPersistentCheckbox('daily-filter-only-duplicates', false, renderDailyPending);
   bindPersistentCheckbox('daily-filter-hide-exported', true, renderDailyPending);
@@ -786,9 +870,12 @@ function bindEvents() {
   on('daily-clear-exclusions', 'click', onDailyClearExclusions);
   on('daily-reset-exported', 'click', onDailyResetExported);
   on('daily-export', 'click', onDailyExport);
+  on('daily-mark-recorded', 'click', onDailyMarkRecordedExported);
 
   on('bulk-refresh', 'click', renderBulkSummary);
-  on('bulk-include-daily', 'change', renderBulkSummary);
+  // この2つも次回まで覚えておく(2026-10-26。以前は再読み込みのたびにONに戻っていた)
+  bindPersistentCheckbox('bulk-include-daily', true, renderBulkSummary);
+  bindPersistentCheckbox('daily-mark-exported', true, () => {});
   on('bulk-export', 'click', onExportBulk);
 
   // プレビュー(共通)
@@ -859,6 +946,18 @@ function switchTab(key) {
   // 他のタブでカードを増減した後に開かれることが多いので、表示のたびに
   // 数え直す(2026-08-20追加)。
   if (key === 'bulk') renderBulkSummary();
+  // 最後に開いていたタブを覚えておき、次に開いたときもそのタブから始める
+  // (2026-10-26。以前は毎回「単語」タブに戻っていた)。
+  try { localStorage.setItem(LAST_TAB_KEY, key); } catch { /* 保存できなくても動作には影響しない */ }
+}
+
+const LAST_TAB_KEY = 'anki_tool_last_tab';
+
+/** 起動時に、最後に開いていたタブへ切り替える(存在しないタブ名なら何もしない)。 */
+function restoreLastTab() {
+  let key = null;
+  try { key = localStorage.getItem(LAST_TAB_KEY); } catch { return; }
+  if (key && /^[a-z_]+$/.test(key) && document.querySelector(`.tab-btn[data-tab="${key}"]`)) switchTab(key);
 }
 
 /**
@@ -1184,10 +1283,39 @@ function currentTextModel() {
 /**
  * Gemini APIキーを返す。未設定なら理由を出して設定のキー欄を開き、空文字を返す
  * (呼び出し側はそこで中止する)。
+ *
+ * 呼び出し側は `$('api-key').value.trim() || await geminiKeyOrOpenSettings(status)`
+ * の形で呼ぶこと。キーが入っている普段の経路で await を挟むと、押した直後の
+ * 「生成中」の表示が遅れるうえ、入力欄を読むのが一拍遅れて、その間に
+ * 他のタブが転記した文まで送ってしまう。
  */
-function geminiKeyOrOpenSettings(status) {
-  const apiKey = $('api-key').value.trim();
+async function geminiKeyOrOpenSettings(status) {
+  let apiKey = $('api-key').value.trim();
   if (apiKey) return apiKey;
+
+  // キーはふつうログイン時にWorkerから配られる(⚙設定の冒頭の説明のとおり)。
+  // 以前はここで「キーを入力してください」と手入力へ誘導しており、新しい端末や
+  // 「起動時に自動で読み込む」をOFFにしている端末で、説明と食い違っていた
+  // (2026-10-26)。ログイン済みなら、その場で設定を取りに行ってから続ける。
+  const usesWorker = usesOauthWorker();
+  if (usesWorker && isSignedIn({ workerUrl: sheetsConfig().workerUrl })) {
+    try {
+      showLoading(status, '設定を読み込んでいます...');
+      const token = await getAccessToken(sheetsConfig());
+      await ensureAppConfigLoaded(token);
+      updateGoogleAuthStatus();
+    } catch (e) {
+      console.warn('[appconfig] キーの取得を試みましたが失敗しました:', e.message);
+    } finally {
+      hideLoading(status);
+    }
+    apiKey = $('api-key').value.trim();
+    if (apiKey) return apiKey;
+  } else if (usesWorker) {
+    setStatus(status, 'Gemini APIキーが未設定です。画面上部の「Googleにログイン」でログインすると'
+      + '自動で設定されます(手入力する場合は ⚙ 設定 → Gemini APIキー)。', true);
+    return '';
+  }
   setStatus(status, 'Gemini APIキーを設定してください(⚙ 設定)。', true);
   notify('Gemini APIキーが未設定のため実行できませんでした。設定のキー欄を開いたので、入力してから戻ってください。');
   openSettingsAt('api-key');
@@ -1571,11 +1699,18 @@ function updateTtsEngineView() {
  * .apkg 出力の両方がここを使う。
  * @returns {{opts: object, missing: string|null, missingField: string|null}}
  */
+/** 音量ゲインを画面の範囲(-20〜16dB)に収める。数値でなければ 0。 */
+function clampVolumeGainDb(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || String(value).trim() === '') return 0;
+  return Math.min(16, Math.max(-20, v));
+}
+
 function getTtsSettings() {
   const engine = $('tts-engine').value === TTS_ENGINE_GEMINI ? TTS_ENGINE_GEMINI : TTS_ENGINE_CLOUD;
   const common = {
     engine,
-    volumeGainDb: Number($('tts-volume-gain').value) || 0,
+    volumeGainDb: clampVolumeGainDb($('tts-volume-gain').value),
     excludeJapanese: $('tts-exclude-japanese').checked,
   };
   if (engine === TTS_ENGINE_GEMINI) {
@@ -2053,7 +2188,10 @@ function parseWordPairs(text) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const idx = line.indexOf('|');
+      // 全角の縦棒(U+FF5C)も区切りとして受け付ける(2026-10-26)。スマホの日本語
+      // キーボードでは全角になりやすく、そのままだと文脈まで含めた1行全体が
+      // 「単語」として扱われ、Wordフィールドとguidに入ってしまっていた。
+      const idx = line.search(/[|｜]/);
       return idx === -1
         ? { word: line, context: '' }
         : { word: line.slice(0, idx).trim(), context: line.slice(idx + 1).trim() };
@@ -2063,14 +2201,15 @@ function parseWordPairs(text) {
 
 async function onWordGenerate() {
   const status = $('word-generate-status');
-  const apiKey = geminiKeyOrOpenSettings(status);
+  const apiKey = $('api-key').value.trim() || await geminiKeyOrOpenSettings(status);
   if (!apiKey) return;
   if (!shared.wordPrompt) {
-    setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('共有プロンプト'), true);
     return;
   }
 
-  const pairs = parseWordPairs($('word-input').value);
+  const submittedText = $('word-input').value;
+  const pairs = parseWordPairs(submittedText);
   if (pairs.length === 0) {
     setStatus(status, '単語を入力してください。', true);
     return;
@@ -2108,8 +2247,11 @@ async function onWordGenerate() {
 
     cards.forEach((card, i) => {
       if (!card) {
-        // AIの応答にこの件だけ含まれていなかった場合。他の件は活かす。
-        failed.push(`${pairs[i].word}: AIの応答にこの単語が含まれていませんでした`);
+        // AIの応答にこの件だけ含まれていなかった場合、または途中のまとまりで
+        // 上限などに当たって止まった場合。他の件は活かす。
+        failed.push(cards.batchError
+          ? `${pairs[i].word}: 生成できませんでした(${cards.batchError})`
+          : `${pairs[i].word}: AIの応答にこの単語が含まれていませんでした`);
         return;
       }
       const generatedAt = new Date().toISOString();
@@ -2127,7 +2269,7 @@ async function onWordGenerate() {
     hideLoading(status);
     // 全件成功したときだけ入力欄を空にする(失敗した行を片桐が確認できるように)。
     if (failed.length === 0) {
-      setInputValue('word-input', '');
+      removeSubmittedInput('word-input', submittedText);
       setStatus(status, `${generated.length} 件のカードを生成しました。${quotaSuffix()}`);
     } else {
       setStatus(
@@ -2136,6 +2278,11 @@ async function onWordGenerate() {
         generated.length === 0,
       );
     }
+  } catch (e) {
+    // 想定外の失敗(ブラウザの保存領域がいっぱい等)でも、読み込み中の表示を
+    // 残したままにしない(以前は catch が無く、スピナーが回り続けていた)。
+    hideLoading(status);
+    setStatus(status, `生成に失敗しました: ${e.message}`, true);
   } finally {
     btn.disabled = false;
   }
@@ -2170,10 +2317,33 @@ function aiAskDuplicateIndices() {
   return dup;
 }
 
+/**
+ * 同じ質問から別々の回に生成された項目の index を返す(2026-10-26、表示用)。
+ *
+ * batch_key の導入(2026-08-29)以降、同じ質問を送り直して作った問題は別カードに
+ * なり、上の「重複」には当たらない。それ自体は正しい(AIは毎回違う問題を作る)が、
+ * 同じ質問を2回送ったことに気づけないと似た問題が溜まっていくので、警告ではなく
+ * 目印として知らせる。
+ */
+function aiAskSameQuestionIndices() {
+  const batchesByTopic = new Map();
+  aiAskStock.forEach((item) => {
+    if (!item.topic_key) return;
+    if (!batchesByTopic.has(item.topic_key)) batchesByTopic.set(item.topic_key, new Set());
+    batchesByTopic.get(item.topic_key).add(item.batch_key || '');
+  });
+  const out = new Set();
+  aiAskStock.forEach((item, i) => {
+    if ((batchesByTopic.get(item.topic_key)?.size || 0) > 1) out.add(i);
+  });
+  return out;
+}
+
 /** 単語タブと同じ理由(2026-07-29追加)で「出力済みを隠す」フィルターを持つ。 */
 function renderAiAskStock() {
   const list = $('ai-ask-stock-list');
   const dup = aiAskDuplicateIndices();
+  const sameQuestion = aiAskSameQuestionIndices();
   const hideExported = $('ai-ask-filter-hide-exported').checked;
   list.textContent = '';
 
@@ -2184,6 +2354,7 @@ function renderAiAskStock() {
     const questionPreview = htmlToPlainText(item.question).slice(0, 40);
     const tags = [];
     if (dup.has(i)) tags.push(' ⚠ 重複');
+    else if (sameQuestion.has(i)) tags.push({ text: ' ↻ 同じ質問', kind: 'done' });
     if (item.exported_at) tags.push({ text: ' ✓ 出力済み', kind: 'done' });
     const li = buildStockRow({
       isDuplicate: dup.has(i),
@@ -2235,10 +2406,10 @@ function htmlToPlainText(html) {
 
 async function onAiAskGenerate() {
   const status = $('ai-ask-generate-status');
-  const apiKey = geminiKeyOrOpenSettings(status);
+  const apiKey = $('api-key').value.trim() || await geminiKeyOrOpenSettings(status);
   if (!apiKey) return;
   if (!shared.grammarMultiPrompt) {
-    setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('共有プロンプト'), true);
     return;
   }
 
@@ -2294,7 +2465,7 @@ async function onAiAskGenerate() {
     }
 
     hideLoading(status);
-    setInputValue('ai-ask-input', '');
+    removeSubmittedInput('ai-ask-input', question);
     const meaningCount = items.filter(isMeaningItem).length;
     const meaningNote = meaningCount ? `(うち意味・本質問題 ${meaningCount} 件)` : '';
     setStatus(status, `${items.length} 件のカードを生成しました${meaningNote}${shuujukuNote}${quotaSuffix()}`);
@@ -2349,10 +2520,18 @@ const PHRASE_MAX_WORDS = 5;
 /** 1行に複数件を並べてしまったときによく使われる区切り記号。 */
 const ENTRY_SEPARATOR_RE = /[,、/・]/;
 
+/**
+ * 文末の句読点か。全角の「。」「？」「！」や、閉じ引用符・閉じ括弧の
+ * 内側にある句読点(`"Are you sure?"`)も文末とみなす(2026-10-26)。
+ * 以前は半角の . ! ? で終わる場合しか見ておらず、スマホの日本語キーボードで
+ * 打った短い文が「表現」扱いになり、正誤の添削を受けずにカードになっていた。
+ */
+const SENTENCE_END_RE = /[.!?。？！]["'”’)）」』]*$/;
+
 function looksLikePhrase(line) {
   const s = (line || '').trim();
   if (!s) return false;
-  if (/[.!?]$/.test(s)) return false;
+  if (SENTENCE_END_RE.test(s)) return false;
   if (ENTRY_SEPARATOR_RE.test(s)) return true;
   return s.split(/\s+/).filter(Boolean).length <= PHRASE_MAX_WORDS;
 }
@@ -2363,7 +2542,7 @@ function looksLikePhrase(line) {
  */
 function looksLikeMultipleEntries(line) {
   const s = (line || '').trim();
-  if (!s || /[.!?]$/.test(s)) return false;
+  if (!s || SENTENCE_END_RE.test(s)) return false;
   return ENTRY_SEPARATOR_RE.test(s);
 }
 
@@ -2434,11 +2613,11 @@ function normalizeAllCaps(text, { asSentence }) {
  */
 async function onShuujukuGenerate() {
   const status = $('shuujuku-generate-status');
-  const apiKey = geminiKeyOrOpenSettings(status);
+  const apiKey = $('api-key').value.trim() || await geminiKeyOrOpenSettings(status);
   if (!apiKey) return;
   if (!shared.correctionSystemInstruction || !shared.correctionResponseSchema
     || !shared.shuujukuSentencePrompt || !shared.shuujukuPhrasePrompt) {
-    setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('共有プロンプト'), true);
     return;
   }
   const text = $('shuujuku-input').value.trim();
@@ -2485,6 +2664,11 @@ async function onShuujukuGenerate() {
     }
   };
 
+  // 段階ごとの失敗(2026-10-26)。以前は「添削→英文のカード生成→表現のカード生成」の
+  // どこかで例外が出ると、それまでに生成できたカードも保存せずに全体を失敗扱い
+  // にしていた(API呼び出しの分は払ったまま)。段階ごとに受け止め、できた分は残す。
+  const stageErrors = [];
+  let phraseCardMade = false;
   try {
     if (sentenceText) {
       showLoading(status, '英文が正しいか確認中...(数十秒かかることがあります)');
@@ -2492,13 +2676,18 @@ async function onShuujukuGenerate() {
       // 複数文を1行にまとめる(originalを改行で連結する)関数で、シートに
       // 1送信=1行として書き込むためのもの。ここで通すと、正しい文を3つ
       // 入力しても「3文が連結された1枚」のカードになってしまう。
-      const corrections = await correctEnglishText({
-        text: sentenceText,
-        apiKey,
-        model,
-        systemInstruction: shared.correctionSystemInstruction,
-        responseSchema: shared.correctionResponseSchema,
-      });
+      let corrections = [];
+      try {
+        corrections = await correctEnglishText({
+          text: sentenceText,
+          apiKey,
+          model,
+          systemInstruction: shared.correctionSystemInstruction,
+          responseSchema: shared.correctionResponseSchema,
+        });
+      } catch (e) {
+        stageErrors.push(`英文の正誤の確認に失敗しました: ${e.message}`);
+      }
 
       const okRows = corrections.filter((c) => c.category === '誤りなし');
       ngRows = corrections.filter((c) => c.category !== '誤りなし');
@@ -2508,15 +2697,24 @@ async function onShuujukuGenerate() {
         // 添削が「誤りなし」と判断した文をそのまま使う(correctedは
         // 誤りなしの場合、原文と同じか整形しただけのもの)。
         const sentences = okRows.map((c) => (c.original || '').trim());
-        pushItems(await generateShuujukuItemsFromSentences({
-          sentences,
-          apiKey,
-          model,
-          promptTemplate: shared.shuujukuSentencePrompt,
-          onProgress: (done, total) => {
-            if (total > done) showLoading(status, `カードを生成中... (英文 ${done}/${total} 件)`);
-          },
-        }));
+        try {
+          const generated = await generateShuujukuItemsFromSentences({
+            sentences,
+            apiKey,
+            model,
+            promptTemplate: shared.shuujukuSentencePrompt,
+            onProgress: (done, total) => {
+              if (total > done) showLoading(status, `カードを生成中... (英文 ${done}/${total} 件)`);
+            },
+          });
+          pushItems(generated);
+          if (generated.batchError) {
+            stageErrors.push(`英文のカード生成が途中で止まりました: ${generated.batchError}`);
+          }
+        } catch (e) {
+          failed += okRows.length;
+          stageErrors.push(`英文のカード生成に失敗しました: ${e.message}`);
+        }
       }
     }
 
@@ -2524,12 +2722,18 @@ async function onShuujukuGenerate() {
       // 単語・句動詞は**まとめて1枚**にする(2026-08-06、片桐の想定に合わせて
       // 「1件=1枚」から変更)。例文の数が語句の数で変わる。
       showLoading(status, `カードを生成中... (単語・表現 ${phrases.length} 件をまとめて1枚)`);
-      pushItems([await generateShuujukuItemFromPhrases({
-        phrases,
-        apiKey,
-        model,
-        promptTemplate: shared.shuujukuPhrasePrompt,
-      })]);
+      try {
+        pushItems([await generateShuujukuItemFromPhrases({
+          phrases,
+          apiKey,
+          model,
+          promptTemplate: shared.shuujukuPhrasePrompt,
+        })]);
+        phraseCardMade = true;
+      } catch (e) {
+        failed += 1;
+        stageErrors.push(`単語・表現のカード生成に失敗しました: ${e.message}`);
+      }
     }
 
     if (items.length > 0) {
@@ -2541,7 +2745,9 @@ async function onShuujukuGenerate() {
     hideLoading(status);
     // 全文が正しくカード化できたときだけ入力欄を消す。誤りがあった場合は、
     // どの文が弾かれたのか片桐が見比べられるよう残す(単語タブと同じ方針)。
-    if (items.length > 0 && ngRows.length === 0 && failed === 0) setInputValue('shuujuku-input', '');
+    if (items.length > 0 && ngRows.length === 0 && failed === 0 && stageErrors.length === 0) {
+      removeSubmittedInput('shuujuku-input', text);
+    }
 
     const notes = [];
     if (items.length > 0) {
@@ -2558,7 +2764,9 @@ async function onShuujukuGenerate() {
         + (breakdown.length > 1 ? `(入力の内訳: ${breakdown.join(' / ')})` : ''),
       );
     }
-    if (phrases.length > 0) {
+    // 表現のカードが実際に作れたときだけ「1枚にしました」と言う(失敗したときは
+    // 下の ⚠ の行で理由を出す)。
+    if (phrases.length > 0 && phraseCardMade) {
       notes.push(
         `次の ${phrases.length} 件は「単語・表現」として扱い、正誤の添削はせずに`
         + `まとめて1枚のカードにしました(例文${phraseExampleCount(phrases.length)}つ):\n`
@@ -2612,6 +2820,7 @@ async function onShuujukuGenerate() {
       );
     }
     if (failed > 0) notes.push(`${failed} 件はカードの生成に失敗しました。`);
+    stageErrors.forEach((m) => notes.push(`⚠ ${m}`));
     setStatus(
       status,
       (notes.join('\n') || 'カードを生成できませんでした。') + quotaSuffix(),
@@ -2726,7 +2935,7 @@ async function onExportShuujuku() {
   }
   const cardDef = shared.cardDefs?.shuujuku;
   if (!cardDef || !shared.ankiSchema) {
-    setStatus(status, 'カード定義の読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('カード定義'), true);
     return;
   }
 
@@ -2760,10 +2969,11 @@ async function onExportShuujuku() {
     // 同期が「削除済み(出力済み)は復活させない」と判定できるようにするため)。
     addTombstoneIds(STORAGE.shuujukuTombstones, targets.map((item) => item.id));
     advanceNextNum(targets.length);
-    // 出力中に増えた項目は残す(参照比較。ストックは常に同じオブジェクトを
-    // 保持しているため、idを使わずSetでそのまま判定できる)。
-    const exportedSet = new Set(targets);
-    shuujukuStock = shuujukuStock.filter((item) => !exportedSet.has(item));
+    // 出力中に増えた項目は残す。id で判定する(2026-10-26。以前はオブジェクトの
+    // 参照で比べていたが、出力の数分の間に同期や「出力済みの印を外す」で
+    // ストックの中身が作り直されると、どれにも一致しなくなっていた)。
+    const exportedSet = new Set(targets.map((it) => it.id));
+    shuujukuStock = shuujukuStock.filter((item) => !exportedSet.has(item.id));
     localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
     renderShuujukuStock();
 
@@ -2786,7 +2996,7 @@ async function onExportShuujuku() {
 function showShuujukuPreview(item) {
   const def = shared.cardDefs?.shuujuku;
   if (!def) {
-    alert('カード定義の読み込みが完了していません。');
+    alert(notReadyMessage('カード定義'));
     return;
   }
   const previewNum = getNextNum();
@@ -2991,6 +3201,9 @@ function firstEmptySheetsSettingField() {
  * 冗長という指摘への対応。以前は両方常設し、ログイン済み時は
  * header-signinの文言を「別のアカウントでログイン」に変えるだけだった)。
  */
+/** 直前に通知したログイン状態(null = まだ一度も判定していない)。 */
+let lastNotifiedSignedIn = null;
+
 function updateGoogleAuthStatus() {
   // Worker方式ではリフレッシュトークンを持っていればログイン済み扱い
   // (アクセストークンが手元に無くても無操作で取り直せるため)。
@@ -2998,15 +3211,24 @@ function updateGoogleAuthStatus() {
   // 消した/変えた後に残っているリフレッシュトークンだけで「ログイン済み」と
   // 表示してしまい、実際は従来方式(B)へ落ちるため表示と挙動が食い違う。
   const signedIn = isSignedIn({ workerUrl: sheetsConfig().workerUrl });
-  setStatus(
-    $('header-auth-status'),
-    signedIn
-      ? (usesOauthWorker()
-        ? 'Googleにログイン済みです(ページを閉じてもログインは保たれます)。'
-        : 'Googleにログイン済みです(このページを閉じるか約1時間で失効します)。')
-      : '未ログインです。DailyConversationタブ・複数端末間の同期を使うには、'
-        + '上の「Googleにログイン」からログインしてください。',
-  );
+  // 通知は「状態が変わったとき」だけ出す(2026-10-26)。以前は起動のたび・
+  // シートを読むたび・同期のたびに「ログイン済みです」が上端に出ては
+  // 10秒後に消え、そのたびにページ全体が上下して押し間違えの元になっていた。
+  // 起動時は、ログインしていないときだけ案内する(ログイン済みなら何も出さない)。
+  const changed = lastNotifiedSignedIn !== null && lastNotifiedSignedIn !== signedIn;
+  const firstAndSignedOut = lastNotifiedSignedIn === null && !signedIn;
+  lastNotifiedSignedIn = signedIn;
+  if (changed || firstAndSignedOut) {
+    setStatus(
+      $('header-auth-status'),
+      signedIn
+        ? (usesOauthWorker()
+          ? 'Googleにログイン済みです(ページを閉じてもログインは保たれます)。'
+          : 'Googleにログイン済みです(このページを閉じるか約1時間で失効します)。')
+        : '未ログインです。DailyConversationタブ・複数端末間の同期を使うには、'
+          + '画面上部の「Googleにログイン」からログインしてください。',
+    );
+  }
   $('header-signin').hidden = signedIn;
   $('header-signout').hidden = !signedIn;
   $('header-signout').disabled = !signedIn;
@@ -3264,7 +3486,11 @@ function mergeRemoteIntoLocal(remote) {
   const settingsChanged = mergeRemoteSettings(remote.app_settings);
   newState.app_settings = collectLocalSettings();
 
+  const unreadable = [];
   for (const spec of syncSpecs()) {
+    if (isUnreadableJsonArray(remote[spec.itemsKey]) || isUnreadableJsonArray(remote[spec.tombKey])) {
+      unreadable.push(spec.label);
+    }
     const remoteItems = parseIdArray(remote[spec.itemsKey]);
     const remoteTombstoneIds = parseIdArray(remote[spec.tombKey]);
     const localTombstoneIds = loadTombstoneIds(spec.tombStorage);
@@ -3286,7 +3512,9 @@ function mergeRemoteIntoLocal(remote) {
     else if (percent >= CAPACITY_WARN_PERCENT) nearLimit.push(`${spec.label} ${percent}%`);
   }
 
-  return { newState, capacityLines, overLimit, nearLimit, added, settingsChanged };
+  return {
+    newState, capacityLines, overLimit, nearLimit, added, settingsChanged, unreadable,
+  };
 }
 
 /**
@@ -3400,7 +3628,26 @@ async function runSync(statusEl, btnEl) {
     showLoading(statusEl, '同期データを読み込み中...');
     const remote = await readSyncState({ spreadsheetId, accessToken });
 
-    const { newState, capacityLines, overLimit, nearLimit } = mergeRemoteIntoLocal(remote);
+    const {
+      newState, capacityLines, overLimit, nearLimit, unreadable,
+    } = mergeRemoteIntoLocal(remote);
+
+    // シート上の同期データが読めなかった(JSONとして壊れていた)ら、書き戻さない
+    // (2026-10-26)。読めないデータは空として扱うので、そのまま書き戻すと、
+    // シートにだけあった項目(他の端末で作ったカード)を消してしまう。
+    if (unreadable.length > 0) {
+      hideLoading(statusEl);
+      setStatus(
+        statusEl,
+        `シート上の同期データ(${unreadable.join('・')})が読み取れなかったため、`
+        + 'シートへの書き戻しを中止しました(他の端末で作ったカードを消さないため)。\n'
+        + 'この端末のデータは失われていません。スプレッドシートの「_AppSync」タブを'
+        + '手で編集していないか確認してください。⚙設定の「バックアップを書き出す」で'
+        + '各端末の内容を保存しておくと安全です。',
+        true,
+      );
+      return;
+    }
 
     // 保存できる上限(SYNC_VALUE_LIMIT。1キーを複数セルに分割して保存する)を
     // 超えていたら、書き込む前に中断する
@@ -3712,13 +3959,19 @@ function renderDailyPending() {
 
   const empty = $('daily-pending-empty');
   if (dailyPendingRows.length === 0) {
-    // 「未出力の行がまだ無い/読み込んでいない」場合のメッセージは
-    // 呼び出し元(refreshDailyPendingなど)が事前にtextContentへ設定した
-    // ものをそのまま使う(ここでは上書きしない)。
+    // 読み込む前は「まだ読み込んでいません。」(index.html の初期値)のまま。
+    // 読み込んだ後に0件になった(全部を除外した等)ときは、それに合った文言にする
+    // (2026-10-26。以前は直前の「フィルター条件に一致する行がありません。」が残っていた)。
     empty.hidden = false;
+    if (dailyPendingLoaded) empty.textContent = '未出力の行はありません。';
   } else if (visibleRows.length === 0) {
     empty.hidden = false;
-    empty.textContent = 'フィルター条件に一致する行がありません。';
+    // 一括出力などで全部を出力した後は、「出力済みを隠す」だけで全部隠れている。
+    // 単語タブと同じく、外せば見えることを案内する(2026-10-26)。
+    const hiddenOnlyByExported = hideExported && dailyPendingRows.every((row) => exportedIds.has(row.id));
+    empty.textContent = hiddenOnlyByExported
+      ? 'すべて出力済みです。「出力済み(このブラウザで記録)を隠す」を外すと表示されます。'
+      : 'フィルター条件に一致する行がありません。';
   } else {
     empty.hidden = true;
   }
@@ -3745,10 +3998,7 @@ async function refreshDailyPending(status) {
     const cfg = await requireSheetsAccess();
     const rows = await fetchPendingRows(cfg);
     dailyPendingRows = dailyconv.filterOutExcluded(rows);
-    // renderDailyPending()より先に設定すること。dailyPendingRowsが空の場合の
-    // 既定メッセージであり、renderDailyPending()内でフィルター一致0件用の
-    // メッセージに上書きされることがあるため、その判定より前に置く必要がある。
-    $('daily-pending-empty').textContent = '未出力の行はありません。';
+    dailyPendingLoaded = true;
     renderDailyPending();
 
     if (status) {
@@ -3778,10 +4028,10 @@ async function refreshDailyPending(status) {
 
 async function onDailyCorrect() {
   const status = $('daily-correct-status');
-  const apiKey = geminiKeyOrOpenSettings(status);
+  const apiKey = $('api-key').value.trim() || await geminiKeyOrOpenSettings(status);
   if (!apiKey) return;
   if (!shared.correctionSystemInstruction || !shared.correctionResponseSchema) {
-    setStatus(status, '共有プロンプトの読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('共有プロンプト'), true);
     return;
   }
   const text = $('daily-input').value.trim();
@@ -3817,11 +4067,7 @@ async function onDailyCorrect() {
     // 「転記しました」と表示したまま)。転記は末尾への追記なので、送った分は
     // 先頭に残っている。判別できない形(片桐が待ち時間中に自分で編集した等)
     // なら、消さずにそのまま残す——勝手に消して入力を失わせるより安全。
-    const inputEl = $('daily-input');
-    const remaining = inputEl.value.trimStart();
-    if (remaining.startsWith(text)) {
-      setInputValue('daily-input', remaining.slice(text.length).replace(/^\s+/, ''));
-    }
+    removeSubmittedInput('daily-input', text);
     setStatus(status, `${newIds.length} 件をシートに追加しました。②の一覧を更新します...`);
 
     // デスクトップ版と同じく、追記に成功したらそのまま②の読み込みまで連鎖させる
@@ -3874,10 +4120,54 @@ function onDailyExcludeSelected() {
   renderDailyPending();
 }
 
+/**
+ * このブラウザで出力済みとして記録した行のうち、シート上ではまだ未出力の行を
+ * 「Anki出力済み」にマークする(2026-10-26追加)。
+ *
+ * 一括出力タブはシートへマークしない(ログインと通信を一括出力の副作用に
+ * したくないため)。以前はその行をマークする手段が「出力済みの印を外して、
+ * もう一度出力する」しか無く、音声の合成(料金)までやり直すことになっていた。
+ * シートの行が別の端末からは未出力に見え続け、二重に出力される原因にもなる。
+ */
+async function onDailyMarkRecordedExported() {
+  const status = $('daily-export-status');
+  if (!dailyPendingLoaded) {
+    setStatus(status, '先に②の「シートから読み込む」を押してください(シート上でまだ未出力の行を調べるため)。', true);
+    return;
+  }
+  const exportedIds = dailyconv.loadExportedIds();
+  const ids = dailyPendingRows.filter((row) => exportedIds.has(row.id)).map((row) => row.id);
+  if (ids.length === 0) {
+    setStatus(status, 'このブラウザで出力済みにした行のうち、シート上で未出力のままの行はありません。');
+    return;
+  }
+  if (!confirm(`${ids.length} 行をシートの「Anki出力済み」列にマークします。よろしいですか？`)) return;
+  const btn = $('daily-mark-recorded');
+  btn.disabled = true;
+  try {
+    showLoading(status, 'シートを更新中...');
+    const cfg = await requireSheetsAccess();
+    const result = await markRowsAsExported({ ...cfg, rowIds: ids });
+    hideLoading(status);
+    setStatus(status, `シートの ${result.succeeded.length} 行を「Anki出力済み」にしました。`
+      + (result.failed.length > 0 ? `(${result.failed.length} 件はID列に見つかりませんでした)` : ''));
+    await refreshDailyPending(null);
+  } catch (e) {
+    hideLoading(status);
+    setStatus(status, `シートへの書き込みに失敗しました: ${e.message}`, true);
+    if (e instanceof SheetsAuthError) {
+      clearAccessToken();
+      updateGoogleAuthStatus();
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function onDailyClearExclusions() {
   if (!confirm('一覧から除外した行の登録をすべて解除します。よろしいですか？')) return;
   dailyconv.clearExcludedIds();
-  refreshDailyPending($('daily-export-status'));
+  refreshDailyPending($('daily-refresh-status'));
 }
 
 /**
@@ -3919,7 +4209,10 @@ function onDailyResetExported() {
  */
 async function generateShuujukuCandidatesFromRows(rows, status) {
   const apiKey = $('api-key').value.trim();
-  if (!apiKey || !shared.shuujukuDailyconvPrompt) return '';
+  // 対象が0行(=添削結果がすべて「誤りなし」)のときは何もしない。以前はそのまま
+  // 進み、「生成中... (0 件)」の後に「生成はすべて失敗しました(0 件)」と、
+  // 正しい英文を書くたびに失敗したかのような表示になっていた(2026-10-26修正)。
+  if (!apiKey || !shared.shuujukuDailyconvPrompt || rows.length === 0) return '';
 
   const model = currentTextModel();
   const items = [];
@@ -3958,7 +4251,9 @@ async function generateShuujukuCandidatesFromRows(rows, status) {
     localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
     renderShuujukuStock();
     return `\n習熟用(音読)ストックに ${items.length} 件追加しました(「習熟用(音読)」タブで確認できます)。`
-      + (failed > 0 ? `(${failed} 件は生成に失敗しました)` : '');
+      + (failed > 0
+        ? `(${failed} 件は生成に失敗しました${generated.batchError ? `: ${generated.batchError}` : ''})`
+        : '');
   }
   if (failed === rows.length) {
     return `\n習熟用(音読)候補の生成はすべて失敗しました(${failed} 件)。`;
@@ -3975,7 +4270,7 @@ async function onDailyExport() {
   }
   const cardDef = shared.cardDefs?.daily;
   if (!cardDef || !shared.ankiSchema) {
-    setStatus(status, 'カード定義の読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('カード定義'), true);
     return;
   }
 
@@ -4098,8 +4393,8 @@ async function onDailyExport() {
       status,
       `.apkg は ${rows.length} 件で出力済みです(ダウンロード済みのファイルをAnkiで開いてください)。\n`
       + `ただしシートの「Anki出力済み」への書き込みに失敗しました: ${e.message}\n`
-      + '(この端末では出力済みとして記録済みです。シート側のマークだけやり直したい場合は、'
-      + '②の「出力済みの印を外す」を押してから、もう一度出力してください)',
+      + '(この端末では出力済みとして記録済みです。シート側のマークだけやり直すには、'
+      + '下の「出力済み(このブラウザで記録)の行をシートにマークする」を押してください)',
       true,
     );
     if (e instanceof SheetsAuthError) {
@@ -4119,7 +4414,7 @@ async function onDailyExport() {
 function showDailyPreview(row) {
   const def = shared.cardDefs?.daily;
   if (!def) {
-    alert('カード定義の読み込みが完了していません。');
+    alert(notReadyMessage('カード定義'));
     return;
   }
   const [item] = dailyconv.buildFieldsReadyItems([row]);
@@ -4196,7 +4491,14 @@ function buildStockRow({ isDuplicate, tags, title, subtitle, meta, rowId, onPrev
   preview.title = 'カードをプレビュー';
   preview.addEventListener('click', onPreview);
 
-  li.append(cb, body, preview);
+  // チェックボックスと本文を label で包み、本文のどこを押しても選択を
+  // 切り替えられるようにする(2026-10-26。スマホでは小さなチェックボックス
+  // そのものを狙って押す必要があり、押し損ねやすかった)。
+  const pick = document.createElement('label');
+  pick.className = 'pick';
+  pick.append(cb, body);
+
+  li.append(pick, preview);
   return li;
 }
 
@@ -4326,7 +4628,7 @@ async function onExportBulk() {
     return;
   }
   if (!shared.cardDefs || !shared.ankiSchema) {
-    setStatus(status, 'カード定義の読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('カード定義'), true);
     return;
   }
 
@@ -4403,8 +4705,8 @@ async function onExportBulk() {
     if (shuujukuTargets.length > 0) {
       addTombstoneIds(STORAGE.shuujukuTombstones, shuujukuTargets.map((item) => item.id));
       advanceNextNum(shuujukuTargets.length);
-      const exportedSet = new Set(shuujukuTargets);
-      shuujukuStock = shuujukuStock.filter((item) => !exportedSet.has(item));
+      const exportedSet = new Set(shuujukuTargets.map((it) => it.id));
+      shuujukuStock = shuujukuStock.filter((item) => !exportedSet.has(item.id));
       localStorage.setItem(STORAGE.shuujukuStock, JSON.stringify(shuujukuStock));
       renderShuujukuStock();
       counts.push(`習熟用 ${shuujukuTargets.length} 件`);
@@ -4412,9 +4714,9 @@ async function onExportBulk() {
     const exportedAt = new Date().toISOString();
     if (aiTargets.length > 0) {
       advanceNextDue('grammar_multi', aiTargets.length);
-      const exportedSet = new Set(aiTargets);
+      const exportedSet = new Set(aiTargets.map((it) => it.id));
       aiAskStock = aiAskStock.map((item) => (
-        exportedSet.has(item) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
+        exportedSet.has(item.id) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
       ));
       localStorage.setItem(STORAGE.aiAskStock, JSON.stringify(aiAskStock));
       renderAiAskStock();
@@ -4422,9 +4724,9 @@ async function onExportBulk() {
     }
     if (wordTargets.length > 0) {
       advanceNextDue('word', wordTargets.length);
-      const exportedSet = new Set(wordTargets);
+      const exportedSet = new Set(wordTargets.map((it) => it.id));
       wordStock = wordStock.map((item) => (
-        exportedSet.has(item) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
+        exportedSet.has(item.id) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
       ));
       localStorage.setItem(STORAGE.wordStock, JSON.stringify(wordStock));
       renderWordStock();
@@ -4446,7 +4748,8 @@ async function onExportBulk() {
       + 'ダウンロードした .apkg を Anki で開いてください。'
       + (dailyRows.length > 0
         ? '\nDailyConversationのシートの「Anki出力済み」列にはマークしていません'
-          + '(必要ならDailyConversationタブから行ってください)。'
+          + '(必要なら、DailyConversationタブの③「出力済み(このブラウザで記録)の行を'
+          + 'シートにマークする」を押してください)。'
         : '')
       + ttsSkipNote(),
     );
@@ -4601,8 +4904,8 @@ function onDeleteExported(tabKey) {
     + '実行してください(Web版はデスクトップ版と違い、出力した.apkgを自動保存していません)。\n'
     + '事前に⚙設定の「バックアップを書き出す」を実行していれば、後から復元できます。',
   )) return;
-  const exportedSet = new Set(exportedItems);
-  cfg.setStock(cfg.stock.filter((item) => !exportedSet.has(item)));
+  const exportedSet = new Set(exportedItems.map((it) => it.id));
+  cfg.setStock(cfg.stock.filter((item) => !exportedSet.has(item.id)));
   addTombstoneIds(TOMBSTONE_STORAGE[tabKey], exportedItems.map((item) => item.id));
   cfg.render();
 }
@@ -4636,7 +4939,7 @@ async function onExport(tabKey) {
   }
   const cardDef = shared.cardDefs?.[cfg.cardDefKey];
   if (!cardDef || !shared.ankiSchema) {
-    setStatus(status, 'カード定義の読み込みが完了していません。少し待って再試行してください。', true);
+    setStatus(status, notReadyMessage('カード定義'), true);
     return;
   }
 
@@ -4667,15 +4970,16 @@ async function onExport(tabKey) {
     advanceNextDue(cfg.cardDefKey, items.length);
 
     // .apkgの生成・ダウンロードに実際に成功した項目だけへexported_atを
-    // 記録する。pendingItemsはcfg.stockの要素をそのまま参照しているため
-    // (filter()は複製しない)、Setでの参照比較でどの項目が対象だったか
-    // 判定できる(インデックス計算は不要)。
+    // 記録する。どの項目が対象だったかは id で判定する(2026-10-26。以前は
+    // オブジェクトの参照で比べていたため、音声の合成を待つ数分の間に同期や
+    // 「出力済みの印を外す」でストックが作り直されると、出力済みの印が付かず
+    // 次回また出力されていた)。
     const exportedAt = new Date().toISOString();
-    const exportedSet = new Set(pendingItems);
+    const exportedSet = new Set(pendingItems.map((it) => it.id));
     cfg.setStock(cfg.stock.map((item) => (
       // updated_at も一緒に打ち直す(2026-07-30、複数端末間の同期がこの
       // exported_atを「新しい変更」として優先できるようにするため)。
-      exportedSet.has(item) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
+      exportedSet.has(item.id) ? { ...item, exported_at: exportedAt, updated_at: exportedAt } : item
     )));
     cfg.render();
 
@@ -4718,6 +5022,7 @@ function beginApkgExport(statusEl) {
     const b = $(id);
     if (b) b.setAttribute('aria-disabled', 'true');
   });
+  acquireWakeLock();
   return true;
 }
 
@@ -4727,6 +5032,55 @@ function endApkgExport() {
     const b = $(id);
     if (b) b.removeAttribute('aria-disabled');
   });
+  releaseWakeLock();
+}
+
+// ---------------------------------------------------------------------------
+// 長い処理の途中で止まらないようにする(2026-10-26追加)
+//
+// 音声付きの .apkg 出力は数分かかることがある。その間にスマホの画面が消えると
+// 通信が止まって失敗し、引っ張って再読み込みしてしまうと、それまでに作った
+// 音声ごと失われる(料金は払ったまま)。
+//  - 出力中は画面を消さない(Screen Wake Lock。使えない端末では何もしない)
+//  - 出力・生成の途中でページを離れようとしたら、ブラウザの確認を出す
+// ---------------------------------------------------------------------------
+let wakeLock = null;
+
+async function acquireWakeLock() {
+  try {
+    if (!navigator.wakeLock || document.visibilityState !== 'visible' || wakeLock) return;
+    const lock = await navigator.wakeLock.request('screen');
+    // 取得を待つ間に出力が終わっていたら、すぐ返す(返し忘れると画面が消えなくなる)
+    if (!apkgExportInProgress) {
+      lock.release().catch(() => {});
+      return;
+    }
+    // 画面を消すとブラウザが自動で外すので、そのときは手放したことにする
+    // (でないと、戻ってきたときに取り直さない)
+    lock.addEventListener?.('release', () => {
+      if (wakeLock === lock) wakeLock = null;
+    });
+    wakeLock = lock;
+  } catch {
+    wakeLock = null; // 省電力モードなどで断られても出力は続ける
+  }
+}
+
+function releaseWakeLock() {
+  const lock = wakeLock;
+  wakeLock = null;
+  if (lock) lock.release().catch(() => {});
+}
+
+/** 生成(AI呼び出し)の途中か。生成中は各タブの生成ボタンが disabled になっている。 */
+function isGenerating() {
+  return Object.values(GENERATE_SHORTCUTS).some((id) => $(id)?.disabled);
+}
+
+function onBeforeUnload(e) {
+  if (!apkgExportInProgress && !isGenerating()) return;
+  e.preventDefault();
+  e.returnValue = ''; // 古いブラウザ向け(文言は表示されず、ブラウザ既定の確認になる)
 }
 
 function downloadBlob(blob, filename) {
@@ -4749,7 +5103,7 @@ function showPreview(tabKey, item) {
   const cardDefKey = TAB_CONFIG[tabKey].cardDefKey;
   const def = shared.cardDefs?.[cardDefKey];
   if (!def) {
-    alert('カード定義の読み込みが完了していません。');
+    alert(notReadyMessage('カード定義'));
     return;
   }
   const fields = fieldsFromItem(def, item);
@@ -4770,16 +5124,23 @@ function showPreview(tabKey, item) {
  */
 function openCardPreview(title, def, values) {
   const tmpls = def.anki_model.tmpls || [];
+  // 裏面の {{FrontSide}} は空にして展開する(2026-10-26)。プレビューは
+  // 「表面 / 区切り線 / 裏面」と並べて見せるので、裏面にも表面を入れると
+  // 表面が2回続けて表示されていた。
   const cards = tmpls
-    .map((tmpl) => {
-      const front = renderTemplate(tmpl.qfmt, values);
-      return { name: tmpl.name, front, back: renderTemplate(tmpl.afmt, values, front) };
-    })
+    .map((tmpl) => ({
+      name: tmpl.name,
+      front: renderTemplate(tmpl.qfmt, values),
+      back: renderTemplate(tmpl.afmt, values, ''),
+    }))
     .filter((c) => htmlToPlainText(c.front).replace(/\s+/g, '') !== '');
   if (cards.length === 0) {
     // 念のため(全部空なら1枚目をそのまま出す。何も出ないよりは原因を追える)
-    const front = renderTemplate(tmpls[0]?.qfmt || '', values);
-    cards.push({ name: tmpls[0]?.name || '', front, back: renderTemplate(tmpls[0]?.afmt || '', values, front) });
+    cards.push({
+      name: tmpls[0]?.name || '',
+      front: renderTemplate(tmpls[0]?.qfmt || '', values),
+      back: renderTemplate(tmpls[0]?.afmt || '', values, ''),
+    });
   }
 
   const tabs = $('preview-templates');

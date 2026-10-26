@@ -106,7 +106,17 @@ export function splitIntoChunks(value, chunkSize = SYNC_CHUNK_SIZE) {
   const s = String(value ?? '');
   if (!s) return [];
   const chunks = [];
-  for (let i = 0; i < s.length; i += chunkSize) chunks.push(s.slice(i, i + chunkSize));
+  let i = 0;
+  while (i < s.length) {
+    let end = Math.min(i + chunkSize, s.length);
+    // 絵文字などのサロゲートペアを境目で2つに割らない(2026-10-26)。割ると
+    // 片割れの文字だけのセルになり、Sheets 側で置き換えられて読み直したときに
+    // 文字化けする。
+    const code = s.charCodeAt(end - 1);
+    if (end < s.length && code >= 0xD800 && code <= 0xDBFF && end - 1 > i) end -= 1;
+    chunks.push(s.slice(i, end));
+    i = end;
+  }
   return chunks;
 }
 
@@ -119,6 +129,20 @@ export function splitIntoChunks(value, chunkSize = SYNC_CHUNK_SIZE) {
  */
 export function joinChunks(cells) {
   return (cells || []).map((c) => String(c ?? '')).join('');
+}
+
+/**
+ * 空ではないのに、JSONの配列として読めない値か(2026-10-26)。
+ * parseIdArray は壊れた値を空配列として扱うため、そのまま書き戻すと
+ * シートにだけあった項目を消してしまう。同期の書き戻しの前に確かめる。
+ */
+export function isUnreadableJsonArray(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return false;
+  try {
+    return !Array.isArray(JSON.parse(raw));
+  } catch {
+    return true;
+  }
 }
 
 /** JSON文字列(配列)をパースする。壊れている/空なら空配列を返す。 */

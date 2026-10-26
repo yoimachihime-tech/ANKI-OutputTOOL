@@ -28,7 +28,7 @@ console.log('lib/sync.js / lib/sheets.js(同期関連)の単体テスト\n');
 const {
   mergeStock, ensureItemIds, capacityPercent, parseIdArray, newSyncId,
   SHEET_CELL_LIMIT, SYNC_VALUE_LIMIT, SYNC_CHUNK_SIZE, SYNC_MAX_CHUNKS,
-  exceedsSyncLimit, splitIntoChunks, joinChunks,
+  exceedsSyncLimit, splitIntoChunks, joinChunks, isUnreadableJsonArray,
 } = await import(new URL('../docs/lib/sync.js', import.meta.url));
 
 // ---------------------------------------------------------------------------
@@ -568,6 +568,34 @@ console.log('\n[7] pruneTombstoneIds(打ち消し記録の刈り込み)');
     ok('刈り込みは繰り返し適用しても安定している');
   } else {
     fail('刈り込みが冪等でない');
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[9] 壊れたリモートの検出・サロゲートペアの分割(2026-10-26)');
+{
+  if (!isUnreadableJsonArray('') && !isUnreadableJsonArray(undefined) && !isUnreadableJsonArray('[]')
+      && !isUnreadableJsonArray('[{"id":"a"}]')) {
+    ok('空・正しい配列は「読めない」扱いにしない');
+  } else {
+    fail('空・正しい配列を壊れていると判定した');
+  }
+  if (isUnreadableJsonArray('[{"id":"a"}') && isUnreadableJsonArray('{"id":"a"}')
+      && isUnreadableJsonArray('#ERROR!')) {
+    ok('途中で切れたJSON・配列でない値は「読めない」と判定する(書き戻しを止めるため)');
+  } else {
+    fail('壊れたリモートの値を見逃した');
+  }
+  // 絵文字(サロゲートペア)がちょうど境目に来ても2つに割らない
+  const value = `ab${String.fromCodePoint(0x1F600)}cd`;
+  const chunks = splitIntoChunks(value, 3);
+  const isHigh = (c) => c >= 0xD800 && c <= 0xDBFF;
+  const isLow = (c) => c >= 0xDC00 && c <= 0xDFFF;
+  const noLoneSurrogate = chunks.every((c) => !isHigh(c.charCodeAt(c.length - 1)) && !isLow(c.charCodeAt(0)));
+  if (noLoneSurrogate && joinChunks(chunks) === value) {
+    ok(`サロゲートペアを境目で割らない(${chunks.length} セル)`);
+  } else {
+    fail(`サロゲートペアが割れた: ${JSON.stringify(chunks)}`);
   }
 }
 

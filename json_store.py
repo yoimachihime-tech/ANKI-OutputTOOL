@@ -33,12 +33,16 @@ card_defs.py / tab_notes_state.py / daily_pending_exclusions.py)は、いずれ�
 - 読み込み: 壊れていた場合は例外を投げず、壊れたファイルを`.corrupt`へ退避した
   うえで既定値を返す。**黙って空にするのではなく退避する**のは、後から手作業で
   中身を救出できる可能性を残すため(JSONの末尾が切れただけなら大半は読める)。
+  ただし**読めなかっただけ(ロック・権限など)は壊れている扱いにしない**
+  (2026-10-26)。読み直しても駄目なら例外にする。既定値を返すと、次の保存で
+  本物のファイルを空の内容で上書きしてしまうため。
 """
 
 import json
 import os
 import shutil
 import tempfile
+import time
 
 
 def read_json(path: str, default):
@@ -51,12 +55,30 @@ def read_json(path: str, default):
     """
     if not os.path.exists(path):
         return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-        _quarantine_corrupt_file(path)
-        return default
+    for attempt in range(_READ_RETRIES):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return default
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            _quarantine_corrupt_file(path)
+            return default
+        except OSError:
+            # 読めなかっただけ(Googleドライブの同期中のロック・権限・
+            # オンライン専用ファイル等)で、中身が壊れているわけではない
+            # (2026-10-26)。以前はこれも「壊れている」として既定値を返していた
+            # ため、次の保存で本物のファイル(ストック・APIキー)を空の内容で
+            # 上書きしてしまう恐れがあった。少し待って読み直し、それでも駄目なら
+            # 例外にする(黙って空として扱うより、操作が失敗するほうが安全)。
+            if attempt == _READ_RETRIES - 1:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+    return default
+
+
+# 読み込みの一時的な失敗(ロック等)を読み直す回数
+_READ_RETRIES = 3
 
 
 def write_json(path: str, data) -> None:

@@ -181,5 +181,69 @@ console.log('\n[4] listModels / isNonTextModel / isGeminiTtsModel');
   }
 }
 
+console.log('\n[5] まとめて生成の対応付け・途中で止まったときの扱い(2026-10-26)');
+
+{
+  const { alignBatchResults, generateVocabCards } = await import(new URL('../docs/lib/gemini.js', import.meta.url));
+  const e = (index, tag) => ({ index, tag });
+
+  // index が重複したら、後の要素で空いた位置を埋めない(別の単語の内容が付くのを防ぐ)
+  const dup = alignBatchResults([e(1, 'a'), e(2, 'b'), e(2, 'c')], 3);
+  if (dup[0]?.tag === 'a' && dup[1]?.tag === 'b' && dup[2] === null) {
+    ok('index が重複した要素は捨て、空いた位置は「生成できなかった」のまま残す');
+  } else {
+    fail(`重複 index の扱いが想定外: ${JSON.stringify(dup)}`);
+  }
+  // 0始まりで揃っていれば1つずらして読む(全件ずれるのを防ぐ)
+  const zero = alignBatchResults([e(0, 'a'), e(1, 'b'), e(2, 'c')], 3);
+  if (zero.map((x) => x?.tag).join() === 'a,b,c') ok('0始まりの index は1つずらして読む');
+  else fail(`0始まりの扱いが想定外: ${JSON.stringify(zero)}`);
+  // index が1つも無ければ並び順のまま
+  const none = alignBatchResults([{ tag: 'a' }, { tag: 'b' }], 3);
+  if (none.map((x) => x?.tag ?? null).join() === 'a,b,') ok('index が無い応答は並び順のまま使う');
+  else fail(`index なしの扱いが想定外: ${JSON.stringify(none)}`);
+  // 数字の文字列も index として読む
+  const str = alignBatchResults([e('2', 'b'), e('1', 'a')], 2);
+  if (str.map((x) => x?.tag).join() === 'a,b') ok('数字の文字列の index も読む');
+  else fail(`文字列 index の扱いが想定外: ${JSON.stringify(str)}`);
+
+  // 11件 = 2回に分けて呼ぶ。2回目が日次上限で失敗しても、1回目の10件は返す
+  let calls = 0;
+  globalThis.fetch = async (url, init) => {
+    calls += 1;
+    if (calls === 1) {
+      const items = Array.from({ length: 10 }, (_, i) => ({ index: i + 1, meaning: `m${i + 1}` }));
+      return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(items) }] } }] }) };
+    }
+    return {
+      ok: false,
+      status: 429,
+      text: async () => JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'quota',
+        details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', quotaValue: '20' }] }] } }),
+    };
+  };
+  const pairs = Array.from({ length: 11 }, (_, i) => ({ word: `w${i + 1}`, context: '' }));
+  try {
+    const cards = await generateVocabCards({ pairs, apiKey: 'k', model: 'm', promptTemplate: '{{count}} {{items}}' });
+    if (cards.length === 11 && cards.slice(0, 10).every(Boolean) && cards[10] === null
+        && typeof cards.batchError === 'string' && cards.batchError.length > 0) {
+      ok('途中のまとまりが失敗しても、それまでに生成できた分は返す(理由は batchError に入る)');
+    } else {
+      fail(`途中で失敗したときの戻り値が想定外: ${cards.length}件 / batchError=${cards.batchError}`);
+    }
+  } catch (err) {
+    fail(`1回目の成功分まで失われた: ${err.message.slice(0, 60)}`);
+  }
+  // 1回目から失敗したら、従来どおり例外にする
+  calls = 1;
+  try {
+    await generateVocabCards({ pairs: pairs.slice(0, 3), apiKey: 'k', model: 'm', promptTemplate: '{{count}} {{items}}' });
+    fail('最初のまとまりが失敗したのに例外にならない');
+  } catch (err) {
+    if (err instanceof GeminiError) ok('最初のまとまりから失敗したときは従来どおり例外にする');
+    else fail(`想定外の例外: ${err}`);
+  }
+}
+
 console.log(`\n${failures === 0 ? '✅ 全テスト成功' : `❌ ${failures} 件失敗`}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -16,7 +16,7 @@
 // 唯一 JS で再実装しているのが guid(guid.js)とカード生成条件(req)の判定で、
 // どちらも tools/verify_web_parity.mjs で Python 版との一致を検証している。
 
-import { buildItemGuid } from './guid.js';
+import { buildItemGuid } from './guid.js?v=20261026a';
 
 const SQL_JS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
 
@@ -25,7 +25,14 @@ let sqlJsPromise = null;
 /** sql.js(SQLite の WebAssembly 版)を初期化する(初回のみ読み込む)。 */
 function loadSqlJs() {
   if (!sqlJsPromise) {
-    sqlJsPromise = window.initSqlJs({ locateFile: (file) => SQL_JS_CDN + file });
+    sqlJsPromise = window.initSqlJs({ locateFile: (file) => SQL_JS_CDN + file })
+      .catch((e) => {
+        // 失敗したら次回また試す(2026-10-26)。以前は失敗した Promise を
+        // 覚えたままにしていたため、通信が一瞬途切れただけで、ページを
+        // 再読み込みするまでどのタブからも .apkg を出力できなくなっていた。
+        sqlJsPromise = null;
+        throw e;
+      });
   }
   return sqlJsPromise;
 }

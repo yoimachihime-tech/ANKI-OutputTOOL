@@ -235,8 +235,32 @@ function parseA1(range) {
   return { col, row: Number(m[2]) };
 }
 
+// 複数端末間の同期で使う隠しタブ(_AppSync)の偽実装(2026-10-26追加)。
+// 以前はUIテストが同期を一度も通しておらず、app.js で同期の関数を import し
+// 忘れても気づけなかった(同期を押すたびに ReferenceError になる状態だった)。
+let syncSheetExists = false;
+let syncValues = [];
+let syncWrites = 0;
+
 function handleSheetsRequest(url, init) {
   const decoded = decodeURIComponent(String(url));
+  const method = init.method || 'GET';
+  if (method === 'PUT' && decoded.includes('_AppSync!')) {
+    syncValues = JSON.parse(init.body).values;
+    syncWrites += 1;
+    return {};
+  }
+  if (method === 'GET' && decoded.includes('?fields=sheets.properties.title')) {
+    return {
+      sheets: [{ properties: { title: '添削結果' } },
+        ...(syncSheetExists ? [{ properties: { title: '_AppSync' } }] : [])],
+    };
+  }
+  if (method === 'GET' && decoded.includes('_AppSync!')) return { values: syncValues };
+  if (method === 'POST' && /:batchUpdate$/.test(decoded) && !decoded.includes('values:batchUpdate')) {
+    syncSheetExists = true; // addSheet
+    return {};
+  }
   if ((init.method || 'GET') === 'POST') {
     const body = JSON.parse(init.body);
     if (decoded.includes(':append')) {
@@ -1977,16 +2001,17 @@ if (mixed.filter((i) => i.source_kind === 'phrase').length === 1
 }
 // 入力した語句の数に応じて、1枚のカードに載る例文の数を増やす
 // (2026-08-06、片桐の想定)。**入力が何件でもカードは1枚**で、例文の数だけが
-// 1件→3 / 2件→4 / 3件→5 … と増える(上限10)。当初は「1件=1枚」で実装したが、
-// 実機で2枚できたのを見て本来の想定が分かり、まとめる方式へ直した。
+// 1件→3 / 2件以上→4 と増える。上限はカードの例文欄の数(I1Ex1〜I1Ex4)。
+// 2026-10-26までは上限10にしていたが、5つ目以降はカードに載らず黙って
+// 捨てられていた(音声の料金だけはかかっていた)ため4へ戻した。
 // 例文の本数はプロンプトで指示する契約なので、送ったプロンプトを検証する
 // (モックの返す値の長さを見てもモック自身の値でしかない)。
 const phraseExampleCases = [
   { input: ['give up', 'look forward to'], total: 4 },
-  { input: ['give up', 'look forward to', 'put off'], total: 5 },
-  { input: ['a', 'b', 'c', 'd', 'e', 'f'], total: 8 },
-  // 上限10。11件入れても10のままで、一部の表現が例文に出ない可能性を警告する。
-  { input: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'], total: 10, mayOmit: true },
+  { input: ['give up', 'look forward to', 'put off'], total: 4 },
+  { input: ['a', 'b', 'c', 'd', 'e', 'f'], total: 4 },
+  // 1文に2つまでが自然に作れる目安なので、9件以上で一部が例文に出ない可能性を警告する。
+  { input: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'], total: 4, mayOmit: true },
 ];
 for (const c of phraseExampleCases) {
   $('shuujuku-clear-stock').click();
@@ -2465,11 +2490,29 @@ console.log('\n[32] 使い勝手(すべて選択・タブの件数・下書き�
   $('word-clear-stock').click();
   await sleep(20);
 
-  // APIキーが無いまま生成しようとすると、設定がきちんと開いてキー欄に案内される
-  // (以前は設定が通常画面の上に重なって出るだけで、ボタンの表示も変わらなかった)。
+  // APIキーが無く、まだログインしていない端末では、ログインへ案内する
+  // (キーはログイン時にWorkerから配られるため。2026-10-26、以前は手入力へ
+  // 誘導していて⚙設定の「ふつうは何も入力する必要はありません」と食い違っていた)。
   const savedKey = $('api-key').value;
+  const savedWorkerUrl = $('oauth-worker-url').value;
+  // 前のセクションでログインした状態が残っていれば、ログイン前の端末を再現する。
+  // Worker方式(既定)の端末を想定するので、Worker URL も入れておく。
+  if (!$('header-signout').hidden) $('header-signout').click();
+  $('oauth-worker-url').value = 'https://worker.example.test';
   $('api-key').value = '';
   $('word-input').value = 'test';
+  $('word-generate').click();
+  await sleep(50);
+  if ($('settings').hidden === true
+      && $('word-generate-status').textContent.includes('Googleにログイン')) {
+    ok('キーが無くログイン前なら、ログインすれば自動で設定されることを案内する');
+  } else {
+    fail(`ログイン前のキー未設定の案内が想定外: ${$('word-generate-status').textContent}`);
+  }
+
+  // Worker を使わない設定(従来方式)では、設定がきちんと開いてキー欄に案内される
+  // (以前は設定が通常画面の上に重なって出るだけで、ボタンの表示も変わらなかった)。
+  $('oauth-worker-url').value = '';
   $('word-generate').click();
   await sleep(20);
   if ($('settings').hidden === false && $('main-content').hidden === true
@@ -2484,6 +2527,7 @@ console.log('\n[32] 使い勝手(すべて選択・タブの件数・下書き�
   window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
   if ($('settings').hidden === true && $('main-content').hidden === false) ok('Esc で設定を閉じられる');
   else fail('Esc で設定が閉じない');
+  $('oauth-worker-url').value = savedWorkerUrl;
   $('api-key').value = savedKey;
   $('word-input').value = '';
 
@@ -2706,6 +2750,60 @@ console.log('\n[35] AIに質問: 意味・本質問題の生成と .apkg への�
   $('tts-engine').dispatchEvent(new window.Event('change'));
   $('ai-ask-clear-stock').click();
   $('shuujuku-clear-stock').click();
+  await sleep(20);
+}
+
+console.log('\n[36] 複数端末間の同期(ヘッダーの「🔄 同期」、2026-10-26追加)');
+{
+  const waitSyncStatus = async () => {
+    for (let i = 0; i < 100; i += 1) {
+      const el = $('header-sync-status');
+      if (!el.classList.contains('loading') && el.textContent && !el.textContent.endsWith('...')) return el.textContent;
+      await sleep(50);
+    }
+    return $('header-sync-status').textContent;
+  };
+  const rowOf = (key) => syncValues.find((r) => r[0] === key);
+  const parseRow = (key) => JSON.parse((rowOf(key) || [key]).slice(1).join('') || '[]');
+
+  syncSheetExists = false;
+  syncValues = [];
+  syncWrites = 0;
+  $('header-sync-now').click();
+  let text = await waitSyncStatus();
+  if (text.includes('同期しました') && syncSheetExists && syncWrites === 1 && rowOf('word_stock_items')) {
+    ok('同期で隠しタブを作り、3ストックを書き込む');
+  } else {
+    fail(`同期の結果が想定外: ${text.slice(0, 120)} / sheet=${syncSheetExists} writes=${syncWrites}`);
+  }
+
+  // 他の端末が足したカードを取り込める(最初の同期で書けていなければ、以降は確かめられない)
+  if (!rowOf('word_stock_items')) syncValues = [['word_stock_items', '[]']];
+  const remoteWords = parseRow('word_stock_items');
+  const now = new Date().toISOString();
+  remoteWords.push({
+    id: 'remote-word-1', word: 'serendipity', meaning: '思いがけない幸運', generated_at: now, updated_at: now,
+  });
+  rowOf('word_stock_items').splice(1, Infinity, JSON.stringify(remoteWords));
+  $('header-sync-now').click();
+  text = await waitSyncStatus();
+  if (text.includes('同期しました') && $('word-stock-list').textContent.includes('serendipity')) {
+    ok('他の端末が足したカードを取り込む');
+  } else {
+    fail(`リモートのカードが取り込まれない: ${text.slice(0, 120)}`);
+  }
+
+  // シート上のデータが壊れていたら、書き戻さない(他端末のカードを消さないため)
+  const writesBefore = syncWrites;
+  rowOf('word_stock_items').splice(1, Infinity, '[{"id":"remote-word-1"');
+  $('header-sync-now').click();
+  text = await waitSyncStatus();
+  if (text.includes('読み取れなかった') && syncWrites === writesBefore) {
+    ok('壊れたリモートを読んだときは書き戻しを中止する');
+  } else {
+    fail(`壊れたリモートでも書き戻した可能性: ${text.slice(0, 120)} / writes ${writesBefore}→${syncWrites}`);
+  }
+  $('word-clear-stock').click();
   await sleep(20);
 }
 

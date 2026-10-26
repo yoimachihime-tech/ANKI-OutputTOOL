@@ -28,21 +28,95 @@ import http.server
 import json
 import os
 import re
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
+import urllib.request
 import webbrowser
 
-import tts_core
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _redirect_output_if_windowless():
+    """pythonw.exe で起動すると sys.stdout / sys.stderr が None になり、
+    print() が AttributeError で落ちる(_log が print を使っている)。
+    コンソール(黒い画面)を出さずに常駐させるため、ログファイルへ向ける。
+
+    **`import tts_core` より前に行うこと**(2026-10-26)。tts_core は anki を
+    import するので、anki が入っていない・壊れている場合の ImportError が
+    ここより前に起きると、pythonw では何も表示されず「押しても何も起きない」
+    状態になっていた。
+    """
+    if sys.stdout is None or sys.stderr is None:
+        log_file = open(os.path.join(_HERE, "local_tts_server.log"),
+                        "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = log_file
+        return True
+    return False
+
+
+_WINDOWLESS = _redirect_output_if_windowless()
+
+
+def _show_fatal(message):
+    """起動できなかった理由を知らせる。pythonw ではコンソールが無いので
+    Windows のメッセージボックスで出す(ログにも残す)。"""
+    print(message)
+    if _WINDOWLESS and os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                None, message, "apkgにTTS音声を付ける", 0x10)  # MB_ICONERROR
+        except Exception:  # noqa: BLE001
+            pass
+
+
+try:
+    import tts_core
+except Exception as _e:  # noqa: BLE001
+    traceback.print_exc()
+    _show_fatal(
+        "TTSツールを起動できませんでした(必要なパッケージを読み込めません)。\n\n"
+        "%s: %s\n\n"
+        "Ankiを更新した後などは、anki パッケージを入れ直してください:\n"
+        "  C:\\Python314\\python.exe -m pip install --user anki\n\n"
+        "詳しくは local_tts_server.log を見てください。" % (type(_e).__name__, _e))
+    sys.exit(1)
 
 PORT = 8765
-ALLOWED_ORIGINS = {"http://127.0.0.1:%d" % PORT, "http://localhost:%d" % PORT}
 OUTPUT_DIR = os.path.join(tts_core.BASE_DIR, "output")
-WORK_DIR = os.path.join(tts_core.BASE_DIR, "pending_decks")
+
+
+def _work_dir():
+    """作業用コレクションの置き場所。
+
+    以前は pending_decks/(Googleドライブの同期フォルダの中)に置いていたが、
+    同期中のファイルに SQLite を書くことになり、`WinError 32`(使用中で消せない)の
+    一因になっていた(2026-10-26)。再開は書き出した .apkg から行うので、作業
+    ファイルはPC内のローカルなフォルダで十分。取れなければ従来の場所を使う。
+    """
+    base = os.environ.get("LOCALAPPDATA")
+    if base and os.path.isdir(base):
+        return os.path.join(base, "AnkiTTSTool", "work")
+    return os.path.join(tts_core.BASE_DIR, "pending_decks")
+
+
+WORK_DIR = _work_dir()
 DEFAULT_VOICE = "en-US-Chirp3-HD-Iapetus"
+
+
+def _allowed_hosts():
+    return {"127.0.0.1:%d" % PORT, "localhost:%d" % PORT}
+
+
+def _allowed_origins():
+    return {"http://" + h for h in _allowed_hosts()}
 
 # 画面で選べる Gemini TTS のモデル(新しい順)
 GEMINI_MODEL_CHOICES = [
@@ -106,16 +180,28 @@ class State:
         # 直近に書き出したapkg。TTS生成でもテンプレート調整でも更新するので、
         # /api/download はこれを見る(どちらの操作の後でもダウンロードできる)。
         self.last_output = ""
+        # 読み込んだ後にコレクションへ書き込んだが、まだ書き出していない(2026-10-26)。
+        # 書き出しだけが失敗した場合(出力先のファイルが使用中・ディスクがいっぱい等)、
+        # 生成した音声はこのコレクションの中にしか無い。もう一度「TTSを生成する」を
+        # 押しても対象が0件になって書き出しまで進まないため、書き出しだけを
+        # やり直せるようにする目印。
+        self.dirty = False
+        self.worker = None         # 生成スレッド(終了時に待つため)
+        self.shutting_down = False
 
 
 STATE = State()
+
+
+def _job_running():
+    return bool(STATE.job and STATE.job.get("running"))
 
 
 def _reset_job():
     return {
         "running": False, "done": 0, "total": 0, "log": [],
         "finished": False, "error": "", "output_path": "", "cancelled": False,
-        "interrupted": False,
+        "interrupted": False, "started_at": time.time(), "api_calls": 0,
     }
 
 
@@ -140,19 +226,78 @@ def _prepare_work_col_path():
     with STATE.lock:
         old = STATE.col
         STATE.col = None
+        STATE.source_name = ""
+        STATE.last_output = ""
+        STATE.dirty = False
     if old is not None:
         try:
             old.close()
         except Exception:  # noqa: BLE001
             pass
 
+    # 前回までの作業ファイルを片付ける。メディアフォルダ(<名前>.media)には
+    # これまでに生成したMP3がすべて残り続けるため、放っておくと際限なく増える
+    # (再開は書き出した .apkg から行うので、ここに残しておく必要は無い)。
+    if os.path.isdir(WORK_DIR):
+        for name in os.listdir(WORK_DIR):
+            if not name.startswith("_local_tts_work"):
+                continue
+            target = os.path.join(WORK_DIR, name)
+            try:
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
+                else:
+                    os.remove(target)
+            except OSError:
+                pass   # 使用中などで消せないものは、次の機会に回す
+
     path = os.path.join(WORK_DIR, "_local_tts_work.anki2")
     if os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            path = os.path.join(WORK_DIR, "_local_tts_work_%d.anki2" % int(time.time()))
+        path = os.path.join(WORK_DIR, "_local_tts_work_%d.anki2" % int(time.time()))
     return path
+
+
+def _output_path_for(source_name):
+    """書き出し先のパス。
+
+    `deck_TTS.apkg` を読み込んで続きを作った場合も `deck_TTS.apkg` に書き出す
+    (以前は `deck_TTS_TTS.apkg` になり、再開するたびに名前が伸びていた)。
+    """
+    stem = os.path.splitext(os.path.basename(source_name or "deck.apkg"))[0]
+    stem = re.sub(r"(_TTS)+$", "", stem) or "deck"
+    return os.path.join(OUTPUT_DIR, "%s_TTS.apkg" % stem)
+
+
+def _export_to_output(col):
+    """コレクションを出力先へ書き出す。
+
+    一時ファイルへ書き切ってから置き換える(2026-10-26)。書き出しの途中で
+    ツールを終了した・ディスクがいっぱいになった場合に、前回の良い出力が
+    中途半端なファイルで上書きされて失われないようにするため。
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    out_path = _output_path_for(STATE.source_name)
+    tmp_path = out_path[:-len(".apkg")] + ".writing.apkg"
+    tts_core.export_collection(col, tmp_path)
+    os.replace(tmp_path, out_path)
+    STATE.last_output = out_path
+    STATE.dirty = False
+    return out_path
+
+
+def _describe_previous_output(source_name):
+    """同じ名前の出力が既にあれば、その情報を返す(読み込んだのがその出力自身なら無し)。
+
+    「1日目は上限で300件まで → 2日目にうっかり元のapkgを読み込んで続きを作る」と、
+    300件分の出力を50件分で上書きしてしまう。読み込んだ時点で気づけるようにする。
+    """
+    out_path = _output_path_for(source_name)
+    if not os.path.exists(out_path):
+        return None
+    if os.path.basename(source_name or "") == os.path.basename(out_path):
+        return None
+    return {"name": os.path.basename(out_path),
+            "mtime": time.strftime("%m/%d %H:%M", time.localtime(os.path.getmtime(out_path)))}
 
 
 def open_apkg(apkg_bytes, filename):
@@ -161,6 +306,9 @@ def open_apkg(apkg_bytes, filename):
     フィールドごとに「中身のある件数」「既に音声がある件数」「サンプル文字列」を
     返すのは、どのフィールドがTTS対象になりうるかを画面上で判断できるようにするため
     (例: 先頭フィールドがデッキ名だった場合、選ばずに済む)。
+    「日本語を含む件数」も返す(2026-10-26)。名前がENで終わっていても、習熟用の
+    `I1PatternEN` のように「動詞」「名詞」などのプレースホルダーが混じる
+    フィールドがあり、英語の音声で日本語を読み上げてしまうため。
     """
     os.makedirs(WORK_DIR, exist_ok=True)
     tmp_apkg = os.path.join(WORK_DIR, "_local_tts_input.apkg")
@@ -172,7 +320,7 @@ def open_apkg(apkg_bytes, filename):
     notetypes = []
     for nt in col.models.all():
         name = nt["name"]
-        note_ids = col.find_notes('note:"%s"' % name)
+        note_ids = col.find_notes("mid:%d" % nt["id"])
         if not note_ids:
             # apkgには使われていない標準ノートタイプ(Basic等)も入ってくるので除く
             continue
@@ -182,6 +330,10 @@ def open_apkg(apkg_bytes, filename):
         nonempty = [0] * count
         samples = [""] * count
         has_audio = [0] * count
+        japanese = [0] * count
+        # 実際の読み上げと同じ変換を通してから日本語を探す(Grammar Multi は
+        # 日本語の文を最初から読まないので、そこで数えると誤警告になる)
+        transform = tts_core.default_source_transform(name, False)
 
         for nid in note_ids:
             note = col.get_note(nid)
@@ -195,13 +347,15 @@ def open_apkg(apkg_bytes, filename):
                     nonempty[i] += 1
                     if not samples[i]:
                         samples[i] = text[:60]
+                    if tts_core.contains_japanese(_tts_text(raw, transform)):
+                        japanese[i] += 1
 
         notetypes.append({
             "name": name,
             "note_count": len(note_ids),
             "fields": [
                 {"index": i, "name": field_names[i], "nonempty": nonempty[i],
-                 "has_audio": has_audio[i], "sample": samples[i]}
+                 "has_audio": has_audio[i], "japanese": japanese[i], "sample": samples[i]}
                 for i in range(count)
             ],
         })
@@ -210,8 +364,10 @@ def open_apkg(apkg_bytes, filename):
     with STATE.lock:
         STATE.col = col
         STATE.source_name = filename or "deck.apkg"
+        STATE.job = None
     return {"filename": STATE.source_name, "notetypes": notetypes,
-            "template_tts": count_template_tts(col)}
+            "template_tts": count_template_tts(col),
+            "previous_output": _describe_previous_output(STATE.source_name)}
 
 
 # カードテンプレートに書かれた Anki 標準のTTSタグ。
@@ -290,6 +446,10 @@ def _build_plan(col, targets, options):
     redo_multi = bool(options.get("redo_multi_audio"))
     force = True if redo_multi else bool(options.get("force_regen"))
     per_sentence = bool(options.get("per_sentence_tags"))
+    try:
+        gap = float(options.get("sentence_gap") or 0)
+    except (TypeError, ValueError):
+        gap = 0.0
 
     rows = []
     for t in targets:
@@ -315,17 +475,28 @@ def _build_plan(col, targets, options):
             to_process = kept
             skip_audio = 0   # このモードでは「音声済みで飛ばす」の意味が変わるため出さない
 
-        # 「文ごとにタグを分ける」がONのとき、再生ボタンが2つ以上になる件数を予告する
+        # 「文ごとにタグを分ける」がONのとき、再生ボタンが2つ以上になる件数を予告する。
+        # API呼び出し回数の見積もりもここで出す(2026-10-26)。以前は画面に
+        # 「件数がそのままAPI呼び出し回数」と書いていたが、2文以上のフィールドは
+        # 「文ごとにタグを分ける」か「文と文の間隔」が0より大きいと文の数だけ
+        # 呼ぶ(tts_core.synthesize_per_sentence / synthesize_with_gaps)。
         multi_sentence = 0
-        if per_sentence:
-            for nid, field_idx in to_process:
-                text = _tts_text(col.get_note(nid).fields[field_idx], transform)
-                if len([s for s in tts_core.split_into_sentences(text) if s.strip()]) > 1:
-                    multi_sentence += 1
+        api_calls = 0
+        for nid, field_idx in to_process:
+            # 既存の [sound:] は読み上げないので先に外す(外さないと、作り直す
+            # モードでタグが1文として数えられ、見積もりが膨らんでいた)
+            raw = tts_core.strip_sound_tags(col.get_note(nid).fields[field_idx])
+            if transform:
+                raw = transform(raw)
+            n = len([s for s in tts_core.split_into_sentences(raw) if s.strip()])
+            if n > 1 and per_sentence:
+                multi_sentence += 1
+            api_calls += n if n > 1 and (per_sentence or gap > 0) else 1
 
         rows.append({"notetype": name, "items": len(to_process), "chars": chars,
                      "skip_audio": skip_audio, "skip_empty": skip_empty,
-                     "multi_sentence": multi_sentence, "_to_process": to_process})
+                     "multi_sentence": multi_sentence, "api_calls": api_calls,
+                     "_to_process": to_process})
     return rows, force
 
 
@@ -337,13 +508,15 @@ def analyze(targets, options):
 
     rows, _ = _build_plan(col, targets, options)
     totals = {"total_items": 0, "total_chars": 0, "total_skip_audio": 0,
-              "total_skip_empty": 0, "total_multi_sentence": 0}
+              "total_skip_empty": 0, "total_multi_sentence": 0, "total_api_calls": 0}
     for r in rows:
         totals["total_items"] += r["items"]
         totals["total_chars"] += r["chars"]
         totals["total_skip_audio"] += r["skip_audio"]
         totals["total_skip_empty"] += r["skip_empty"]
         totals["total_multi_sentence"] += r["multi_sentence"]
+        totals["total_api_calls"] += r["api_calls"]
+    totals["output_name"] = os.path.basename(_output_path_for(STATE.source_name))
 
     # _to_process は内部用なので画面へは返さない
     public = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]
@@ -382,6 +555,7 @@ def _run_generate(targets, options, settings):
         total = sum(len(p[1]) for p in plan)
 
         job["total"] = total
+        job["api_calls"] = sum(r["api_calls"] for r in rows)
         if total == 0:
             # 「0件」だけだと原因が分からない。実際に踏んだのは
             # 「apkgを作り直して同じ名前で上書きしたが、ブラウザが同じパスの
@@ -401,6 +575,12 @@ def _run_generate(targets, options, settings):
         base_done = 0
         for name, to_process in plan:
             if STATE.cancel:
+                # 直前のノートタイプの最後の1件の処理中にキャンセルされると、
+                # generate_tts_for_collection は cancelled=False で戻ってくる。
+                # ここで印を付けないと、残りのノートタイプを飛ばしたのに
+                # 画面には「完了しました」と出てしまう(2026-10-26修正)。
+                job["cancelled"] = True
+                _log("キャンセルされました。残りのノートタイプは処理しません。")
                 break
             if not to_process:
                 continue
@@ -408,6 +588,7 @@ def _run_generate(targets, options, settings):
 
             def on_progress(done, _total, _base=base_done):
                 job["done"] = _base + done
+                STATE.dirty = True
 
             result = tts_core.generate_tts_for_collection(
                 col, name, to_process,
@@ -450,20 +631,17 @@ def _run_generate(targets, options, settings):
                      % (sum(removed.values()), " / ".join(removed)))
 
         if job["done"] > 0:
-            os.makedirs(OUTPUT_DIR, exist_ok=True)
-            stem = os.path.splitext(os.path.basename(STATE.source_name))[0]
-            out_path = os.path.join(OUTPUT_DIR, "%s_TTS.apkg" % stem)
-            _log("書き出し中: %s" % out_path)
-            tts_core.export_collection(col, out_path)
-            job["output_path"] = out_path
-            STATE.last_output = out_path
-            _log("完了しました。" if not error else
+            _log("書き出し中: %s" % _output_path_for(STATE.source_name))
+            job["output_path"] = _export_to_output(col)
+            _log("完了しました。" if not error and not job["cancelled"] else
                  "ここまでの %d 件を書き出しました。" % job["done"])
     except Exception as e:  # noqa: BLE001
         # 書き出しにも失敗した場合、生成側のエラーを消さずに併記する
-        # (原因の切り分けができなくなるため)
-        extra = "書き出しにも失敗しました: %s" % e
+        # (原因の切り分けができなくなるため)。生成した音声は作業用の
+        # コレクションに残っているので、画面の「書き出しだけやり直す」で救える。
+        extra = "書き出しに失敗しました: %s" % e
         error = (error + "\n" + extra) if error else extra
+        job["export_failed"] = True
         _log(extra)
         traceback.print_exc()
 
@@ -485,7 +663,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # -- 補助 ---------------------------------------------------------------
     def _origin_ok(self):
         origin = self.headers.get("Origin")
-        return origin is None or origin in ALLOWED_ORIGINS
+        return origin is None or origin in _allowed_origins()
+
+    def _host_ok(self):
+        """Host ヘッダーが 127.0.0.1 / localhost のときだけ応じる(2026-10-26)。
+
+        待ち受けは 127.0.0.1 だけだが、DNSリバインディング(外部のサイトが
+        自分のドメイン名を 127.0.0.1 に向け直す手口)を使われると、GETは
+        Origin の検査を通らないため、書き出した .apkg を読み出されうる。
+        正規の画面は必ず 127.0.0.1:8765 で開くので、それ以外は断る。
+        """
+        return (self.headers.get("Host") or "") in _allowed_hosts()
+
+    def _reject_while_running(self, what):
+        """生成中に受け付けると壊れる操作を断る(2026-10-26)。"""
+        if not _job_running():
+            return False
+        self._json({"error": "TTSを生成中のため、%sできません。"
+                             "④の「キャンセル」で止めてから(止めるとそこまでの分を"
+                             "書き出します)もう一度操作してください。" % what, "running": True},
+                   409)
+        return True
 
     def _send(self, status, body, ctype, extra=None):
         self.send_response(status)
@@ -505,18 +703,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
                    "application/json; charset=utf-8")
 
     def _read_body(self):
+        # bytes を += でつなぐと毎回全体をコピーするため、数百MBのapkgでは
+        # 非常に遅くなる。bytearray に読み足していく。
         length = int(self.headers.get("Content-Length") or 0)
-        buf = b""
+        buf = bytearray()
         while len(buf) < length:
             chunk = self.rfile.read(min(1 << 20, length - len(buf)))
             if not chunk:
                 break
             buf += chunk
-        return buf
+        return bytes(buf)
 
     # -- ルーティング -------------------------------------------------------
     def do_GET(self):  # noqa: N802
-        path = self.path.split("?")[0]
+        if not self._host_ok():
+            self._json({"error": "許可されていないホスト名です。"}, 403)
+            return
+        # 失敗しても応答を返す(以前は config.json を読めないなどの例外で接続ごと
+        # 切れ、画面には理由が出なかった)。
+        try:
+            self._route_get(self.path.split("?")[0])
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            self._json({"error": str(e)}, 500)
+
+    def _route_get(self, path):
         if path == "/":
             self._send(200, PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif path == "/api/settings":
@@ -534,13 +745,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # キーそのものは画面へ出さない(あるかどうかだけ)
                 "has_api_key": bool(cfg.get("api_key")),
                 "has_gemini_key": bool(cfg.get("gemini_api_key")),
+                # Gemini TTS の音声を .apkg 用の MP3 にするのに要る。無いと
+                # 1件目を(料金を払って)作った後で失敗するので、先に画面で知らせる。
+                "has_lameenc": bool(tts_core.LAMEENC_AVAILABLE),
                 # 画面の選択肢(2026-10-05追加)
                 "prebuilt_voices": tts_core.PREBUILT_VOICE_NAMES,
                 "gemini_models": GEMINI_MODEL_CHOICES,
                 "cloud_voice_cache": cfg.get("voices_cache", {}),
+                "output_dir": OUTPUT_DIR,
             })
         elif path == "/api/progress":
-            self._json(STATE.job or _reset_job())
+            # 画面を開き直したとき(再読み込み・バッチの二重起動で開いた別タブ)に、
+            # 実行中のジョブへつなぎ直せるよう、読み込み中のファイル名なども返す。
+            payload = dict(STATE.job or _reset_job())
+            payload.update({
+                "source_name": STATE.source_name,
+                "loaded": STATE.col is not None,
+                "needs_export": bool(STATE.dirty and STATE.col is not None
+                                     and not _job_running()),
+                "last_output": STATE.last_output,
+                "elapsed": time.time() - payload.get("started_at", time.time()),
+            })
+            self._json(payload)
         elif path == "/api/download":
             out = STATE.last_output or (STATE.job or {}).get("output_path")
             if not out or not os.path.exists(out):
@@ -555,13 +781,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def do_POST(self):  # noqa: N802
-        if not self._origin_ok():
+        # 本文は先に読み切る(読まずに 403 を返すと、keep-alive の接続に
+        # 読み残しが残って次のリクエストが壊れる)
+        body = self._read_body()
+        if not self._host_ok() or not self._origin_ok():
             self._json({"error": "許可されていないオリジンです。"}, 403)
             return
         path = self.path.split("?")[0]
-        body = self._read_body()
         try:
             if path == "/api/open":
+                # 生成中に読み込むと、生成スレッドが使っているコレクションを
+                # 閉じて作業ファイルを消してしまい、それまでの生成分が書き出されずに
+                # 失われていた(2026-10-26修正)。
+                if self._reject_while_running("別のapkgを読み込むことは"):
+                    return
                 filename = urllib.parse.unquote(self.headers.get("X-Filename", ""))
                 self._json(open_apkg(body, filename))
                 return
@@ -571,8 +804,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/analyze":
                 self._json(analyze(payload.get("targets", []), payload.get("options", {})))
             elif path == "/api/generate":
-                if STATE.job and STATE.job.get("running"):
-                    self._json({"error": "すでに生成中です。"}, 409)
+                if _job_running():
+                    self._json({"error": "すでに生成中です。", "running": True}, 409)
+                    return
+                if STATE.shutting_down:
+                    self._json({"error": "ツールを終了しているところです。"}, 409)
                     return
                 if STATE.col is None:
                     self._json({"error": "apkgが読み込まれていません。"}, 400)
@@ -582,18 +818,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if missing:
                     self._json({"error": missing}, 400)
                     return
+                if (tts_core.parse_gemini_voice(settings["voice"])
+                        and not tts_core.LAMEENC_AVAILABLE):
+                    self._json({"error": "Gemini TTS の音声を .apkg に入れるには lameenc が"
+                                         "必要です(C:\\Python314\\python.exe -m pip install"
+                                         " --user lameenc)。"}, 400)
+                    return
                 STATE.cancel = False
                 STATE.job = _reset_job()
                 STATE.job["running"] = True
-                threading.Thread(
+                # daemon にしない(2026-10-26)。daemon だと、ツールの終了で
+                # 書き出しの途中でも打ち切られ、生成分が失われうる。
+                STATE.worker = threading.Thread(
                     target=_run_generate,
                     args=(payload.get("targets", []), payload.get("options", {}), settings),
-                    daemon=True,
-                ).start()
+                )
+                STATE.worker.start()
                 self._json({"ok": True})
             elif path == "/api/test-tts":
                 # テスト再生(2026-10-05追加)。いまの画面の設定で短い文を読み上げ、
                 # WAV をそのまま返す(画面の <audio> で再生する)。
+                # 生成中は断る: Gemini の「読み方の指示」はモジュール変数で
+                # 渡しているため、テスト再生で書き換えると実行中の生成の
+                # 残りの分まで変わってしまう。
+                if self._reject_while_running("テスト再生は"):
+                    return
                 settings = self._merged_settings(payload.get("settings", {}))
                 missing = _missing_key_message(settings)
                 if missing:
@@ -633,20 +882,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if STATE.col is None:
                     self._json({"error": "apkgが読み込まれていません。"}, 400)
                     return
-                if STATE.job and STATE.job.get("running"):
-                    self._json({"error": "生成中は実行できません。"}, 409)
+                if self._reject_while_running("テンプレートの調整は"):
                     return
                 removed = strip_template_tts(STATE.col)
                 if not removed:
                     self._json({"removed": {}, "output_path": "",
                                 "message": "テンプレートに {{tts}} タグはありませんでした。"})
                     return
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
-                stem = os.path.splitext(os.path.basename(STATE.source_name))[0]
-                out_path = os.path.join(OUTPUT_DIR, "%s_TTS.apkg" % stem)
-                tts_core.export_collection(STATE.col, out_path)
-                STATE.last_output = out_path
+                STATE.dirty = True
+                out_path = _export_to_output(STATE.col)
                 self._json({"removed": removed, "output_path": out_path})
+            elif path == "/api/export":
+                # 書き出しだけやり直す(2026-10-26)。書き出しが失敗した場合
+                # (出力先が使用中・ディスクがいっぱい等)、生成した音声は
+                # 作業用コレクションにしか残っていない。
+                if STATE.col is None:
+                    self._json({"error": "apkgが読み込まれていません。"}, 400)
+                    return
+                if self._reject_while_running("書き出しは"):
+                    return
+                out_path = _export_to_output(STATE.col)
+                self._json({"output_path": out_path})
+            elif path == "/api/open-folder":
+                # 書き出し先のフォルダをエクスプローラーで開く(2026-10-26)
+                os.makedirs(OUTPUT_DIR, exist_ok=True)
+                target = STATE.last_output if (payload.get("select")
+                                               and os.path.exists(STATE.last_output or "")) else ""
+                if target and os.name == "nt":
+                    subprocess.Popen(["explorer", "/select,", os.path.normpath(target)])
+                elif hasattr(os, "startfile"):
+                    os.startfile(OUTPUT_DIR)  # noqa: S606
+                self._json({"ok": True, "path": OUTPUT_DIR})
             elif path == "/api/cancel":
                 STATE.cancel = True
                 self._json({"ok": True})
@@ -655,6 +921,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # 手段が要る。応答を返し切ってから別スレッドで止める
                 # (serve_forever を回しているスレッドから shutdown() を呼ぶと
                 #  自分自身を待って固まるため)。
+                # 生成中(キャンセル後の書き出し中も含む)は断る。以前はそのまま
+                # 止めてしまい、生成分が書き出されずに失われることがあった。
+                if self._reject_while_running("ツールを終了"):
+                    return
+                # 確認してから止まるまでの間に、別のタブから生成を始められないようにする
+                STATE.shutting_down = True
                 self._json({"ok": True})
                 if SERVER is not None:
                     threading.Thread(target=SERVER.shutdown, daemon=True).start()
@@ -688,7 +960,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 class QuietServer(http.server.ThreadingHTTPServer):
     """ブラウザ側が接続を切っただけ(タブを閉じた・再読み込みした)のときに、
-    ログへ長いトレースバックを残さない(2026-10-05)。本物のエラーは従来どおり出す。"""
+    ログへ長いトレースバックを残さない(2026-10-05)。本物のエラーは従来どおり出す。
+
+    SO_REUSEADDR は使わない(2026-10-26)。HTTPServer の既定(allow_reuse_address)
+    だと、Windows では使用中のポートにもう1つ bind できてしまい、バッチを素早く
+    2回押す・バッチとWeb版のボタンを両方押すと2つのツールが同じポートで動き、
+    リクエストが両者に振り分けられて「apkgが読み込まれていません」になっていた。
+    SO_EXCLUSIVEADDRUSE までは付けない(終了直後の TIME_WAIT の接続が残っていると
+    bind できなくなり、終了してすぐ起動し直したときに失敗するため)。
+    """
+
+    allow_reuse_address = False
 
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]
@@ -701,26 +983,46 @@ PAGE_HTML = ""  # main() で local_tts_page.html を読み込んで差し替え�
 SERVER = None   # /api/shutdown から止めるための参照
 
 
-def _already_running():
-    """同じポートで既にこのツールが動いているか。"""
+def _port_owner():
+    """ポートの持ち主を調べる。"ours"(このツール)/ "other"(別のプログラム)/ None(空き)。
+
+    以前は「つながるか」だけを見ていたため、別のプログラムが同じポートを
+    使っていると、それをこのツールだと思い込んで画面だけ開き、何も言わずに
+    終わっていた。応答の Server ヘッダーで見分ける。
+    """
     try:
         with socket.create_connection(("127.0.0.1", PORT), timeout=1):
-            return True
+            pass
     except OSError:
-        return False
+        return None
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/api/settings" % PORT, timeout=3) as res:
+            server = res.headers.get("Server") or ""
+    except urllib.error.HTTPError as e:
+        # このツールでも、設定の読み込みに失敗すると 500 を返す。応答の
+        # Server ヘッダーで見分ける(エラー=別のプログラム、とは限らない)。
+        server = (e.headers.get("Server") if e.headers else "") or ""
+    except Exception:  # noqa: BLE001
+        return "other"
+    return "ours" if server.startswith("AnkiLocalTTS") else "other"
+
+
+def _open_existing(url):
+    print("既に起動しています。画面だけ開きます: " + url)
+    if "--no-browser" not in sys.argv:
+        webbrowser.open(url)
+    return 0
+
+
+def _port_busy_message():
+    return ("ポート %d が別のプログラムに使われているため、TTSツールを起動できません。\n"
+            "そのプログラムを終了してから、もう一度起動してください。" % PORT)
 
 
 def main():
     global PAGE_HTML, SERVER
 
-    # pythonw.exe で起動すると sys.stdout / sys.stderr が None になり、
-    # print() が AttributeError で落ちる(_log が print を使っている)。
-    # コンソール(黒い画面)を出さずに常駐させるための対応。
-    if sys.stdout is None or sys.stderr is None:
-        log_file = open(os.path.join(tts_core.BASE_DIR, "local_tts_server.log"),
-                        "a", encoding="utf-8", buffering=1)
-        sys.stdout = sys.stderr = log_file
-    else:
+    if not _WINDOWLESS:
         # 出力をファイルへリダイレクトして起動すると、日本語Windowsでは cp932 に
         # なり、起動時の表示(「—」など)で UnicodeEncodeError になって落ちていた
         # (2026-10-05修正)。表示できない文字は置き換えて続行する。
@@ -734,23 +1036,42 @@ def main():
 
     # 二重起動しても「ポートが使用中」で失敗させない。既に動いているものを
     # 使えばよいので、画面だけ開いて終わる(バッチを何度押しても安全にする)。
-    if _already_running():
-        print("既に起動しています。画面だけ開きます: " + url)
-        if "--no-browser" not in sys.argv:
-            webbrowser.open(url)
-        return 0
+    owner = _port_owner()
+    if owner == "ours":
+        return _open_existing(url)
+    if owner == "other":
+        _show_fatal(_port_busy_message())
+        return 1
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "local_tts_page.html"), "r", encoding="utf-8") as f:
+    with open(os.path.join(_HERE, "local_tts_page.html"), "r", encoding="utf-8") as f:
         PAGE_HTML = f.read()
 
-    server = QuietServer(("127.0.0.1", PORT), Handler)
+    server = None
+    for attempt in range(5):
+        try:
+            server = QuietServer(("127.0.0.1", PORT), Handler)
+            break
+        except OSError:
+            # 調べてから bind するまでの間に、もう1つのツールが先に起動した
+            # (バッチの二度押しなど)。そちらを使う。
+            owner = _port_owner()
+            if owner == "ours":
+                return _open_existing(url)
+            if owner == "other":
+                _show_fatal(_port_busy_message())
+                return 1
+            # 誰も待ち受けていないのに使えない(終了した直後で、まだ解放されて
+            # いない等)。少し待ってやり直す。
+            time.sleep(1.0 + attempt)
+    if server is None:
+        _show_fatal("ポート %d をまだ使えませんでした。少し待ってから、もう一度起動してください。" % PORT)
+        return 1
     SERVER = server
     print("=" * 62)
     print("  ANKI出力ツール — apkgにTTS音声を付ける(ローカル)")
     print("=" * 62)
     print("  ブラウザで開いてください:  " + url)
-    print("  終了するには、画面右下の「ツールを終了する」を押すか Ctrl+C")
+    print("  終了するには、画面のいちばん下の「ツールを終了する」を押すか Ctrl+C")
     print()
 
     if "--no-browser" not in sys.argv:
@@ -762,6 +1083,21 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n終了します。")
+        STATE.cancel = True
+    finally:
+        # 生成中に Ctrl+C された場合も、そこまでの分を書き出してから終わる
+        # (生成スレッドはキャンセルを受けると書き出してから終了する)。
+        if STATE.worker is not None and STATE.worker.is_alive():
+            # 終了の操作より後に始まった生成が残っていた場合も、止めて書き出してから終わる
+            STATE.cancel = True
+            print("生成中の分を書き出してから終了します…")
+            STATE.worker.join()
+        if STATE.col is not None:
+            try:
+                STATE.col.close()
+            except Exception:  # noqa: BLE001
+                pass
+        server.server_close()
     return 0
 
 

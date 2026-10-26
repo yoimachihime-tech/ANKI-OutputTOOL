@@ -136,6 +136,45 @@ def main():
                 f.write("{途中で切れたJSON")
             check(f"壊れた {label}.json でも空として読める", reader() == [])
 
+        print("\n[6] 読めなかっただけ(ロック等)は「壊れている」扱いにしない(2026-10-26)")
+        locked = os.path.join(tmp_dir, "locked.json")
+        json_store.write_json(locked, {"keep": True})
+        real_open = open
+        attempts = []
+
+        def flaky_open(p, *a, **k):
+            if p == locked and len(attempts) < 2:
+                attempts.append(1)
+                raise PermissionError("used by another process")
+            return real_open(p, *a, **k)
+
+        import builtins
+        builtins.open = flaky_open
+        try:
+            got = json_store.read_json(locked, {})
+        finally:
+            builtins.open = real_open
+        check("一時的に読めなくても、読み直して中身を返す", got == {"keep": True})
+        check("読めなかっただけでは .corrupt へ退避しない",
+              not os.path.exists(locked + ".corrupt"))
+
+        def always_locked(p, *a, **k):
+            if p == locked:
+                raise PermissionError("used by another process")
+            return real_open(p, *a, **k)
+
+        builtins.open = always_locked
+        raised = False
+        try:
+            json_store.read_json(locked, {})
+        except PermissionError:
+            raised = True
+        finally:
+            builtins.open = real_open
+        check("読めないままなら、空として扱わずに例外にする(次の保存で上書きしない)", raised)
+        check("例外のあとも元のファイルはそのまま残る",
+              json_store.read_json(locked, {}) == {"keep": True})
+
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

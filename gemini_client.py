@@ -352,12 +352,29 @@ def list_gemini_models(api_key: str, timeout: int = 30) -> list:
             name = m.get("name", "")
             if name.startswith("models/"):
                 name = name[len("models/"):]
-            if name:
+            # 音声合成・画像などのモデルは文章を作れないので候補に出さない
+            # (2026-10-26。Web版の isNonTextModel と同じ規則。以前は出していたため、
+            # 一覧の先頭に来た画像用モデルが既定に選ばれることがあった)。
+            if name and not is_non_text_model(name):
                 names.append(name)
         page_token = result.get("nextPageToken") or ""
         if not page_token:
             break
     return sorted(set(names))
+
+
+#: 既定の文章生成モデル(最新のFlashを指す別名)。Web版の DEFAULT_TEXT_MODEL と同じ。
+DEFAULT_TEXT_MODEL = "gemini-flash-latest"
+
+_NON_TEXT_MODEL_RE = re.compile(
+    r"tts|image|imagen|veo|lyria|embedding|aqa|robotics|computer-use|native-audio|live",
+    re.IGNORECASE)
+
+
+def is_non_text_model(name: str) -> bool:
+    """文章生成に使えないモデル(音声合成・画像・埋め込み等)か。
+    docs/lib/gemini.js の isNonTextModel と同じ規則。"""
+    return bool(_NON_TEXT_MODEL_RE.search(name or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -502,32 +519,79 @@ def _align_batch_results(parsed, count: int) -> list:
     出来上がってしまうため(内容が入れ替わっても字面だけでは気づきにくい)。
     `index`が使えない要素だけ、埋まっていない位置へ順に詰める。
 
+    2026-10-26に厳しくした(以前は index が使えない要素を空いている位置へ順に
+    詰めていたため、index が [1, 2, 2] と重複すると2件目の内容が3件目に付き、
+    0始まり [0, 1, 2] だと全件が1つずつずれていた)。
+      - 0始まりで揃っている(0 を含み、最大が count-1)なら1つずらして読む。
+      - index が1件でも使えれば index だけを信じ、使えない・重複した要素は捨てる。
+      - どの要素にも index が無いときだけ、並び順をそのまま使う。
+
     戻り値は長さcountのリストで、生成されなかった位置はNone。
     Web版の gemini.js の alignBatchResults() と同じ挙動にすること。
     """
     out = [None] * count
-    leftovers = []
+    entries = [e for e in (parsed if isinstance(parsed, list) else []) if isinstance(e, dict)]
+    indices = [_batch_index_of(e) for e in entries]
+    valid = [v for v in indices if v is not None]
 
-    for entry in parsed if isinstance(parsed, list) else []:
-        if not isinstance(entry, dict):
+    if not valid:
+        for i, entry in enumerate(entries[:count]):
+            out[i] = entry
+        return out
+
+    zero_based = 0 in valid and max(valid) <= count - 1
+    for entry, idx in zip(entries, indices):
+        if idx is None:
             continue
-        idx = entry.get("index")
-        if isinstance(idx, bool):  # boolはintのサブクラスなので明示的に弾く
-            idx = None
-        if isinstance(idx, (int, float)) and float(idx).is_integer():
-            idx = int(idx)
-        else:
-            idx = None
-        if idx is not None and 1 <= idx <= count and out[idx - 1] is None:
-            out[idx - 1] = entry
-        else:
-            leftovers.append(entry)
-
-    for entry in leftovers:
-        if None not in out:
-            break
-        out[out.index(None)] = entry
+        slot = idx if zero_based else idx - 1
+        if 0 <= slot < count and out[slot] is None:
+            out[slot] = entry
     return out
+
+
+def _batch_index_of(entry: dict):
+    """応答の index を整数として読む(数字の文字列も可。真偽値などは不可)。"""
+    v = entry.get("index")
+    if isinstance(v, bool):  # boolはintのサブクラスなので明示的に弾く
+        return None
+    if isinstance(v, (int, float)) and float(v).is_integer():
+        return int(v)
+    # isdigit() は「²」や全角数字も真になるので使わない(JS版の \d と揃える)
+    if isinstance(v, str) and re.fullmatch(r"\s*[0-9]+\s*", v):
+        return int(v)
+    return None
+
+
+class BatchResults(list):
+    """まとめて生成の戻り値。途中のまとまりで止まった場合、その理由を
+    `batch_error` に持つ(それまでに生成できた分はリストに入っている)。"""
+
+    batch_error = ""
+
+
+def _run_batches(items: list, handle_chunk) -> "BatchResults":
+    """itemsをBATCH_SIZEごとにhandle_chunk(chunk)へ渡し、入力と同じ並びで返す。
+
+    **途中のまとまりが失敗しても、それまでに成功したまとまりの結果は捨てない**
+    (2026-10-26)。以前は例外がそのまま外へ抜け、15件中最初の10件が成功して
+    いても2回目で上限(429)に当たると全件失敗扱いになっていた。失敗した
+    まとまり以降は呼ばない。最初のまとまりから失敗したときは従来どおり例外。
+    Web版の gemini.js の runBatches() と同じ挙動。
+    """
+    results = BatchResults([None] * len(items))
+    done = 0
+    for chunk in _chunk_for_batch(items):
+        try:
+            out = handle_chunk(chunk)
+        except Exception as e:  # noqa: BLE001 — JS版と同じく、どの失敗でも成功分は残す
+            if done == 0:
+                raise
+            results.batch_error = str(e)
+            break
+        for i, value in enumerate(out):
+            results[done + i] = value
+        done += len(chunk)
+    return results
 
 
 def generate_shuujuku_items_from_rows(rows: list, api_key: str, model: str) -> list:
@@ -539,10 +603,7 @@ def generate_shuujuku_items_from_rows(rows: list, api_key: str, model: str) -> l
             どの行が失敗したかを利用者に伝えられるよう、詰めずに位置を保つ)。
     バッチ全体が失敗した場合はGeminiClientErrorを送出する。
     """
-    results = [None] * len(rows)
-    done = 0
-
-    for chunk in _chunk_for_batch(rows):
+    def handle_chunk(chunk):
         lines = "\n\n".join(
             f"[{i + 1}]\n原文: {row.get('original', '')}\n"
             f"添削後: {row.get('corrected', '')}\n解説: {row.get('explanation', '')}"
@@ -554,18 +615,16 @@ def generate_shuujuku_items_from_rows(rows: list, api_key: str, model: str) -> l
             items=lines,
         )
         parsed = _extract_json_array(call_gemini(prompt, api_key, model))
-
-        for i, entry in enumerate(_align_batch_results(parsed, len(chunk))):
-            if entry is None:
-                continue
-            results[done + i] = _item_from_parsed(
+        return [
+            None if entry is None else _item_from_parsed(
                 entry,
                 source_key=("dailyconv", chunk[i].get("id", "")),
                 source_label="由来: DailyConversation",
             )
-        done += len(chunk)
+            for i, entry in enumerate(_align_batch_results(parsed, len(chunk)))
+        ]
 
-    return results
+    return _run_batches(rows, handle_chunk)
 
 
 # ---------------------------------------------------------------------------
@@ -992,10 +1051,7 @@ def generate_vocab_cards_from_words(pairs: list, api_key: str, model: str) -> li
     **注意: 「習熟用(音読)」ストックとは無関係。この関数の戻り値はword_stock.pyでのみ
     扱い、shuujuku_stock.pyには一切渡さないこと(2026-07-27、片桐の明示的な指示)。**
     """
-    results = [None] * len(pairs)
-    done = 0
-
-    for chunk in _chunk_for_batch(pairs):
+    def handle_chunk(chunk):
         lines = "\n".join(
             f"[{i + 1}] 単語: {word}\n    文脈: {(context or '').strip() or '(なし)'}"
             for i, (word, context) in enumerate(chunk)
@@ -1007,11 +1063,13 @@ def generate_vocab_cards_from_words(pairs: list, api_key: str, model: str) -> li
         )
         parsed = _extract_json_array(call_gemini(prompt, api_key, model))
 
+        out = []
         for i, entry in enumerate(_align_batch_results(parsed, len(chunk))):
             if entry is None:
+                out.append(None)
                 continue
             word, context_sentence = chunk[i]
-            results[done + i] = {
+            out.append({
                 "word": word.strip(),
                 "reading": entry.get("reading", ""),
                 "pos": entry.get("pos", ""),
@@ -1021,10 +1079,10 @@ def generate_vocab_cards_from_words(pairs: list, api_key: str, model: str) -> li
                 "example_blank": entry.get("example_blank", ""),
                 "note": entry.get("note", ""),
                 "context_sentence": (context_sentence or "").strip(),
-            }
-        done += len(chunk)
+            })
+        return out
 
-    return results
+    return _run_batches(pairs, handle_chunk)
 
 
 # ---------------------------------------------------------------------------

@@ -646,6 +646,16 @@ def _classify_tts_error(status: int, detail: str):
     normalized = re.sub(r"[\s_-]", "", detail or "").lower()
 
     if status == 429:
+        # 1分あたりの上限は、上限の名前が「…PerMinutePerProject」のように
+        # perproject も含む。以前は perproject だけで「待っても回復しない」と
+        # 判断していたため、1分あたりの上限を下げてある環境では、件数の多い
+        # 生成のたびに1回429が出ただけで止まっていた(2026-10-26修正)。
+        if "perminute" in normalized:
+            return (
+                "Cloud Text-to-Speechの1分あたりの上限に達しました。"
+                "少し待ってから続けましたが回復しませんでした。しばらく待ってから再実行してください。",
+                True,
+            )
         # 割り当て(Quota)超過。1日あたり等の長い期間の上限は待っても回復
         # しないため、リトライせず即座に打ち切る。
         if "perday" in normalized or "perproject" in normalized:
@@ -739,13 +749,34 @@ def _call_tts_api(body: dict, api_key: str) -> bytes:
             # (リトライすると無駄に割り当てを消費してしまう)
             if not retryable:
                 raise last_error from e
+            wait = _tts_retry_wait_seconds(e.code, detail, attempt)
         except Exception as e:  # noqa: BLE001
             last_error = TtsApiError(f"TTS API呼び出しに失敗しました: {e}", retryable=True)
+            wait = _tts_retry_wait_seconds(0, "", attempt)
 
         if attempt < TTS_MAX_RETRIES - 1:
-            time.sleep(1.5 * (attempt + 1))
+            time.sleep(wait * TTS_RETRY_WAIT_SCALE)
 
     raise last_error
+
+
+# テストでリトライの待ち時間を短くするための倍率
+TTS_RETRY_WAIT_SCALE = 1.0
+
+
+def _tts_retry_wait_seconds(status: int, detail: str, attempt: int) -> float:
+    """リトライまでの待ち時間(秒)。docs/lib/tts.js の ttsRetryWaitMs と同じ規則。
+
+    レート制限(429)は、Googleが応答で示す retryDelay があればそれに従い、
+    無ければ 20秒・40秒 と待つ(1分あたりの上限は1分の区切りで戻るため。
+    以前は 1.5秒・3秒 しか待たず、回復する前にリトライを使い切っていた)。
+    5xx(Google側の一時障害)・通信エラーは従来どおり短く待つ。
+    """
+    if status == 429:
+        m = re.search(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"', detail or "")
+        seconds = float(m.group(1)) + 1 if m else 20.0 * (attempt + 1)
+        return min(seconds, 65.0)
+    return 1.5 * (attempt + 1)
 
 
 # ローカルで音量を上げるときに、ピークをここまでに抑える(約 -0.3dBFS)。

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>apkgにTTS音声を付ける</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='6' y='10' width='40' height='48' rx='6' fill='%232f6fd0'/%3E%3Cpath d='M30 26h8l10-8v28l-10-8h-8z' fill='%23fff'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --line: #d8dce3; --fg: #1b1e23;
@@ -95,6 +96,13 @@
     background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px;
   }
   .caution { color: var(--err); font-size: 12.5px; }
+  .notice-box {
+    background: var(--warn-bg); color: var(--warn-fg); border-radius: 7px;
+    padding: 8px 12px; font-size: 13px; margin-top: 10px; white-space: pre-line;
+  }
+  .badge.ja { background: var(--err); color: #fff; }
+  .placeholder { color: var(--sub); font-size: 13px; margin: 0; }
+  input[type=file]:disabled { opacity: .5; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -113,20 +121,30 @@
       <input type="file" id="file" accept=".apkg">
       <span id="open-status" class="status"></span>
     </div>
+    <!-- 同じ名前の出力が既にあるときの注意(2026-10-26)。元のapkgを読み込んで
+         生成すると、前回の出力(途中まで音声の入ったもの)を上書きしてしまう。 -->
+    <div id="prev-output" class="notice-box" hidden></div>
   </section>
 
-  <section id="sec-fields" hidden>
+  <!-- ② は読み込み前から出しておく(以前は隠していたため、①の次がいきなり③に
+       なり、手順が抜けているように見えた)。 -->
+  <section id="sec-fields">
     <h2>② 音声を付けるフィールドを選ぶ</h2>
-    <p class="hint">
-      フィールドごとに「中身のある件数」とサンプルを表示しています。
-      日本語のフィールドやラベル用のフィールドを選ばないよう、サンプルを見て確認してください。
-      複数のノートタイプ・複数のフィールドをまとめて指定できます。
-    </p>
-    <div class="row" style="margin-bottom:12px">
-      <button id="sel-en">英語らしいフィールドを選ぶ(名前がENで終わる)</button>
-      <button id="sel-none">すべて解除</button>
+    <p class="placeholder" id="fields-placeholder">①で .apkg を読み込むと、ここにフィールドの一覧が出ます。</p>
+    <div id="fields-body" hidden>
+      <p class="hint">
+        フィールドごとに「中身のある件数」とサンプルを表示しています。
+        日本語のフィールドやラベル用のフィールドを選ばないよう、サンプルを見て確認してください。
+        <strong>「日本語あり」の印が付いたフィールドは、英語の音声で日本語を読み上げてしまう</strong>ので、
+        選ぶ場合は③の「日本語を含む文を除外する」をONにしてください。
+        複数のノートタイプ・複数のフィールドをまとめて指定できます。
+      </p>
+      <div class="row" style="margin-bottom:12px">
+        <button id="sel-en">おすすめのフィールドを選ぶ(英語の例文・解答)</button>
+        <button id="sel-none">すべて解除</button>
+      </div>
+      <div id="notetypes"></div>
     </div>
-    <div id="notetypes"></div>
   </section>
 
   <section id="sec-opts" hidden>
@@ -144,6 +162,9 @@
         </select>
       </div>
     </div>
+    <!-- APIキー・lameenc が無いことの注意。以前は④の状態表示に出していたため、
+         「件数を数える」を押すと消えてしまい、生成を押すまで気づけなかった。 -->
+    <div id="key-status" class="notice-box" hidden></div>
     <div class="voice-box" id="cloud-box">
       <div class="opts">
         <div>
@@ -182,21 +203,22 @@
       </div>
       <p class="hint" style="margin:8px 0 0">
         APIキーは <code>config.json</code> の <code>gemini_api_key</code> を使います。
-        1件(文ごとにタグを分ける場合は1文)につき Gemini API を1回呼びます。
+        1フィールドにつき Gemini API を1回呼びます(2文以上あるフィールドは、
+        「文ごとにタグを分ける」がONか「文と文の間隔」が0より大きいと、文の数だけ呼びます)。
         MP3 への変換に <code>lameenc</code> を使います。
       </p>
     </div>
     <div class="opts" style="margin-top:12px">
       <div>
-        <span class="field-label">音量ゲイン(dB)</span>
+        <label class="field-label" for="gain">音量ゲイン(dB、-20〜16)</label>
         <input type="number" id="gain" step="0.5" min="-20" max="16">
       </div>
       <div>
-        <span class="field-label">文と文の間隔(秒)</span>
+        <label class="field-label" for="gap">文と文の間隔(秒)</label>
         <input type="number" id="gap" step="0.1" min="0" max="3">
       </div>
       <div>
-        <span class="field-label">MP3ビットレート(kbps)</span>
+        <label class="field-label" for="bitrate">MP3ビットレート(kbps、文を間隔付きでつなぐとき)</label>
         <input type="number" id="bitrate" step="8" min="32" max="192">
       </div>
     </div>
@@ -238,7 +260,8 @@
   <section id="sec-run" hidden>
     <h2>④ 実行</h2>
     <p class="hint">
-      まず「件数を数える」で対象を確認してください。ここで出る件数がそのままAPI呼び出し回数になります。
+      まず「件数を数える」で対象とAPI呼び出し回数の見積もりを確認してください
+      (「TTSを生成する」を押したときにも、同じ見積もりを確認してから始めます)。
     </p>
     <div class="row">
       <button id="dry">件数を数える(生成しない)</button>
@@ -251,6 +274,11 @@
     <div id="log" hidden></div>
     <div class="row" style="margin-top:12px">
       <a id="download" class="button primary" hidden href="/api/download">.apkgをダウンロード</a>
+      <!-- 書き出しだけが失敗したとき(出力先のファイルが使用中など)に出す。
+           生成した音声は作業用のコレクションにしか無く、もう一度「生成」を
+           押しても対象0件で書き出しまで進まないため(2026-10-26)。 -->
+      <button id="reexport" class="primary" hidden>書き出しだけやり直す</button>
+      <button id="open-folder" hidden>保存先フォルダを開く</button>
     </div>
     <p class="hint" style="margin-top:12px">
       割り当ての上限などで途中で止まった場合も、<strong>そこまでの分は書き出されます</strong>。
@@ -285,8 +313,9 @@
     <h2>ツールの終了</h2>
     <p class="hint">
       このツールは画面を閉じても裏で動き続けます(黒い画面は出しません)。
-      使い終わったら下のボタンで終了してください。終了後もこのページは残りますが、
-      操作しても反応しなくなります。
+      生成中に画面を閉じても生成は続き、もう一度このページを開けば進み具合を見られます。
+      使い終わったら下のボタンで終了してください(生成中は終了できません。先にキャンセルしてください)。
+      終了後もこのページは残りますが、操作しても反応しなくなります。
     </p>
     <div class="row">
       <button id="shutdown">ツールを終了する</button>
@@ -301,14 +330,38 @@ let notetypes = [];
 let polling = null;
 
 // --- ① 読み込み -----------------------------------------------------------
+// 同じパスのファイルを選び直すと change が発火しない(ブラウザの仕様)。
+// apkgを作り直して同じ名前で上書きした場合に、古い内容のまま処理を続けて
+// しまい「対象が0件です」となる(実際に踏んだ)。ファイル選択を開く直前に
+// リセットしておく。以前は change の中でリセットしていたため、読み込んだ
+// 直後もファイル欄に「選択されていません」と出て紛らわしかった(2026-10-26)。
+$('file').addEventListener('click', (ev) => { ev.target.value = ''; });
+
+/** 前のファイルの結果(ダウンロード・件数・ログ)を画面から消す。 */
+function resetResultArea() {
+  $('download').hidden = true;
+  $('reexport').hidden = true;
+  $('open-folder').hidden = true;
+  $('strip-download').hidden = true;
+  $('dry-result').innerHTML = '';
+  $('log').hidden = true;
+  $('log').textContent = '';
+  $('bar').hidden = true;
+  setStatus($('run-status'), '');
+  setStatus($('strip-status'), '');
+  $('prev-output').hidden = true;
+}
+
+function showFieldsPlaceholder(show) {
+  $('fields-placeholder').hidden = !show;
+  $('fields-body').hidden = show;
+}
+
 $('file').addEventListener('change', async (ev) => {
   const input = ev.target;
   const file = input.files[0];
-  // 同じパスのファイルを選び直すと change が発火しない(ブラウザの仕様)。
-  // apkgを作り直して同じ名前で上書きした場合に、古い内容のまま処理を続けて
-  // しまい「対象が0件です」となる(実際に踏んだ)。毎回リセットしておく。
-  input.value = '';
   if (!file) return;
+  resetResultArea();
   setStatus($('open-status'), '読み込み中… (大きいファイルは時間がかかります)');
   try {
     const res = await fetch('/api/open', {
@@ -317,13 +370,20 @@ $('file').addEventListener('change', async (ev) => {
       body: await file.arrayBuffer(),
     });
     const data = await res.json();
+    if (res.status === 409 && data.running) {
+      // 別のタブなどで生成中。その進み具合へつなぎ直す
+      setStatus($('open-status'), data.error, 'err');
+      attachToRunningJob();
+      return;
+    }
     if (data.error) throw new Error(data.error);
     notetypes = data.notetypes;
     if (!notetypes.length) throw new Error('ノートが1件も入っていません。');
     renderNotetypes();
+    showFieldsPlaceholder(false);
     // 設定はページを開いたときに読み込み済み(ここで読み直すと、apkg を選び直す
     // たびに画面で変えた音声などが config.json の値に戻ってしまう)。
-    $('sec-fields').hidden = $('sec-run').hidden = false;
+    $('sec-run').hidden = false;
     // テンプレートに {{tts}} がある場合だけ⑤を出す(無いapkgでは無関係な節なので隠す)
     $('tpl-tts-count').textContent = String(data.template_tts || 0);
     $('sec-template').hidden = !data.template_tts;
@@ -339,8 +399,24 @@ $('file').addEventListener('change', async (ev) => {
       `${data.filename} — ノートタイプ ${notetypes.length}種 / ノート ${total}件`
       + ` / 既に音声があるフィールド ${audio}件`
       + `(読み込み ${new Date().toLocaleTimeString()})`, 'ok');
+    const prev = data.previous_output;
+    if (prev) {
+      $('prev-output').textContent =
+        `⚠ 前回の出力「${prev.name}」(${prev.mtime})があります。途中まで音声を付けた続きから`
+        + `作る場合は、そちらを読み込んでください(保存先フォルダの output にあります)。`
+        + `このまま生成すると、その出力を上書きします。`;
+      $('prev-output').hidden = false;
+    }
     preselectEnglishFields();
   } catch (e) {
+    // 読み込みに失敗した時点で、サーバー側の前のコレクションは閉じられている。
+    // 前のファイルのフィールド一覧を残すと、それを操作して
+    // 「apkgが読み込まれていません」になるので消しておく。
+    notetypes = [];
+    $('notetypes').textContent = '';
+    showFieldsPlaceholder(true);
+    $('sec-run').hidden = true;
+    $('sec-template').hidden = true;
     setStatus($('open-status'), '読み込みに失敗しました: ' + e.message, 'err');
   }
 });
@@ -363,7 +439,7 @@ function renderNotetypes() {
     head.innerHTML = `<span class="nt-name"></span>
       <span class="nt-count">ノート ${nt.note_count}件 / フィールド ${nt.fields.length}個</span>
       <span class="row">
-        <button data-act="en" data-nt="${ni}">ENで終わるもの</button>
+        <button data-act="en" data-nt="${ni}">おすすめ</button>
         <button data-act="all" data-nt="${ni}">すべて</button>
         <button data-act="none" data-nt="${ni}">解除</button>
       </span>`;
@@ -392,6 +468,13 @@ function renderNotetypes() {
         b.textContent = `音声あり ${f.has_audio}件`;
         name.appendChild(b);
       }
+      if (f.japanese) {
+        const b = document.createElement('span');
+        b.className = 'badge ja';
+        b.textContent = `日本語あり ${f.japanese}件`;
+        b.title = '英語の音声で日本語を読み上げてしまいます。選ぶ場合は③の「日本語を含む文を除外する」をONにしてください。';
+        name.appendChild(b);
+      }
       const meta = document.createElement('div');
       meta.className = 'field-meta';
       meta.textContent = f.nonempty ? `中身のあるノート ${f.nonempty}件` : '(全ノートで空欄)';
@@ -416,25 +499,36 @@ $('notetypes').addEventListener('click', (ev) => {
   selectIn(Number(btn.dataset.nt), btn.dataset.act);
 });
 
+/**
+ * 既定で選ぶフィールドか(2026-10-26に見直し)。
+ * 「名前がENで終わる」または Answer / Example のうち、日本語を含まないもの。
+ * 以前は名前だけで選んでいたため、習熟用の `I1PatternEN`(「動詞」「名詞」などの
+ * プレースホルダー入り)まで選ばれ、英語の音声で日本語を読み上げていた。
+ * また「ENで終わるもの」ボタンは Answer / Example の選択を外してしまい、
+ * Grammar Multi では全部外れていた。ボタンも同じ規則に揃える。
+ */
+function isRecommendedField(f) {
+  return (/EN$/.test(f.name) || f.name === 'Answer' || f.name === 'Example') && !f.japanese;
+}
+
 function selectIn(ni, mode) {
   document.querySelectorAll(`input[data-nt="${ni}"]`).forEach((cb) => {
     if (cb.disabled) return;
     const f = notetypes[ni].fields[Number(cb.dataset.field)];
     if (mode === 'all') cb.checked = true;
     else if (mode === 'none') cb.checked = false;
-    else if (mode === 'en') cb.checked = /EN$/.test(f.name);
+    else if (mode === 'en') cb.checked = isRecommendedField(f);
   });
 }
 
 function preselectEnglishFields() {
-  // 既定では「名前がENで終わる」または Answer / Example を選ぶ。
   // 該当が無ければ何も選ばない(先頭フィールドを既定にすると、デッキ名などを
   // うっかり読み上げてしまうため)。
   let any = false;
   document.querySelectorAll('input[data-nt]').forEach((cb) => {
     if (cb.disabled) return;
     const f = notetypes[Number(cb.dataset.nt)].fields[Number(cb.dataset.field)];
-    if (/EN$/.test(f.name) || f.name === 'Answer' || f.name === 'Example') {
+    if (isRecommendedField(f)) {
       cb.checked = true;
       any = true;
     }
@@ -509,14 +603,18 @@ function updateEngineView() {
   const styleOk = m && (Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2] || 0) >= 8));
   $('gemini-style').disabled = !styleOk;
   const s = serverSettings || {};
-  const missing = gemini ? !s.has_gemini_key : !s.has_api_key;
-  if (missing) {
-    setStatus($('run-status'), gemini
-      ? 'config.json に gemini_api_key が設定されていません。Gemini TTS では生成できません。'
-      : 'config.json に api_key が設定されていません。Cloud TTS では生成できません。', 'err');
-  } else if ($('run-status').classList.contains('err') && /config\.json/.test($('run-status').textContent)) {
-    setStatus($('run-status'), '');
+  const notes = [];
+  if (gemini ? !s.has_gemini_key : !s.has_api_key) {
+    notes.push(gemini
+      ? '⚠ config.json に gemini_api_key が設定されていません。Gemini TTS では生成・テスト再生できません。'
+      : '⚠ config.json に api_key が設定されていません。Cloud TTS では生成・テスト再生できません。');
   }
+  if (gemini && s.has_lameenc === false) {
+    notes.push('⚠ Gemini TTS の音声を .apkg に入れるには lameenc が必要です'
+      + '(C:\\Python314\\python.exe -m pip install --user lameenc)。テスト再生はできます。');
+  }
+  $('key-status').textContent = notes.join('\n');
+  $('key-status').hidden = !notes.length;
 }
 
 async function loadSettings() {
@@ -662,18 +760,35 @@ const options = () => ({
   // 順番を間違えたときに元のテンプレートのまま書き出されるため、
   // 生成の一部として済ませられるようにしてある。
   strip_template_tts: $('strip-tts-opt').checked,
-  // 「文ごとにタグを分ける」は生成時の設定だが、件数を数える段階でも
-  // 「再生ボタンが2つ以上になる件数」を予告するために渡す
+  // 「文ごとにタグを分ける」「文と文の間隔」は生成時の設定だが、件数を数える
+  // 段階でも「再生ボタンが2つ以上になる件数」とAPI呼び出し回数を見積もるために渡す
   per_sentence_tags: $('per-sentence').checked,
+  sentence_gap: Number($('gap').value),
+});
+
+/** 数値欄を範囲内に収める(手入力すると min/max を素通りして、
+ *  例えば音量ゲイン 50dB がそのまま送られ API が 400 を返していた)。 */
+function clampNumber(el, fallback) {
+  const v = Number(el.value);
+  const min = Number(el.min);
+  const max = Number(el.max);
+  if (el.value === '' || !Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, v));
+}
+['gain', 'gap', 'bitrate'].forEach((id) => {
+  $(id).addEventListener('change', () => {
+    const fallback = { gain: 0, gap: 0.5, bitrate: 64 }[id];
+    $(id).value = clampNumber($(id), fallback);
+  });
 });
 
 const settings = () => ({
   voice: currentVoice(),
   language_code: $('lang').value,
   gemini_style: $('gemini-style').disabled ? '' : $('gemini-style').value.trim(),
-  volume_gain_db: Number($('gain').value),
-  sentence_gap: Number($('gap').value),
-  mp3_bitrate: Number($('bitrate').value),
+  volume_gain_db: clampNumber($('gain'), 0),
+  sentence_gap: clampNumber($('gap'), 0.5),
+  mp3_bitrate: clampNumber($('bitrate'), 64),
   per_sentence_tags: $('per-sentence').checked,
 });
 
@@ -681,6 +796,26 @@ const settings = () => ({
 /** aria-disabled のボタンは押されても何もしない(見た目だけ無効にしているため)。 */
 function isBusy(btn) {
   return btn.hasAttribute('aria-disabled');
+}
+
+/** 「音声が2つ以上…だけ作り直す」と「文ごとにタグを分ける」の両方がONだと、
+ *  作り直しても同じ結果(音声が2つ以上)になり、割り当てを無駄にするだけ。 */
+function optionConflictMessage() {
+  if ($('redo-multi').checked && $('per-sentence').checked) {
+    return '「音声が2つ以上あるフィールドだけ作り直す」は、音声を1つにまとめるための機能です。'
+      + '「文ごとにタグを分ける」がONのままだと同じ結果になるので、OFFにしてから実行してください。';
+  }
+  return '';
+}
+
+async function fetchAnalysis(targets) {
+  const res = await fetch('/api/analyze', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targets, options: options() }),
+  });
+  const d = await res.json();
+  if (d.error) throw new Error(d.error);
+  return d;
 }
 
 $('dry').addEventListener('click', async () => {
@@ -693,42 +828,40 @@ $('dry').addEventListener('click', async () => {
   }
   setStatus($('run-status'), '数えています…');
   try {
-    const res = await fetch('/api/analyze', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targets, options: options() }),
-    });
-    const d = await res.json();
-    if (d.error) throw new Error(d.error);
-    renderDryRun(d);
-    setStatus($('run-status'), '', '');
+    renderDryRun(await fetchAnalysis(targets));
+    setStatus($('run-status'), optionConflictMessage(), 'err');
   } catch (e) {
     setStatus($('run-status'), '失敗しました: ' + e.message, 'err');
   }
 });
 
 function renderDryRun(d) {
-  const rows = d.rows.map((r) => `<tr><td></td><td>${r.items}</td><td>${r.chars.toLocaleString()}</td>
-      <td>${r.skip_audio}</td><td>${r.skip_empty}</td></tr>`).join('');
+  const rows = d.rows.map((r) => `<tr><td></td><td>${r.items}</td><td>${r.api_calls}</td>
+      <td>${r.chars.toLocaleString()}</td><td>${r.skip_audio}</td><td>${r.skip_empty}</td></tr>`).join('');
   $('dry-result').innerHTML = `
     <table>
-      <thead><tr><th>ノートタイプ</th><th>生成する件数</th><th>文字数</th>
+      <thead><tr><th>ノートタイプ</th><th>生成する件数</th><th>API呼び出し(目安)</th><th>文字数</th>
         <th>音声ありで飛ばす</th><th>空欄で飛ばす</th></tr></thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><th>合計</th><th>${d.total_items}</th><th>${d.total_chars.toLocaleString()}</th>
+      <tfoot><tr><th>合計</th><th>${d.total_items}</th><th>${d.total_api_calls}</th>
+        <th>${d.total_chars.toLocaleString()}</th>
         <th>${d.total_skip_audio}</th><th>${d.total_skip_empty}</th></tr></tfoot>
     </table>
     <p class="hint" style="margin-top:8px">
-      音声を作るフィールドは ${d.total_items} 件。「文ごとにタグを分ける」や「文と文の間隔」を使うと、1フィールドが複数の文に分かれる分だけAPI呼び出しは増えます。
+      音声を作るフィールドは ${d.total_items} 件、API呼び出しは約 ${d.total_api_calls} 回です
+      (2文以上あるフィールドは、「文ごとにタグを分ける」または「文と文の間隔」が0より大きいと、文の数だけ呼びます)。
+      書き出し先: output\\<span class="out-name"></span>
     </p>
     ${d.total_multi_sentence ? `<p class="caution">
       このうち ${d.total_multi_sentence} 件は2文以上を含むため、
       「文ごとにタグを分ける」がONのままだと<strong>再生ボタンが2つ以上並びます</strong>。
       1つにまとめたい場合は、③でこの設定をOFFにしてから実行してください。
     </p>` : ''}`;
-  // ノートタイプ名はHTMLとして解釈させない
+  // ノートタイプ名・ファイル名はHTMLとして解釈させない
   $('dry-result').querySelectorAll('tbody tr').forEach((tr, i) => {
     tr.cells[0].textContent = d.rows[i].notetype;
   });
+  $('dry-result').querySelector('.out-name').textContent = d.output_name || '';
 }
 
 $('run').addEventListener('click', async () => {
@@ -740,14 +873,40 @@ $('run').addEventListener('click', async () => {
     setStatus($('run-status'), 'フィールドが1つも選ばれていません。', 'err');
     return;
   }
-  const count = targets.reduce((a, t) => a + t.fields.length, 0);
-  if (!confirm(`選択したフィールド(${count}種)にTTS音声を生成します。よろしいですか?`)) return;
+  const conflict = optionConflictMessage();
+  if (conflict) {
+    setStatus($('run-status'), conflict, 'err');
+    return;
+  }
+  // 確認の前に件数を数える(2026-10-26)。以前の確認は「フィールド(N種)」と
+  // フィールドの種類数しか出さず、何件・何回APIを呼ぶのか分からなかった。
+  let plan;
+  setStatus($('run-status'), '対象を数えています…');
+  try {
+    plan = await fetchAnalysis(targets);
+    renderDryRun(plan);
+  } catch (e) {
+    setStatus($('run-status'), '失敗しました: ' + e.message, 'err');
+    return;
+  }
+  if (!plan.total_items) {
+    // 0件のまま生成へ進むと、サーバー側で「中断しました」+トレースバックになる
+    setStatus($('run-status'), plan.total_skip_audio
+      ? `対象が0件です。選んだフィールドのうち ${plan.total_skip_audio} 件は既に音声が入っているため飛ばします。`
+        + '作り直したい場合は③の「既存の音声を作り直す」をONにしてください'
+        + '(apkgを作り直した場合は、①で選び直してください)。'
+      : '対象が0件です。フィールドの選択を確認してください。', 'err');
+    return;
+  }
+  setStatus($('run-status'), '');
+  const ok = confirm(
+    `TTS音声を生成します。\n\n`
+    + `・音声: ${voiceLabel()}\n`
+    + `・対象: ${plan.total_items} 件(API呼び出し 約${plan.total_api_calls} 回)\n`
+    + `・書き出し先: output\\${plan.output_name}\n\nよろしいですか?`);
+  if (!ok) return;
 
-  $('download').hidden = true;
-  $('log').hidden = false;
-  $('log').textContent = '';
-  $('bar').hidden = false;
-  $('bar').value = 0;
+  resetRunArea();
   setBusy(true);
   try {
     const res = await fetch('/api/generate', {
@@ -755,22 +914,79 @@ $('run').addEventListener('click', async () => {
       body: JSON.stringify({ targets, options: options(), settings: settings() }),
     });
     const d = await res.json();
+    if (res.status === 409 && d.running) {
+      // 別のタブなどで既に生成中。そちらの進み具合を表示する
+      attachToRunningJob();
+      return;
+    }
     if (d.error) throw new Error(d.error);
-    polling = setInterval(poll, 700);
+    startPolling();
   } catch (e) {
     setBusy(false);
     setStatus($('run-status'), '開始できませんでした: ' + e.message, 'err');
   }
 });
 
+function resetRunArea() {
+  $('download').hidden = true;
+  $('reexport').hidden = true;
+  $('open-folder').hidden = true;
+  $('log').hidden = false;
+  $('log').textContent = '';
+  $('bar').hidden = false;
+  $('bar').value = 0;
+}
+
 $('cancel').addEventListener('click', async () => {
-  await fetch('/api/cancel', { method: 'POST' });
-  setStatus($('run-status'), 'キャンセルを要求しました。処理中の1件が終わるまでお待ちください。');
+  if (isBusy($('cancel'))) return;
+  $('cancel').setAttribute('aria-disabled', 'true');
+  try {
+    await fetch('/api/cancel', { method: 'POST' });
+    setStatus($('run-status'),
+      'キャンセルを要求しました。処理中の1件が終わると、そこまでの分を書き出して止まります。');
+  } catch (e) {
+    $('cancel').removeAttribute('aria-disabled');
+    setStatus($('run-status'), 'キャンセルを送れませんでした: ' + e.message, 'err');
+  }
+});
+
+$('reexport').addEventListener('click', async () => {
+  if (isBusy($('reexport'))) return;
+  $('reexport').setAttribute('aria-disabled', 'true');
+  setStatus($('run-status'), '書き出しています…');
+  try {
+    const res = await fetch('/api/export', { method: 'POST' });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    $('reexport').hidden = true;
+    $('download').hidden = false;
+    $('open-folder').hidden = false;
+    setStatus($('run-status'), `書き出しました。保存先: ${d.output_path}`, 'ok');
+  } catch (e) {
+    setStatus($('run-status'), '書き出せませんでした: ' + e.message
+      + '\n(出力先の .apkg を他のアプリで開いていないか確認し、もう一度押してください)', 'err');
+  } finally {
+    $('reexport').removeAttribute('aria-disabled');
+  }
+});
+
+$('open-folder').addEventListener('click', async () => {
+  try {
+    await fetch('/api/open-folder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ select: true }),
+    });
+  } catch (e) {
+    setStatus($('run-status'), 'フォルダを開けませんでした: ' + e.message, 'err');
+  }
 });
 
 $('strip-tts').addEventListener('click', async () => {
+  // 二度押しで同じファイルへの書き出しが2つ同時に走らないようにする
+  if (isBusy($('strip-tts'))) return;
   if (!confirm('カードテンプレートから {{tts}} を取り除きます。'
       + '\n(ノートの中身とCloud TTSの音声はそのままです)')) return;
+  $('strip-tts').setAttribute('aria-disabled', 'true');
   setStatus($('strip-status'), '処理中…');
   $('strip-download').hidden = true;
   try {
@@ -788,16 +1004,28 @@ $('strip-tts').addEventListener('click', async () => {
     $('tpl-tts-count').textContent = '0';
   } catch (e) {
     setStatus($('strip-status'), '失敗しました: ' + e.message, 'err');
+  } finally {
+    $('strip-tts').removeAttribute('aria-disabled');
   }
 });
 
 $('shutdown').addEventListener('click', async () => {
+  if (isBusy($('shutdown'))) return;
   if (!confirm('ツールを終了します。よろしいですか?')) return;
+  let res = null;
   try {
-    await fetch('/api/shutdown', { method: 'POST' });
+    res = await fetch('/api/shutdown', { method: 'POST' });
   } catch (e) {
     // 終了処理の途中で接続が切れるのは正常なので、失敗として扱わない
   }
+  if (res && res.status === 409) {
+    // 生成中は終了しない(書き出されずに失われるため)
+    const d = await res.json().catch(() => ({}));
+    setStatus($('shutdown-status'), d.error || '生成中のため終了できません。', 'err');
+    attachToRunningJob();
+    return;
+  }
+  stopPolling();
   setStatus($('shutdown-status'), '終了しました。またバッチから起動できます。', 'ok');
   $('shutdown').setAttribute('aria-disabled', 'true');
 
@@ -814,53 +1042,126 @@ $('shutdown').addEventListener('click', async () => {
 
 // ページを開いたらすぐ設定を読み込み、③(音声の選択・テスト再生)を出す
 // (2026-10-05。以前は apkg を読み込むまで③が出ず、音声を試せなかった)。
+// 続けて、生成中のジョブがあればつなぎ直す(2026-10-26)。画面を再読み込み
+// したり、バッチをもう一度押して別のタブで開いたりすると、以前は空の画面に
+// なり、生成中なのにキャンセルも進み具合の確認もできなかった。
 loadSettings()
   .then(() => { $('sec-opts').hidden = false; })
-  .catch((e) => setStatus($('open-status'), '設定を読み込めませんでした: ' + e.message, 'err'));
+  .catch((e) => setStatus($('open-status'), '設定を読み込めませんでした: ' + e.message, 'err'))
+  .then(() => attachToRunningJob({ quiet: true }));
 
+/** 生成中は、生成と食い違う操作(別のapkgの読み込み・テスト再生・終了など)を止める。 */
 function setBusy(busy) {
-  $('run').toggleAttribute('aria-disabled', busy);
-  $('dry').toggleAttribute('aria-disabled', busy);
+  ['run', 'dry', 'test-play', 'strip-tts', 'shutdown', 'reexport'].forEach((id) => {
+    $(id).toggleAttribute('aria-disabled', busy);
+  });
+  $('file').disabled = busy;
   $('cancel').hidden = !busy;
+  if (!busy) $('cancel').removeAttribute('aria-disabled');
+}
+
+/** サーバー側で生成中なら、その進み具合の表示へつなぐ。 */
+async function attachToRunningJob({ quiet = false } = {}) {
+  let j;
+  try {
+    j = await (await fetch('/api/progress')).json();
+  } catch (e) {
+    return;
+  }
+  if (j.running) {
+    $('sec-run').hidden = false;
+    resetRunArea();
+    setBusy(true);
+    setStatus($('open-status'),
+      `「${j.source_name}」の音声を生成中です(この画面を開く前に始めたもの)。`, 'ok');
+    startPolling();
+  } else if (j.finished && j.source_name) {
+    // 画面を閉じている間に終わった生成の結果を出す(ダウンロードできるように)
+    $('sec-run').hidden = false;
+    $('log').hidden = false;
+    $('log').textContent = j.log.join('\n');
+    setStatus($('open-status'),
+      `「${j.source_name}」の生成結果です(この画面を開く前に終わったもの)。`
+      + '続けて作業する場合は、もう一度 .apkg を読み込んでください。', 'ok');
+    renderFinished(j);
+  } else if (!quiet && j.needs_export) {
+    $('sec-run').hidden = false;
+    $('reexport').hidden = false;
+  }
+}
+
+let pollFailures = 0;
+function startPolling() {
+  stopPolling();
+  pollFailures = 0;
+  polling = setInterval(poll, 700);
+}
+function stopPolling() {
+  if (polling) clearInterval(polling);
+  polling = null;
+}
+
+/** 残り時間の目安(例: "残り約3分")。 */
+function etaText(j) {
+  if (!j.done || !j.total || !j.elapsed || j.done >= j.total) return '';
+  const remainSec = (j.elapsed / j.done) * (j.total - j.done);
+  if (remainSec < 60) return '(残り1分未満)';
+  return `(残り約${Math.round(remainSec / 60)}分)`;
 }
 
 async function poll() {
   let j;
   try {
     j = await (await fetch('/api/progress')).json();
+    pollFailures = 0;
   } catch (e) {
-    // ツールを終了した・PCがスリープした等で応答が無い。延々と失敗し続けないよう止める。
-    clearInterval(polling);
-    setBusy(false);
-    setStatus($('run-status'), '進み具合を取得できませんでした(ツールが終了している可能性があります): ' + e.message, 'err');
+    // PCのスリープ明けなどで一時的に応答が無いことがある。数回は待ち、
+    // それでも駄目なら止める(以前は1回の失敗で止め、ボタンも戻していたため、
+    // 生成が続いているのに押せる状態になっていた)。
+    pollFailures += 1;
+    if (pollFailures < 10) return;
+    stopPolling();
+    setStatus($('run-status'),
+      '進み具合を取得できませんでした(ツールが終了している可能性があります): ' + e.message
+      + '\nツールが動いていれば、このページを再読み込みすると続きを表示できます。', 'err');
     return;
   }
   if (j.total) {
     $('bar').max = j.total;
     $('bar').value = j.done;
-    setStatus($('run-status'), `${j.done} / ${j.total} 件`);
+    setStatus($('run-status'), `${j.done} / ${j.total} 件 ${etaText(j)}`);
   }
+  $('log').hidden = false;
   $('log').textContent = j.log.join('\n');
   $('log').scrollTop = $('log').scrollHeight;
   if (!j.finished) return;
 
-  clearInterval(polling);
+  stopPolling();
   setBusy(false);
+  renderFinished(j);
+}
+
+function renderFinished(j) {
+  // 「書き出してあります」は、実際に書き出せたとき(output_path がある)だけ言う。
+  // 以前は件数だけで判断していたため、書き出しにも失敗したときや、
+  // 0件でキャンセルしたとき(書き出さない)にも「書き出してあります」と出ていた。
+  const saved = j.output_path ? `\n保存先: ${j.output_path}` : '';
   if (j.error) {
-    // 途中まで生成できていれば、それは書き出されている。失敗の文言だけを出すと
-    // 「全部やり直し」と読まれてしまうので、再開できることを必ず添える。
-    const resume = j.done
+    const resume = j.output_path
       ? `\nここまでの ${j.done} 件は書き出してあります。`
         + '「TTSを生成する」を押し直せば、済んだ分を飛ばして続きから再開します。'
-      : '';
+      : (j.export_failed ? '\n生成した音声はまだツールの中にあります。「書き出しだけやり直す」を押してください。' : '');
     setStatus($('run-status'), '中断しました: ' + j.error + resume, 'err');
   } else if (j.cancelled) {
-    setStatus($('run-status'),
-      `キャンセルしました(${j.done}件まで生成)。そこまでの内容で書き出してあります。`, 'ok');
+    setStatus($('run-status'), j.output_path
+      ? `キャンセルしました(${j.done}件まで生成)。そこまでの内容で書き出してあります。${saved}`
+      : 'キャンセルしました(生成したものは無いので、書き出していません)。', 'ok');
   } else {
-    setStatus($('run-status'), `完了しました(${j.done}件)。保存先: ${j.output_path}`, 'ok');
+    setStatus($('run-status'), `完了しました(${j.done}件)。${saved}`, 'ok');
   }
-  if (j.output_path) $('download').hidden = false;
+  $('download').hidden = !j.output_path;
+  $('open-folder').hidden = !j.output_path;
+  $('reexport').hidden = !j.needs_export;
 }
 </script>
 </body>

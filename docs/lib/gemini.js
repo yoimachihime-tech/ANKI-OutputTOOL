@@ -14,7 +14,7 @@
 // クロスオリジン要求を許可しているため、プロキシ無しで直接呼べる
 // (2026-07-28 に実測して確認済み)。
 
-import { recordRequest, learnDailyQuotaLimit, usageSummary } from './quota.js';
+import { recordRequest, learnDailyQuotaLimit, usageSummary } from './quota.js?v=20261026a';
 
 const ENDPOINT_TMPL =
   'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent';
@@ -28,6 +28,18 @@ const MAX_RETRY_DELAY_MS = 60000;
 export class GeminiError extends Error {}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 1回の呼び出しを待つ上限。長い出力(AIに質問の問題+意味・本質問題)でも
+ * ふつうは1分以内に返るので、十分に余裕を見た値にしてある。
+ */
+const GEMINI_REQUEST_TIMEOUT_MS = 180000;
+
+function timeoutSignal(ms) {
+  return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(ms)
+    : undefined;
+}
 
 /** エラー本文から Google が示す retryDelay("17s")をミリ秒で取り出す。 */
 function extractRetryDelayMs(detail) {
@@ -134,11 +146,26 @@ async function postGeminiRequest(requestBody, apiKey, model, { maxRetries = MAX_
     // **fetchのたびに**数える(リトライも1回として数える)。
     recordRequest(model);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body,
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body,
+        signal: timeoutSignal(GEMINI_REQUEST_TIMEOUT_MS),
+      });
+    } catch (e) {
+      // 通信の失敗・応答待ちの打ち切り(2026-10-26)。以前は応答が返ってこないと
+      // 「生成中...」のまま止まり続け、1回の通信エラーでも即座に失敗していた。
+      lastDetail = e?.name === 'TimeoutError'
+        ? `${GEMINI_REQUEST_TIMEOUT_MS / 1000}秒待っても応答がありませんでした。`
+        : String(e?.message || e);
+      if (attempt < maxRetries - 1) {
+        await sleep(2000 * (attempt + 1));
+        continue;
+      }
+      throw new GeminiError(`Gemini APIに接続できませんでした。通信状態を確認して、もう一度お試しください。\n詳細: ${lastDetail}`);
+    }
 
     if (res.ok) return res.json();
 
@@ -290,6 +317,14 @@ export function chunkForBatch(items, size = BATCH_SIZE) {
   return out;
 }
 
+/** 応答の index を整数として読む(数字の文字列も可。真偽値などは不可)。 */
+function batchIndexOf(entry) {
+  const v = entry.index;
+  if (typeof v === 'number' && Number.isInteger(v)) return v;
+  if (typeof v === 'string' && /^\s*\d+\s*$/.test(v)) return Number(v);
+  return null;
+}
+
 /**
  * バッチ応答(オブジェクトの配列)を、入力の並び順に対応付け直す。
  *
@@ -297,31 +332,73 @@ export function chunkForBatch(items, size = BATCH_SIZE) {
  * 頼りにする。**配列の位置をそのまま信じない**のは、モデルが1件飛ばす・
  * 順序を入れ替えることがあり、そうなると別の単語の解説が付いたカードが
  * 静かに出来上がってしまうため(内容が入れ替わっても字面だけでは
- * 気づきにくい)。`index` が使えない要素だけ、埋まっていない位置へ
- * 順に詰める。
+ * 気づきにくい)。
+ *
+ * 2026-10-26に厳しくした。以前は「index が使えない要素を空いている位置へ
+ * 順に詰める」処理を常に行っていたため、index が [1, 2, 2] と重複すると
+ * 2件目の内容が3件目に付き、0始まり [0, 1, 2] だと全件が1つずつずれる
+ * ——まさにこの関数が防ぎたい入れ替わりが起きていた。
+ *   - 0始まりで揃っている(0 を含み、最大が count-1)なら1つずらして読む。
+ *   - index が1件でも使えれば index だけを信じ、使えない・重複した要素は捨てる
+ *     (その位置は null = 生成できなかった件になり、利用者に伝わる)。
+ *   - どの要素にも index が無いときだけ、並び順をそのまま使う。
+ * gemini_client._align_batch_results と同じ規則にしてある。
  *
  * @returns {Array<object|null>} 長さ count。生成されなかった位置は null。
  */
 export function alignBatchResults(parsed, count) {
   const out = new Array(count).fill(null);
-  const leftovers = [];
+  const entries = (Array.isArray(parsed) ? parsed : [])
+    .filter((entry) => entry && typeof entry === 'object');
+  const indices = entries.map(batchIndexOf);
+  const valid = indices.filter((v) => v !== null);
 
-  for (const entry of Array.isArray(parsed) ? parsed : []) {
-    if (!entry || typeof entry !== 'object') continue;
-    const idx = Number(entry.index);
-    if (Number.isInteger(idx) && idx >= 1 && idx <= count && out[idx - 1] === null) {
-      out[idx - 1] = entry;
-    } else {
-      leftovers.push(entry);
-    }
+  if (valid.length === 0) {
+    entries.slice(0, count).forEach((entry, i) => { out[i] = entry; });
+    return out;
   }
 
-  for (const entry of leftovers) {
-    const slot = out.indexOf(null);
-    if (slot === -1) break;
+  const zeroBased = valid.includes(0) && Math.max(...valid) <= count - 1;
+  entries.forEach((entry, i) => {
+    if (indices[i] === null) return;
+    const slot = zeroBased ? indices[i] : indices[i] - 1;
+    if (slot < 0 || slot >= count || out[slot] !== null) return;
     out[slot] = entry;
-  }
+  });
   return out;
+}
+
+/**
+ * items を BATCH_SIZE ごとに handleChunk(chunk) へ渡し、結果を入力と同じ並びで返す。
+ *
+ * **途中のバッチが失敗しても、それまでに成功したバッチの結果は捨てない**
+ * (2026-10-26)。以前は例外がそのまま関数の外へ抜けていたため、15件中
+ * 最初の10件が成功していても2回目で上限(429)に当たると全件失敗扱いになり、
+ * 既に払った1回目の分のカードも失われていた。失敗したバッチ以降は呼ばない
+ * (上限到達ならどうせ失敗するうえ、リトライの待ち時間だけがかかるため)。
+ * すべてのバッチが失敗したときだけ、従来どおり例外を投げる。
+ *
+ * @returns {Promise<Array<object|null>>} 長さ items.length。生成できなかった件は
+ *   null。途中で止まった場合は `batchError` にその理由(文字列)が入る。
+ */
+async function runBatches(items, onProgress, handleChunk) {
+  const results = new Array(items.length).fill(null);
+  let done = 0;
+  for (const chunk of chunkForBatch(items)) {
+    if (onProgress) onProgress(done, items.length);
+    let out;
+    try {
+      out = await handleChunk(chunk);
+    } catch (e) {
+      if (done === 0) throw e;
+      results.batchError = e.message;
+      break;
+    }
+    out.forEach((v, i) => { results[done + i] = v; });
+    done += chunk.length;
+  }
+  if (onProgress) onProgress(done, items.length);
+  return results;
 }
 
 /**
@@ -335,14 +412,7 @@ export function alignBatchResults(parsed, count) {
  *   詰めずに位置を保つ)。
  */
 export async function generateVocabCards({ pairs, apiKey, model, promptTemplate, onProgress }) {
-  const results = new Array(pairs.length).fill(null);
-  const chunks = chunkForBatch(pairs);
-  let done = 0;
-
-  for (const chunk of chunks) {
-    const offset = done;
-    if (onProgress) onProgress(done, pairs.length);
-
+  return runBatches(pairs, onProgress, async (chunk) => {
     const lines = chunk.map((p, i) => {
       const context = (p.context || '').trim();
       return `[${i + 1}] 単語: ${p.word}\n    文脈: ${context || '(なし)'}`;
@@ -354,10 +424,10 @@ export async function generateVocabCards({ pairs, apiKey, model, promptTemplate,
     });
     const parsed = extractJsonArray(await callGemini(prompt, apiKey, model));
 
-    alignBatchResults(parsed, chunk.length).forEach((entry, i) => {
-      if (!entry) return;
+    return alignBatchResults(parsed, chunk.length).map((entry, i) => {
+      if (!entry) return null;
       const { word, context } = chunk[i];
-      results[offset + i] = {
+      return {
         word: word.trim(),
         reading: entry.reading || '',
         pos: entry.pos || '',
@@ -369,11 +439,7 @@ export async function generateVocabCards({ pairs, apiKey, model, promptTemplate,
         context_sentence: (context || '').trim(),
       };
     });
-    done += chunk.length;
-  }
-
-  if (onProgress) onProgress(done, pairs.length);
-  return results;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +812,39 @@ export async function generateGrammarMultiItems({
  * docs/shared/card_defs.jsonのshuujuku.guid_scheme.item_keys = ["source_kind",
  * "source_topic"] と対応関係にあることに注意)。
  */
+/** 習熟用カード1枚に載る例文の最大数(shuujuku.js の MAX_EXAMPLES と同じ値)。 */
+const SHUUJUKU_MAX_EXAMPLES = 4;
+
+/**
+ * AIが返した習熟用の examples を `[[英文, 和訳], ...]` の形に揃え、
+ * カードに載る数(4つ)までに切り詰める(2026-10-26)。
+ *
+ * 習熟用のプロンプトは構造化出力を使っていないため、`{en, ja}` のような
+ * オブジェクトや文字列だけの要素が返ることがある。そのままストックに入れると、
+ * 出力のたびに shuujuku.js の `const [en, jp] = examples[i]` が例外になり、
+ * その項目を消すまで**習熟用タブ全体が出力できなくなる**。また5つ目以降は
+ * カードに載らない(I1Ex1〜I1Ex4 の4枠しか無い)のに、音声だけは作って
+ * 料金を払っていた。
+ */
+function normalizeShuujukuExamples(raw) {
+  const out = [];
+  for (const ex of Array.isArray(raw) ? raw : []) {
+    let pair = null;
+    if (Array.isArray(ex)) {
+      pair = [ex[0], ex[1], ex[2]];
+    } else if (ex && typeof ex === 'object') {
+      pair = [ex.en ?? ex.english ?? ex.sentence ?? '', ex.ja ?? ex.jp ?? ex.japanese ?? ex.translation ?? ''];
+    } else if (typeof ex === 'string') {
+      pair = [ex, ''];
+    }
+    if (!pair || typeof pair[0] !== 'string' || !pair[0].trim()) continue;
+    const item = [pair[0], typeof pair[1] === 'string' ? pair[1] : ''];
+    if (Array.isArray(pair[2])) item.push(pair[2]);
+    out.push(item);
+  }
+  return out.slice(0, SHUUJUKU_MAX_EXAMPLES);
+}
+
 export async function generateShuujukuItem({ question, apiKey, model, promptTemplate }) {
   const prompt = fillPlaceholders(promptTemplate, { question });
   const text = await callGemini(prompt, apiKey, model);
@@ -754,7 +853,7 @@ export async function generateShuujukuItem({ question, apiKey, model, promptTemp
   return {
     pattern: parsed.pattern || '',
     meaning: parsed.meaning || null,
-    examples: parsed.examples || [],
+    examples: normalizeShuujukuExamples(parsed.examples),
     expl: parsed.expl || null,
     source_kind: 'chat',
     source_topic: topicKey,
@@ -782,14 +881,7 @@ export async function generateShuujukuItem({ question, apiKey, model, promptTemp
  *   件は null(呼び出し側がどの行が失敗したかを伝えられるよう位置を保つ)。
  */
 export async function generateShuujukuItemsFromRows({ rows, apiKey, model, promptTemplate, onProgress }) {
-  const results = new Array(rows.length).fill(null);
-  const chunks = chunkForBatch(rows);
-  let done = 0;
-
-  for (const chunk of chunks) {
-    const offset = done;
-    if (onProgress) onProgress(done, rows.length);
-
+  return runBatches(rows, onProgress, async (chunk) => {
     const lines = chunk.map((row, i) => (
       `[${i + 1}]\n原文: ${row.original || ''}\n`
       + `添削後: ${row.corrected || ''}\n解説: ${row.explanation || ''}`
@@ -801,23 +893,16 @@ export async function generateShuujukuItemsFromRows({ rows, apiKey, model, promp
     });
     const parsed = extractJsonArray(await callGemini(prompt, apiKey, model));
 
-    alignBatchResults(parsed, chunk.length).forEach((entry, i) => {
-      if (!entry) return;
-      results[offset + i] = {
-        pattern: entry.pattern || '',
-        meaning: entry.meaning || null,
-        examples: entry.examples || [],
-        expl: entry.expl || null,
-        source_kind: 'dailyconv',
-        source_topic: chunk[i].id || '',
-        source_label: '由来: DailyConversation',
-      };
-    });
-    done += chunk.length;
-  }
-
-  if (onProgress) onProgress(done, rows.length);
-  return results;
+    return alignBatchResults(parsed, chunk.length).map((entry, i) => (entry ? {
+      pattern: entry.pattern || '',
+      meaning: entry.meaning || null,
+      examples: normalizeShuujukuExamples(entry.examples),
+      expl: entry.expl || null,
+      source_kind: 'dailyconv',
+      source_topic: chunk[i].id || '',
+      source_label: '由来: DailyConversation',
+    } : null));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -848,14 +933,7 @@ function normalizeShuujukuTopic(text) {
 export async function generateShuujukuItemsFromSentences({
   sentences, apiKey, model, promptTemplate, onProgress,
 }) {
-  const results = new Array(sentences.length).fill(null);
-  const chunks = chunkForBatch(sentences);
-  let done = 0;
-
-  for (const chunk of chunks) {
-    const offset = done;
-    if (onProgress) onProgress(done, sentences.length);
-
+  return runBatches(sentences, onProgress, async (chunk) => {
     const lines = chunk.map((s, i) => `[${i + 1}] ${s}`).join('\n');
     const prompt = fillPlaceholders(promptTemplate, {
       count: String(chunk.length),
@@ -863,27 +941,24 @@ export async function generateShuujukuItemsFromSentences({
     });
     const parsed = extractJsonArray(await callGemini(prompt, apiKey, model));
 
-    alignBatchResults(parsed, chunk.length).forEach((entry, i) => {
-      if (!entry) return;
+    return alignBatchResults(parsed, chunk.length).map((entry, i) => {
+      if (!entry) return null;
       const sentence = chunk[i];
-      const generated = Array.isArray(entry.examples) ? entry.examples : [];
-      results[offset + i] = {
+      return {
         pattern: entry.pattern || '',
         meaning: entry.meaning || null,
         // 入力文はAIの出力からではなく、渡した文字列をそのまま先頭に置く
         // (AIに返させると言い換え・大文字小文字の変更の余地が残るため)。
-        examples: [[sentence, entry.sentence_ja || ''], ...generated],
+        examples: normalizeShuujukuExamples(
+          [[sentence, entry.sentence_ja || ''], ...(Array.isArray(entry.examples) ? entry.examples : [])],
+        ),
         expl: entry.expl || null,
         source_kind: 'sentence',
         source_topic: normalizeShuujukuTopic(sentence),
         source_label: '由来: 入力した英文',
       };
     });
-    done += chunk.length;
-  }
-
-  if (onProgress) onProgress(done, sentences.length);
-  return results;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -912,29 +987,30 @@ export const BASE_PHRASE_EXAMPLES = 3;
  * 1枚あたりの例文数の上限。
  *
  * 2026-08-06に片桐は当初5を選んだが、それは「表現ごとに1枚のカードを作り、
- * それぞれに最大5例文」という設計での話だった。実際に動かしたところ
- * 「1枚のカードにまとめ、例文数が語句の数で変わる」のが本来の想定だったと
- * 判明したため、上限を引き上げてある。理由は2つ:
- *   - カードが1枚になったので、5だったときの根拠(N枚×M例文で応答が
- *     出力トークン上限を超え、バッチごと失敗する)がほぼ無くなった。
- *   - **5のままだと6件以上入れたときに、一度も例文に登場しない語句が出る**。
- *     入力したものが黙って消えるのは、このアプリで一貫して避けている挙動。
- * 8件までは全語句が必ず登場する。これを超える場合は呼び出し側が警告する。
+ * それぞれに最大5例文」という設計での話だった。その後「1枚のカードにまとめ、
+ * 例文数が語句の数で変わる」のが本来の想定だったと判明し、10へ引き上げた。
+ *
+ * **2026-10-26に4へ戻した**。習熟用のノートタイプは2026-08-20のv2化で
+ * 例文が I1Ex1〜I1Ex4 の**4枠**になっており、5つ目以降はカードに載らずに
+ * 黙って捨てられていた(しかも音声だけは作って料金を払っていた)。
+ * 例文4つで表現が全部登場するよう、余った表現は1つの例文に複数入れて
+ * もらう(プロンプトの「複数の表現を1文に自然に含めて」の指示)。
+ * 1文に2つまでが自然に作れる目安なので、8件を超えると警告する。
  */
-export const MAX_PHRASE_EXAMPLES = 10;
+export const MAX_PHRASE_EXAMPLES = SHUUJUKU_MAX_EXAMPLES;
 
 /**
  * 入力した表現の数から、1枚に載せる例文の数を決める。
- * 1件→3 / 2件→4 / 3件→5 / ... / 8件以上→10(上限)。
+ * 1件→3 / 2件以上→4(上限)。
  */
 export function phraseExampleCount(totalPhrases) {
   const n = Math.max(1, totalPhrases);
   return Math.min(Math.max(BASE_PHRASE_EXAMPLES, n + 2), MAX_PHRASE_EXAMPLES);
 }
 
-/** 上限に達して、全語句が例文に登場しない恐れがあるか。 */
+/** 1枚の例文に収まりきらず、全語句が例文に登場しない恐れがあるか(1文に2つまでが目安)。 */
 export function phraseExamplesMayOmit(totalPhrases) {
-  return totalPhrases > MAX_PHRASE_EXAMPLES;
+  return totalPhrases > MAX_PHRASE_EXAMPLES * 2;
 }
 
 /**
@@ -960,7 +1036,7 @@ export async function generateShuujukuItemFromPhrases({
   return {
     pattern: parsed.pattern || '',
     meaning: parsed.meaning || null,
-    examples: Array.isArray(parsed.examples) ? parsed.examples : [],
+    examples: normalizeShuujukuExamples(parsed.examples),
     expl: parsed.expl || null,
     source_kind: 'phrase',
     // guidと重複検出のキー。**並び順で別カード扱いにならないよう並べ替える**

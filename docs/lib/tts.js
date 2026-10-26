@@ -43,7 +43,7 @@
 // `?v=` は app.js が gemini.js を読むときと**必ず同じ値**にすること
 // (URLが違うと同じモジュールが2つ読み込まれる。gemini.js 自体は状態を
 // 持たないので実害は小さいが、無駄なので揃えておく)。
-import { generateSpeech, geminiTtsSupportsStyle } from './gemini.js?v=20261007a';
+import { generateSpeech, geminiTtsSupportsStyle } from './gemini.js?v=20261026a';
 
 const TTS_ENDPOINT = 'https://texttospeech.googleapis.com/v1/text:synthesize';
 const VOICES_ENDPOINT = 'https://texttospeech.googleapis.com/v1/voices';
@@ -184,6 +184,18 @@ function classifyTtsError(status, detail) {
   const n = (detail || '').replace(/[\s_-]/g, '').toLowerCase();
 
   if (status === 429) {
+    // 1分あたりの上限は、上限の名前が「…PerMinutePerProject」のように
+    // perproject も含む。以前は perproject だけで「待っても回復しない」と
+    // 判断していたため、1分あたりの上限を下げてある環境では、件数の多い
+    // 出力のたびに1回429が出ただけで出力全体が止まっていた(2026-10-26修正)。
+    // 1分あたりの上限は、1分待てば回復する。
+    if (n.includes('perminute')) {
+      return [
+        'Cloud Text-to-Speechの1分あたりの上限に達しました。'
+        + '少し待ってから続けましたが回復しませんでした。しばらく待ってから再実行してください。',
+        true,
+      ];
+    }
     if (n.includes('perday') || n.includes('perproject')) {
       return [
         'Cloud Text-to-Speechの割り当て(Quota)の上限に達しました。'
@@ -256,14 +268,36 @@ function base64ToBytes(base64) {
   return bytes;
 }
 
+/** 1回の合成を待つ上限。応答が返ってこないまま出力全体が止まり続けないようにする。 */
+const TTS_REQUEST_TIMEOUT_MS = 60000;
+
+function timeoutSignal(ms) {
+  return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(ms)
+    : undefined;
+}
+
 async function callTtsApi(body, apiKey) {
   let lastError = null;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
-    const res = await fetch(TTS_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Goog-Api-Key': apiKey },
-      body: JSON.stringify(body),
-    });
+    let res;
+    try {
+      res = await fetch(TTS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Goog-Api-Key': apiKey },
+        body: JSON.stringify(body),
+        signal: timeoutSignal(TTS_REQUEST_TIMEOUT_MS),
+      });
+    } catch (e) {
+      // 通信の失敗・応答待ちの打ち切り(2026-10-26)。以前は1回の通信エラーで
+      // 出力全体が止まり、応答が返ってこない場合は止まりもせず待ち続けていた。
+      // 一時的なことが多いので、5xx と同じく少し待ってやり直す。
+      lastError = new TtsError(e?.name === 'TimeoutError'
+        ? 'Cloud Text-to-Speechの応答がありませんでした(時間切れ)。通信状態を確認してください。'
+        : `Cloud Text-to-Speechに接続できませんでした: ${e?.message || e}`);
+      if (attempt < MAX_RETRIES - 1) await sleep(ttsRetryWaitMs(0, '', attempt));
+      continue;
+    }
 
     if (res.ok) {
       const data = await res.json();
@@ -274,9 +308,28 @@ async function callTtsApi(body, apiKey) {
     const [message, retryable] = classifyTtsError(res.status, detail);
     lastError = new TtsError(detail ? `${message}\n\n詳細: ${detail}` : message);
     if (!retryable) throw lastError;
-    if (attempt < MAX_RETRIES - 1) await sleep(1500 * (attempt + 1));
+    if (attempt < MAX_RETRIES - 1) await sleep(ttsRetryWaitMs(res.status, detail, attempt));
   }
   throw lastError;
+}
+
+/**
+ * リトライまでの待ち時間(ミリ秒)。tts_core._tts_retry_wait_seconds と同じ規則。
+ *
+ * レート制限(429)は、Googleが応答で示す retryDelay があればそれに従い、
+ * 無ければ 20秒・40秒 と待つ(1分あたりの上限は1分の区切りで戻るため。
+ * 以前は 1.5秒・3秒 しか待たず、回復する前にリトライを使い切っていた)。
+ * 5xx(Google側の一時障害)は従来どおり短く待つ。
+ * テストでは globalThis.ttsRetryWaitScale で短くできる。
+ */
+function ttsRetryWaitMs(status, detail, attempt) {
+  const scale = typeof globalThis.ttsRetryWaitScale === 'number' ? globalThis.ttsRetryWaitScale : 1;
+  if (status === 429) {
+    const m = /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(detail || '');
+    const seconds = m ? Number(m[1]) + 1 : 20 * (attempt + 1);
+    return Math.min(seconds, 65) * 1000 * scale;
+  }
+  return 1500 * (attempt + 1) * scale;
 }
 
 /**
@@ -551,6 +604,42 @@ export function engineOf(opts) {
  * @returns {Promise<{bytes: Uint8Array, ext: 'mp3'|'wav', mimeType: string, limited?: boolean}>}
  */
 export async function synthesizeSpeech(text, opts, { purpose = 'apkg' } = {}) {
+  if (purpose !== 'apkg') return synthesizeSpeechUncached(text, opts, purpose);
+  // 同じ文・同じ設定の音声は、このページを開いている間は作り直さない(2026-10-26)。
+  // .apkg の出力は途中の1件の失敗(上限・通信)で全体が止まるため、以前は
+  // やり直すたびに、それまでに作った分の音声も合成し直して料金を払っていた。
+  const key = speechCacheKey(text, opts);
+  const cached = speechCache.get(key);
+  if (cached) return cached;
+  const result = await synthesizeSpeechUncached(text, opts, purpose);
+  // MP3 にできなかった(lamejs を読み込めなかった)ときの WAV は覚えない。
+  // 次に読み込めたときは MP3 で作り直したほうが .apkg が小さくなるため。
+  if (result.ext === 'mp3') {
+    speechCache.set(key, result);
+    if (speechCache.size > SPEECH_CACHE_MAX) speechCache.delete(speechCache.keys().next().value);
+  }
+  return result;
+}
+
+/** 合成済み音声の置き場(古いものから捨てる。1件数十KBなので数百件でも十数MB)。 */
+const speechCache = new Map();
+const SPEECH_CACHE_MAX = 300;
+
+/** 音声の中身を決める設定だけでキーを作る(APIキーは含めない)。 */
+function speechCacheKey(text, opts) {
+  const engine = engineOf(opts);
+  return JSON.stringify(engine === TTS_ENGINE_GEMINI
+    ? [engine, opts.model || DEFAULT_GEMINI_TTS_MODEL, opts.voiceName || DEFAULT_GEMINI_TTS_VOICE,
+      opts.style || '', Number(opts.volumeGainDb) || 0, opts.mp3Kbps || 64, text]
+    : [engine, opts.voiceName || '', opts.languageCode || '', Number(opts.volumeGainDb) || 0, text]);
+}
+
+/** テスト用: 合成済み音声の置き場を空にする。 */
+export function clearSpeechCache() {
+  speechCache.clear();
+}
+
+async function synthesizeSpeechUncached(text, opts, purpose) {
   if (engineOf(opts) === TTS_ENGINE_GEMINI) {
     if (!opts.geminiApiKey) throw new TtsError('Gemini APIキーが設定されていません(Gemini TTSに必要です)。');
     const { bytes, mimeType } = await generateSpeech({

@@ -35,6 +35,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -239,7 +240,7 @@ class AnkiTTSApp(_BaseTk):
         # --- 習熟用(ATSU方式)・AIに質問 関連(2026-07-24〜、Gemini APIを仮選定) ---
         self.gemini_api_key_var = tk.StringVar(value=self._config.get("gemini_api_key", ""))
         self.gemini_model_var = tk.StringVar(
-            value=self._config.get("gemini_model", "gemini-2.0-flash")
+            value=self._config.get("gemini_model", gemini_client.DEFAULT_TEXT_MODEL)
         )
         self.gemini_models_cache = self._config.get("gemini_models_cache", [])
         self.ai_ask_generating_var = tk.BooleanVar(value=False)
@@ -479,6 +480,10 @@ class AnkiTTSApp(_BaseTk):
             getattr(self, "log_text", None),
             getattr(self, "preview_text", None),
             getattr(self, "ai_ask_text", None),
+            # DailyConversation・単語タブの入力欄(2026-10-26追加。この2つだけ
+            # ダークモードでも白いまま残っていた)。
+            getattr(self, "daily_input_text", None),
+            getattr(self, "word_pairs_text", None),
             # ⚙設定「カード定義」タブの編集欄(2026-08-20追加。ここに載せる前は
             # ダークモードでもこの4つだけ白いままで、他と揃っていなかった)。
             getattr(self, "carddef_fields_text", None),
@@ -2495,7 +2500,7 @@ class AnkiTTSApp(_BaseTk):
             return
 
         api_key = self._tts_api_key(voice)
-        gap_seconds = self.sentence_gap_var.get()
+        gap_seconds = self._sentence_gap_seconds()
 
         self.auto_gain_btn.configure(state="disabled")
         self.test_play_status_label.configure(text="音量を自動調整中...")
@@ -2523,6 +2528,18 @@ class AnkiTTSApp(_BaseTk):
                 self.after(0, on_error)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _sentence_gap_seconds(self) -> float:
+        """「文と文の間隔」の値。欄が空・数字でないときは既定の0.5秒(2026-10-26)。
+
+        DoubleVar.get() は欄が空だと TclError を投げる。以前はそのまま呼んでいたため、
+        欄を消しただけで設定が保存されず(終了時の保存が失敗する)、④も分かりにくい
+        エラーで止まっていた。
+        """
+        try:
+            return max(0.0, float(self.sentence_gap_var.get()))
+        except (tk.TclError, ValueError):
+            return 0.5
 
     # --- テスト再生(⚙設定「TTS」タブ、2026-07-27追加) ---------------------
     @staticmethod
@@ -2553,7 +2570,7 @@ class AnkiTTSApp(_BaseTk):
             return
 
         api_key = self._tts_api_key(voice)
-        gap_seconds = self.sentence_gap_var.get()
+        gap_seconds = self._sentence_gap_seconds()
         volume_gain_db = self.volume_gain_db_var.get()
 
         self._stop_test_waveform_animation()
@@ -2818,7 +2835,11 @@ class AnkiTTSApp(_BaseTk):
             finally:
                 self.fetch_sheet_btn.configure(state="normal", text=self.fetch_sheet_btn_label)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._start_worker(
+            worker,
+            lambda: self.fetch_sheet_btn.configure(state="normal", text=self.fetch_sheet_btn_label),
+            "シートの読み込み",
+        )
 
     def on_daily_correct_clicked(self):
         """英文を直接入力してAIに添削・採点させ、「添削結果」シートに新規行
@@ -2910,7 +2931,11 @@ class AnkiTTSApp(_BaseTk):
                     ),
                 )
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._start_worker(
+            worker,
+            lambda: self.daily_correct_btn.configure(state="normal", text=self.daily_correct_btn_label),
+            "添削",
+        )
 
     # 「誤りなし」行のハイライト色(2026-07-28追加)。この行はprocess_sheet_rows()
     # の仕様でデッキ生成から永久に除外される(誤りが無いので出題しようがない)ため、
@@ -3099,6 +3124,19 @@ class AnkiTTSApp(_BaseTk):
             )
             return
 
+        # 既に候補を作った行(ストックに未出力・出力済みのどちらかで残っている行)は
+        # AIへ送り直さない(2026-10-26)。以前は読み込むたびに、シート上でまだ
+        # 未出力のすべての行を送り直していた(Web版は追記した行だけを送っている)。
+        known = shuujuku_stock.known_source_keys()
+        fresh_rows = [r for r in target_rows if f"dailyconv:{r.get('id', '')}" not in known]
+        if len(fresh_rows) < len(target_rows):
+            self.log(
+                f"習熟用候補: {len(target_rows) - len(fresh_rows)} 件は作成済みのため飛ばします。"
+            )
+        target_rows = fresh_rows
+        if not target_rows:
+            return
+
         # 2026-08-06、1行ずつN回呼ぶ方式からまとめて呼ぶ方式に変更した
         # (無料枠の上限はリクエスト数で数えられるため。gemini_client.pyの
         #  「まとめて生成(バッチ)」の項を参照)。
@@ -3118,12 +3156,16 @@ class AnkiTTSApp(_BaseTk):
             )
             return
 
+        batch_error = getattr(generated, "batch_error", "")
+        if batch_error:
+            self.log(f"途中で止まりました(それまでに生成できた分は追加します): {batch_error}")
         for i, (row, item) in enumerate(zip(target_rows, generated), start=1):
             if item is None:
                 failed += 1
                 self.log(
                     f"  行{i}/{len(target_rows)}(id={row.get('id')}): "
-                    "AIの応答にこの行が含まれていませんでした"
+                    + ("生成できませんでした" if batch_error
+                       else "AIの応答にこの行が含まれていませんでした")
                 )
                 continue
             items.append(item)
@@ -4031,12 +4073,16 @@ class AnkiTTSApp(_BaseTk):
                 self.after(0, fail)
                 return
 
+            batch_error = getattr(generated, "batch_error", "")
+            if batch_error:
+                self.log(f"途中で止まりました(それまでに生成できた分は追加します): {batch_error}")
             for i, ((word, _context), item) in enumerate(zip(pairs, generated), start=1):
                 if item is None:
                     failed += 1
                     self.log(
                         f"  {i}/{len(pairs)}(単語={word}): "
-                        "AIの応答にこの単語が含まれていませんでした"
+                        + ("生成できませんでした" if batch_error
+                           else "AIの応答にこの単語が含まれていませんでした")
                     )
                     continue
                 items.append(item)
@@ -4071,7 +4117,8 @@ class AnkiTTSApp(_BaseTk):
 
             self.after(0, finish)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._start_worker(worker, lambda: self.word_generate_btn.configure(state="normal"),
+                           "単語カードの生成")
 
     # --- AIに質問タブ -------------------------------------------------
     def on_ai_ask_clicked(self):
@@ -4121,7 +4168,8 @@ class AnkiTTSApp(_BaseTk):
             finally:
                 self.ai_ask_generate_btn.configure(state="normal")
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._start_worker(worker, lambda: self.ai_ask_generate_btn.configure(state="normal"),
+                           "AIに質問")
 
     def on_fetch_gemini_models(self, silent=False):
         """Gemini APIから、generateContentに対応しているモデルの一覧を取得し、
@@ -4138,7 +4186,10 @@ class AnkiTTSApp(_BaseTk):
                 self.gemini_models_cache = names
                 self.gemini_model_combo["values"] = names
                 if names and self.gemini_model_var.get() not in names:
-                    self.gemini_model_var.set(names[0])
+                    # 一覧の先頭(アルファベット順)ではなく、最新のFlashを指す
+                    # 別名を優先する(2026-10-26)。
+                    preferred = gemini_client.DEFAULT_TEXT_MODEL
+                    self.gemini_model_var.set(preferred if preferred in names else names[0])
                 self._save_current_config()
                 self.log(f"Geminiモデル一覧を {len(names)} 件取得しました。")
             except gemini_client.GeminiClientError as e:
@@ -4582,7 +4633,7 @@ class AnkiTTSApp(_BaseTk):
             "voice": self.voice_var.get(),
             "language_code": self.lang_var.get(),
             "voices_cache": self.voices_cache,
-            "sentence_gap": self.sentence_gap_var.get(),
+            "sentence_gap": self._sentence_gap_seconds(),
             "per_sentence_tags": self.per_sentence_var.get(),
             "mp3_bitrate": int(self.mp3_bitrate_var.get()),
             "volume_gain_db": self.volume_gain_db_var.get(),
@@ -4884,7 +4935,7 @@ class AnkiTTSApp(_BaseTk):
         voice = self.voice_var.get()
         lang = self.lang_var.get()
         api_key = self._tts_api_key(voice)
-        gap_seconds = self.sentence_gap_var.get()
+        gap_seconds = self._sentence_gap_seconds()
         bitrate = int(self.mp3_bitrate_var.get())
 
         def worker():
@@ -4934,8 +4985,45 @@ class AnkiTTSApp(_BaseTk):
         self._cancel_event.clear()
         self.generate_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
+        # 生成中は入力元のタブを切り替えられないようにする(2026-10-26)。
+        # run_generate は終わりに出力先・ストックの出力済みマーク・スプレッドシートの
+        # 対応表などを読むが、生成中に別のタブを開くとそれらが別タブの状態に
+        # 入れ替わり、出力先が空になって書き出しに失敗する(生成した音声が失われる)・
+        # 別タブのファイルへ書き出す・出力済みマークが付かない、といった事故になっていた。
+        self._set_source_tabs_enabled(False)
         thread = threading.Thread(target=self.run_generate, daemon=True)
         thread.start()
+
+    def _start_worker(self, body, restore, what: str):
+        """body() をバックグラウンドで実行する。想定外の例外でも画面を元に戻す
+        (2026-10-26)。
+
+        各処理の worker は Gemini/シート側の想定したエラーしか受け止めておらず、
+        それ以外(ストックの保存に失敗・認証ファイルが見つからない等)が起きると
+        例外がスレッドの中で消え、ボタンが押せないままになっていた(pythonw では
+        ログも残らない)。restore はメインスレッドでボタンを戻す処理。
+        """
+        def run():
+            try:
+                body()
+            except Exception as e:  # noqa: BLE001
+                detail = f"{type(e).__name__}: {e}"
+
+                def fail():
+                    restore()
+                    self.log(f"{what}に失敗しました: {detail}")
+                    messagebox.showerror(f"{what}に失敗", f"{what}に失敗しました。\n\n{detail}")
+
+                self.after(0, fail)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _set_source_tabs_enabled(self, enabled: bool):
+        for btn in self._source_tab_buttons.values():
+            try:
+                btn.configure(state="normal" if enabled else "disabled")
+            except tk.TclError:
+                pass
 
     def run_generate(self):
         # このrun_generate呼び出し全体で処理対象のapkgパスを固定する
@@ -4949,6 +5037,14 @@ class AnkiTTSApp(_BaseTk):
         # 無関係なタブ」のノート一覧をクリアしてしまい、実際に生成した
         # タブの状態は残り続けてしまっていた。
         generated_tab_key = self.source_tab_var.get()
+        # 出力先と、ストックの出力済みマークの対象も開始時点で固定する(2026-10-26)。
+        # 生成中にこのタブの「まとめて出力」「シートから読み込む」を押すと、これらが
+        # 入れ替わり、別のファイルへ書き出したり、今回のapkgに入っていない項目に印を付けたりしていた。
+        generated_output_path = self.output_path.get()
+        snap_word = self._pending_word_stock_items
+        snap_shuujuku = self._pending_shuujuku_stock_items
+        snap_grammar_multi = self._pending_grammar_multi_stock_items
+        snap_daily_due = self._pending_daily_due_advance
         # 途中でエラーが起きてもコレクションを必ず閉じるための参照
         # (2026-07-28修正)。正常に閉じた時点でNoneに戻し、下のfinallyでは
         # 「まだ開いたままなら閉じる」だけにする。作業用の.anki2は固定
@@ -5010,7 +5106,7 @@ class AnkiTTSApp(_BaseTk):
 
             if (
                 not self.per_sentence_var.get()
-                and self.sentence_gap_var.get() > 0
+                and self._sentence_gap_seconds() > 0
                 and not tts_core.LAMEENC_AVAILABLE
             ):
                 self.log(
@@ -5022,6 +5118,11 @@ class AnkiTTSApp(_BaseTk):
             processed_total = 0
             cancelled = False
             done_base = 0
+            # 生成の途中で止まったときの例外(割り当ての上限など)。2026-10-26追加。
+            # 以前は例外がそのまま下の except へ抜け、それまでに作った音声
+            # (料金を払った分)を書き出さずに捨てていた。ローカルのTTSツールと
+            # 同じく、作れた分は書き出してからエラーを伝える。
+            generation_error = None
             for nt_name, to_process, source_transform in plans:
                 if cancelled:
                     break
@@ -5030,32 +5131,45 @@ class AnkiTTSApp(_BaseTk):
 
                 # プログレスバーはapkg全体で1本にする(ノートタイプごとに
                 # 0へ戻らないよう、それまでの件数を足した位置を表示する)。
-                def on_progress(done, total, base=done_base):
+                progress_seen = [0]
+
+                def on_progress(done, total, base=done_base, seen=progress_seen):
+                    seen[0] = done
                     self.progress["value"] = base + done
                     self.update_idletasks()
 
-                nt_result = tts_core.generate_tts_for_collection(
-                    col,
-                    nt_name,
-                    to_process,
-                    api_key=self._tts_api_key(),
-                    voice=self.voice_var.get(),
-                    lang=self.lang_var.get(),
-                    gap_seconds=self.sentence_gap_var.get(),
-                    bitrate=int(self.mp3_bitrate_var.get()),
-                    per_sentence=self.per_sentence_var.get(),
-                    force_regen=force_regen,
-                    volume_gain_db=self.volume_gain_db_var.get(),
-                    source_transform=source_transform,
-                    log=self.log,
-                    on_progress=on_progress,
-                    should_cancel=self._cancel_event.is_set,
-                )
+                try:
+                    nt_result = tts_core.generate_tts_for_collection(
+                        col,
+                        nt_name,
+                        to_process,
+                        api_key=self._tts_api_key(),
+                        voice=self.voice_var.get(),
+                        lang=self.lang_var.get(),
+                        gap_seconds=self._sentence_gap_seconds(),
+                        bitrate=int(self.mp3_bitrate_var.get()),
+                        per_sentence=self.per_sentence_var.get(),
+                        force_regen=force_regen,
+                        volume_gain_db=self.volume_gain_db_var.get(),
+                        source_transform=source_transform,
+                        log=self.log,
+                        on_progress=on_progress,
+                        should_cancel=self._cancel_event.is_set,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    # on_progress は1件終わるごとに呼ばれるので、そこまでが処理済み
+                    processed_pairs.extend(to_process[: progress_seen[0]])
+                    processed_total += progress_seen[0]
+                    generation_error = e
+                    cancelled = True  # 以降は「途中まで」として扱う(出力済みマークを付けない)
+                    break
                 processed_pairs.extend(to_process[: nt_result.processed])
                 processed_total += nt_result.processed
                 done_base += len(to_process)
                 cancelled = nt_result.cancelled
 
+            if generation_error is not None and processed_total == 0:
+                raise generation_error
             result = tts_core.GenerateResult(processed=processed_total, cancelled=cancelled)
 
             matched_sheet_ids = []
@@ -5084,9 +5198,9 @@ class AnkiTTSApp(_BaseTk):
                             "(スプレッドシート更新の対象からは除外します)。"
                         )
 
-            # ここで固定しておく(_clear_tab_output_stateがself.output_pathを
-            # 空にする可能性があるため、以降のログ・自動オープンにはこちらを使う)。
-            generated_output_path = self.output_path.get()
+            # 出力先は開始時点で固定した generated_output_path を使う
+            # (_clear_tab_output_stateがself.output_pathを空にする可能性もあるため、
+            # 以降のログ・自動オープンにもこちらを使う)。
             tts_core.export_collection(col, generated_output_path)
             col.close()
             col = None  # 正常に閉じたので、下のfinallyでは何もしない
@@ -5101,8 +5215,8 @@ class AnkiTTSApp(_BaseTk):
             # 処理した際に誤って無関係なストックを出力済みにしてしまう事故を
             # 防ぐための二重チェック(「DailyConversationのTTS生成でストックの
             # 単語が意図せず出力済みになった」という報告への対応)。
-            if self._pending_word_stock_items:
-                tracked_path, tracked_items = self._pending_word_stock_items
+            if snap_word and generation_error is None:
+                tracked_path, tracked_items = snap_word
                 if tracked_path == generated_apkg_path:
                     word_stock.mark_exported(tracked_items)
                     # 新規カードの位置(cards.due)の続き番号も同じだけ進める
@@ -5115,9 +5229,10 @@ class AnkiTTSApp(_BaseTk):
                         "(単語ストックの出力済みマークは対象外です: "
                         "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
                     )
-                self._pending_word_stock_items = None
-            if self._pending_shuujuku_stock_items:
-                tracked_path, tracked_items = self._pending_shuujuku_stock_items
+                if self._pending_word_stock_items is snap_word:
+                    self._pending_word_stock_items = None
+            if snap_shuujuku and generation_error is None:
+                tracked_path, tracked_items = snap_shuujuku
                 if tracked_path == generated_apkg_path:
                     shuujuku_stock.mark_exported(tracked_items)
                     # Numフィールドの続き番号を今回の件数分だけ進める
@@ -5131,9 +5246,10 @@ class AnkiTTSApp(_BaseTk):
                         "(習熟用ストックの出力済みマークは対象外です: "
                         "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
                     )
-                self._pending_shuujuku_stock_items = None
-            if self._pending_grammar_multi_stock_items:
-                tracked_path, tracked_items = self._pending_grammar_multi_stock_items
+                if self._pending_shuujuku_stock_items is snap_shuujuku:
+                    self._pending_shuujuku_stock_items = None
+            if snap_grammar_multi and generation_error is None:
+                tracked_path, tracked_items = snap_grammar_multi
                 if tracked_path == generated_apkg_path:
                     grammar_multi_stock.mark_exported(tracked_items)
                     # 新規カードの位置(cards.due)の続き番号も同じだけ進める
@@ -5146,11 +5262,12 @@ class AnkiTTSApp(_BaseTk):
                         "(Grammar Multiストックの出力済みマークは対象外です: "
                         "今回処理したapkgが、まとめて出力した時点のapkgと異なるため)"
                     )
-                self._pending_grammar_multi_stock_items = None
-            if self._pending_daily_due_advance:
+                if self._pending_grammar_multi_stock_items is snap_grammar_multi:
+                    self._pending_grammar_multi_stock_items = None
+            if snap_daily_due and generation_error is None:
                 # DailyConversationはストックを持たない(出力済みの記録は
                 # スプレッドシート側)ので、位置の続き番号だけをここで進める。
-                tracked_path, tracked_count = self._pending_daily_due_advance
+                tracked_path, tracked_count = snap_daily_due
                 if tracked_path == generated_apkg_path:
                     due_counter.advance_next_due("daily", tracked_count)
                     self.log(
@@ -5162,7 +5279,8 @@ class AnkiTTSApp(_BaseTk):
                         "(DailyConversationの位置の続き番号は対象外です: "
                         "今回処理したapkgが、デッキを生成した時点のapkgと異なるため)"
                     )
-                self._pending_daily_due_advance = None
+                if self._pending_daily_due_advance is snap_daily_due:
+                    self._pending_daily_due_advance = None
 
             # ④のTTS音声生成が完了したノート一覧は「出力済み」として一覧から
             # 消す(2026-07-28追加。「ノート一覧に入っているものをTTSで出力
@@ -5180,7 +5298,10 @@ class AnkiTTSApp(_BaseTk):
             # 出力済みマークを付けた後に数え直す(2026-08-20追加)。
             self.refresh_bulk_view()
 
-            status = "キャンセルにより途中まで" if result.cancelled else "完了"
+            if generation_error is not None:
+                status = "エラーにより途中まで"
+            else:
+                status = "キャンセルにより途中まで" if result.cancelled else "完了"
             self.log(
                 f"\n{status}: 新規生成 {result.processed} 件 / 既に音声あり(スキップ) "
                 f"{skipped_has_audio} 件 / 空欄スキップ {skipped_empty} 件"
@@ -5188,10 +5309,24 @@ class AnkiTTSApp(_BaseTk):
             self.log(f"出力ファイル: {generated_output_path}")
             self._save_current_config()
 
-            if matched_sheet_ids:
+            # エラーで止まった場合は、スプレッドシートにも出力済みの印を付けない
+            # (音声が付いていない行があるため。直してから④をやり直す前提)
+            if matched_sheet_ids and generation_error is None:
                 self._update_sheets_export_status(matched_sheet_ids)
 
-            if result.cancelled:
+            if generation_error is not None:
+                self.log(f"エラー: {generation_error}")
+                messagebox.showerror(
+                    "エラー(途中まで出力しました)",
+                    f"{generation_error}\n\n"
+                    f"{result.processed} 件の音声を作った時点までの内容で出力しました:\n"
+                    f"{generated_output_path}\n\n"
+                    "ストック・スプレッドシートの出力済みの印は付けていません。\n\n"
+                    "このまま④をやり直すと、最初から全部作り直します(料金もかかります)。"
+                    "続きから作る場合は、上の出力ファイルを「apkgインポート」タブで"
+                    "読み込んで④を実行してください(音声が入ったフィールドは飛ばします)。",
+                )
+            elif result.cancelled:
                 messagebox.showinfo(
                     "中断", f"キャンセルされました。{result.processed} 件を処理した時点までの内容で出力しました。"
                 )
@@ -5214,6 +5349,7 @@ class AnkiTTSApp(_BaseTk):
                     self.log(f"コレクションのクローズに失敗しました: {e}")
             self.generate_btn.configure(state="normal")
             self.cancel_btn.configure(state="disabled")
+            self._set_source_tabs_enabled(True)
 
     def _update_sheets_export_status(self, sheet_row_ids: list):
         """処理済みノートに対応するスプレッドシート行を「Anki出力済み」にマークする。
@@ -5254,6 +5390,32 @@ class AnkiTTSApp(_BaseTk):
             messagebox.showerror("エラー", f"スプレッドシートの更新に失敗しました:\n{e}")
 
 
+def _show_startup_error(exc: BaseException) -> None:
+    """起動できなかった理由を知らせる(2026-10-26)。
+
+    ANKI出力ツール.bat は pythonw で起動するためコンソールが無く、起動時の例外
+    (設定ファイルが同期中で読めない等)が起きると、何も表示されずに終わっていた。
+    """
+    message = (
+        "ANKI出力ツールを起動できませんでした。\n\n"
+        f"{type(exc).__name__}: {exc}\n\n"
+        "Googleドライブの同期中にファイルが使用中だった場合は、少し待ってから"
+        "もう一度起動してください。"
+    )
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("ANKI出力ツール", message, parent=root)
+        root.destroy()
+    except Exception:  # noqa: BLE001
+        print(message, file=sys.stderr)
+
+
 if __name__ == "__main__":
-    app = AnkiTTSApp()
+    try:
+        app = AnkiTTSApp()
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        _show_startup_error(e)
+        sys.exit(1)
     app.mainloop()

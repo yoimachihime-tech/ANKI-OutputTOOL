@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>ANKI出力ツール (Web版)</title>
+<!-- タブの目印(2026-10-26)。以前は指定が無く、開くたびに favicon.ico の404が出ていた。 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='6' y='10' width='40' height='48' rx='6' fill='%234f6bed'/%3E%3Crect x='18' y='4' width='40' height='48' rx='6' fill='%236b83f0' stroke='%23fff' stroke-width='3'/%3E%3C/svg%3E">
 <!-- ?v= はキャッシュ避け(2026-08-06追加)。GitHub Pages/ブラウザは
      style.css・app.js を長めにキャッシュするため、index.html だけが
      新しくなり app.js が古いまま、という食い違いが起きうる。実際に
@@ -13,7 +15,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20261007a">
+<link rel="stylesheet" href="./style.css?v=20261026a">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -572,7 +574,8 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     <h2>② 生成結果 <span id="ai-ask-stock-count" class="count"></span></h2>
     <p class="hint">
       生成したカードはこのブラウザに保存され、再訪しても残ります。
-      同じ質問を複数回試した場合は重複として警告表示されます。一度「.apkg を
+      同じ質問をもう一度送ると、<b>別の問題として追加</b>されます(AIは毎回違う問題を
+      作るため。一覧に「↻ 同じ質問」の印が付くので、不要なら選んで削除してください)。一度「.apkg を
       ダウンロード」した項目には「✓ 出力済み」の印が付き、次回以降の出力対象
       から自動的に外れます(カード自体は削除されません)。
     </p>
@@ -599,8 +602,8 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
     <h2>③ Ankiに取り込む</h2>
     <p class="hint">
       .apkg をダウンロードし、AnkiMobile / AnkiDroid / デスクトップ版Ankiで開いてください。
-      同じ問題(同じ質問から生成された同じ番目のカード)は既存のものが更新されるだけなので、
-      学習履歴は失われません。
+      一覧の同じカードをもう一度出力した場合は、Anki上の既存のカードが更新されるだけなので、
+      学習履歴は失われません(同じ質問を送り直して作った問題は、別のカードとして追加されます)。
       解答と例文の音声は、⚙設定の「TTS音声」の設定で自動的に合成して埋め込みます(下の1行が現在の状態です)。
       意味・本質問題は解答が日本語なので、例文にだけ音声を付けます。
       対象は②の一覧のうち<b>まだ出力していないカードだけ</b>です。
@@ -631,8 +634,10 @@ placeholder="例: patience と patient の使い分けを教えて"></textarea>
       <li>
         <b>単語・句動詞など、それ自体は文ではないもの</b>(例: <code>give up</code>) …
         複数入力しても<b>まとめて1枚</b>のカードになり、
-        <b>例文の数が語句の数に応じて増えます</b>(1件なら3つ、2件なら4つ、
-        3件なら5つ…最大10まで)。入力したどの表現も、例文のどこかに必ず登場します。
+        <b>例文の数が語句の数に応じて増えます</b>(1件なら3つ、2件以上は4つ。
+        カードの例文欄は4つまでなので、表現が多いときは1つの例文に複数の表現を入れて作ります)。
+        入力したどの表現も、例文のどこかに登場するよう作ります
+        (8件を超えると入りきらないことがあるので、分けて実行してください)。
         例文どうしは内容(主語・場面・話題)がそれぞれ別のものになります。
       </li>
     </ul>
@@ -646,8 +651,9 @@ placeholder="I've been working here since 2020.&#10;give up"></textarea>
       ⚠ <b>英文</b>として入力したものは、<b>文法的に正しい場合のみ</b>カードを生成します。
       誤りが見つかった文はカードにせず、その理由を表示したうえで、
       DailyConversationタブの入力欄に転記します。<br>
-      単語・句動詞として扱われるのは<b>文末に「.」「!」「?」が無く、5語以内</b>のものです
-      (それ以外は英文として添削します)。短い英文を確実に添削させたいときは、
+      単語・句動詞として扱われるのは<b>文末に「.」「!」「?」が無く、5語以内</b>のものと、
+      <b>カンマ・読点・スラッシュを含んで文末に「.」などが無い</b>ものです
+      (それ以外は英文として添削します)。英文を確実に添削させたいときは、
       文末に「.」を付けてください。<br>
       すべて大文字で入力された行は、<b>カードを作るときに通常の表記へ自動で直します</b>
       (直さないと大文字が理由で「誤り」になってしまうため)。固有名詞の大文字までは
@@ -709,7 +715,7 @@ placeholder="I've been working here since 2020.&#10;give up"></textarea>
 
   <p class="hint login-required-hint">
     🔒 このタブは「添削結果」スプレッドシートを直接読み書きするため、Googleへの
-    ログインが必要です。画面右上のヘッダーにある「Googleにログイン」から
+    ログインが必要です。画面上部の「Googleにログイン」から
     ログインしてください(スプレッドシートID・シート名などの設定は、
     ログイン時に自動で読み込まれるため入力不要です)。
   </p>
@@ -723,7 +729,7 @@ placeholder="I've been working here since 2020.&#10;give up"></textarea>
     </p>
     <p class="hint">
       続けて、誤りが見つかった文それぞれについて<b>「習熟用(音読)」タブのカードも
-      自動生成します</b>(文の数だけAIを呼ぶため、少し時間がかかります)。
+      自動生成します</b>(まとめてAIを呼ぶため、少し時間がかかります)。
     </p>
     <textarea id="daily-input" rows="6" spellcheck="false"
 placeholder="I go to the park yesterday. She don't like coffee."></textarea>
@@ -743,6 +749,9 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <div class="row">
       <button type="button" id="daily-refresh" class="primary">シートから読み込む</button>
     </div>
+    <!-- 読み込みの結果はボタンのすぐ下に出す(2026-10-26。以前は③の欄に出しており、
+         一覧が長いとスマホでは画面の外で見えなかった)。 -->
+    <p id="daily-refresh-status" class="status" role="status" aria-live="polite"></p>
     <div class="row">
       <label class="checkbox"><input type="checkbox" id="daily-filter-hide-no-error">「誤りなし」を隠す</label>
       <label class="checkbox"><input type="checkbox" id="daily-filter-only-duplicates">重複の可能性がある行のみ表示</label>
@@ -779,6 +788,11 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
     <p class="hint tts-status-line" data-tts-summary></p>
     <button type="button" id="daily-export" class="primary">.apkg をダウンロード</button>
     <p id="daily-export-status" class="status" role="status" aria-live="polite"></p>
+    <!-- シートへのマークだけをやり直す(2026-10-26追加)。一括出力タブはシートへ
+         マークしないため、以前はそこで出力した行をマークする手段が「印を外して
+         もう一度出力する(音声も作り直す)」しか無かった。 -->
+    <p class="hint btn-group-label">シートへのマークだけをやり直す(一括出力タブで出力した行・マークに失敗した行に)</p>
+    <button type="button" id="daily-mark-recorded">出力済み(このブラウザで記録)の行をシートにマークする</button>
   </section>
 
 </div>
@@ -830,13 +844,19 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
   <!-- ノートから作られるカード(テンプレート)ごとの切り替え(2026-10-05追加)。
        1枚しか作られないノートでは隠す(app.js の openCardPreview)。 -->
   <div id="preview-templates" class="preview-tabs" role="group" aria-label="カードの種類" hidden></div>
-  <iframe id="preview-frame" title="カードプレビュー"></iframe>
+  <!-- sandbox(2026-10-26): カードの中身はAIの出力やシートのセル(Googleフォーム
+       経由で誰でも書き込めうる)をそのままHTMLとして入れている。sandbox が無いと
+       srcdoc の iframe はこのページと同じオリジンになり、中に仕込まれた
+       <img onerror=...> などがこのページの localStorage(APIキー・ログインの
+       トークン)を読めてしまう。カードテンプレートの <script>(答えの位置へ
+       スクロール)は動くよう allow-scripts だけ許し、allow-same-origin は付けない。 -->
+  <iframe id="preview-frame" title="カードプレビュー" sandbox="allow-scripts"></iframe>
 </dialog>
 
 <!-- ?v= の意味は先頭の <link rel="stylesheet"> のコメントを参照。
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20261007a"></script>
+<script type="module" src="./app.js?v=20261026a"></script>
 </body>
 </html>

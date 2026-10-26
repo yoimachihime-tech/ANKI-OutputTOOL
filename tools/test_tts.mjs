@@ -183,6 +183,37 @@ console.log('\n[2] callGoogleTts のエラー処理');
 }
 
 {
+  // 1分あたりの上限(上限名に PerProject も含む)は待てば回復するので、打ち切らずに
+  // 待ってリトライする(2026-10-26。以前は perproject で「回復しない」と判定し、
+  // 1分あたりの上限を下げてある環境で出力全体が止まっていた)。
+  // retryDelay があればそれに従う。テストでは待ち時間を1/1000にする。
+  globalThis.ttsRetryWaitScale = 0.001;
+  let calls = 0;
+  const perMinute = JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED',
+    message: "Quota exceeded for quota metric 'Requests' and limit 'Requests per minute'",
+    details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'RATE_LIMIT_EXCEEDED',
+      metadata: { quota_limit: 'DefaultRequestsPerMinutePerProject' } },
+    { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '12s' }] } });
+  const started = Date.now();
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls < 2) return { ok: false, status: 429, text: async () => perMinute };
+    return { ok: true, status: 200, json: async () => ({ audioContent: Buffer.from('ok').toString('base64') }) };
+  };
+  try {
+    const bytes = await callGoogleTts('hello', { voiceName: 'en-US-Chirp3-HD-Iapetus', languageCode: 'en-US', apiKey: 'k' });
+    if (calls === 2 && Buffer.from(bytes).toString() === 'ok') ok('1分あたりの上限(PerMinutePerProject)は待ってリトライし、成功すれば音声を返す');
+    else fail(`1分あたりの上限のリトライが想定外(calls=${calls})`);
+  } catch (e) {
+    fail(`1分あたりの上限で打ち切ってしまった: ${e.message.slice(0, 80)}`);
+  }
+  // retryDelay 12秒 + 余裕1秒 = 13秒 × 1/1000 ≒ 13ms は待っている
+  if (Date.now() - started >= 12) ok('retryDelay に従って待つ');
+  else fail('retryDelay を待たずにリトライした');
+  delete globalThis.ttsRetryWaitScale;
+}
+
+{
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;

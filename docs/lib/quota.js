@@ -137,11 +137,18 @@ export function learnDailyQuotaLimit(requestModel, detail) {
   if (!key) return null;
 
   const state = readState();
-  state.limits[key] = {
+  const learned = {
     value: found.value,
     quota_id: found.quotaId,
     observed_at: new Date().toISOString(),
   };
+  state.limits[key] = learned;
+  // 別名(gemini-flash-latest 等)で呼んだ場合、応答の model は実体のモデル名
+  // (gemini-3.5-flash 等)になる。回数はリクエストに使った名前で数えているので、
+  // そちらにも同じ上限を覚えておかないと、使用状況の表示で回数と上限が別々の
+  // 行に分かれてしまう(2026-10-26)。
+  const requested = (requestModel || '').trim();
+  if (requested && requested !== key) state.limits[requested] = learned;
   writeState(state);
   return { ...found, model: key };
 }

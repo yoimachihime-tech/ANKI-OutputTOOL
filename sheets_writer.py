@@ -214,6 +214,20 @@ def mark_rows_as_exported(
 # 取って動的に対応させる(固定の列順を決め打ちしない。手元でシートの列を
 # 並べ替えていても壊れないため)。
 
+def _as_literal_text(value):
+    """文字列のセルが数式として解釈されないようにする(2026-10-26)。
+
+    追記は「日時」を日時として認識させるため USER_ENTERED で送っているが、
+    そのせいで「- I goes to school.」のように = + - @ で始まる原文・解説が
+    数式として扱われ、#ERROR! になっていた。先頭に ' を付けると文字列として
+    入る(' 自体はセルに表示されず、読み戻した値にも含まれない)。
+    docs/lib/sheets.js の asLiteralText と同じ規則。
+    """
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 _CORRECTION_COLUMN_BUILDERS = {
     "ID": lambda c, row_id, now_str: row_id,
     "日時": lambda c, row_id, now_str: now_str,
@@ -290,7 +304,9 @@ def append_correction_rows(
         row = []
         for header in headers:
             builder = _CORRECTION_COLUMN_BUILDERS.get(header)
-            row.append(builder(c, row_id, now_str) if builder else "")
+            value = builder(c, row_id, now_str) if builder else ""
+            # 日時は USER_ENTERED で日時として認識させたいので、そのまま送る
+            row.append(value if header == "日時" else _as_literal_text(value))
         values.append(row)
 
     prefix = "[ドライラン] " if dry_run else ""

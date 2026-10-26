@@ -309,6 +309,26 @@ console.log('\n[3] appendCorrectionRows');
 }
 
 {
+  // = + - @ で始まる文字列は数式として解釈されないよう ' を前に付ける
+  // (2026-10-26。USER_ENTERED のため「- I goes to school.」が #ERROR! になっていた)。
+  const calls = mockFetch(async (url, init) => {
+    if (init.method === 'POST') return { updates: { updatedRows: 1 } };
+    return { values: [['ID', '日時', '原文', '解説', '文法スコア']] };
+  });
+  await appendCorrectionRows({
+    ...SHEET,
+    corrections: [{ original: '- I goes to school.', explanation: '=三人称単数', grammar_score: 60 }],
+  });
+  const row = calls.find((c) => c.method === 'POST').body.values[0];
+  if (row[2] === "'- I goes to school." && row[3] === "'=三人称単数" && row[4] === 60
+      && /^\d{4}-/.test(row[1])) {
+    ok('= + - @ で始まる文字列にだけ \' を付けて、数式として解釈させない(日時・数値はそのまま)');
+  } else {
+    fail(`数式よけの結果が想定と違う: ${JSON.stringify(row)}`);
+  }
+}
+
+{
   const calls = mockFetch(async () => ({ values: [HEADERS] }));
   const newIds = await appendCorrectionRows({ ...SHEET, corrections: [] });
   if (deepEq(newIds, []) && calls.length === 0) ok('corrections が空なら API を呼ばない');
