@@ -376,6 +376,8 @@ let geminiMode = 'word';
 let geminiCalls = 0;
 /** Gemini TTS へのリクエスト(URL と本文)。音声エンジンのテストで中身を確かめる。 */
 const geminiTtsRequests = [];
+/** true の間、Gemini TTS は1日の上限(429)を返す([37]) */
+let geminiTtsDailyQuota = false;
 
 /** Gemini TTS が返す想定の WAV(24kHz・モノラル・16bit、0.1秒の正弦波・振幅0.5)。 */
 const FAKE_WAV_BASE64 = (() => {
@@ -410,6 +412,15 @@ globalThis.fetch = async (url, init = {}) => {
     // 他のセクションの geminiCalls の期待値に影響させない。
     if (typeof init.body === 'string' && init.body.includes('"responseModalities":["AUDIO"]')) {
       geminiTtsRequests.push({ url: u, body: JSON.parse(init.body) });
+      if (geminiTtsDailyQuota) {
+        // 無料枠の1日の上限(実際の応答と同じ形)
+        const detail = JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED',
+          message: 'You exceeded your current quota, please check your plan and billing details.',
+          details: [{ '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{
+            quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+            quotaDimensions: { model: 'gemini-3.8-flash-tts', location: 'global' }, quotaValue: '10' }] }] } });
+        return { ok: false, status: 429, text: async () => detail };
+      }
       return {
         ok: true,
         status: 200,
@@ -2803,6 +2814,86 @@ console.log('\n[36] 複数端末間の同期(ヘッダーの「🔄 同期」、
   } else {
     fail(`壊れたリモートでも書き戻した可能性: ${text.slice(0, 120)} / writes ${writesBefore}→${syncWrites}`);
   }
+  $('word-clear-stock').click();
+  await sleep(20);
+}
+
+console.log('\n[37] Gemini TTS が1日の上限に当たっても、カードは音声なしで出力できる(2026-10-26)');
+{
+  // 片桐の報告: 「Geminiの使用制限が掛かったようなので別のモデルを選択しても
+  // .apkg の生成に失敗する」。音声のモデル(TTS音声 → モデル)は文章用のモデルとは
+  // 別の設定・別の上限なので、文章用を切り替えても直らず、出力全体が止まっていた。
+  $('tts-engine').value = 'gemini';
+  $('tts-engine').dispatchEvent(new window.Event('change'));
+  // [31] と別の音声にする(同じ文・同じ設定の音声はページ内で使い回すため、
+  // そのままだと合成を呼ばずに済んでしまい、上限の経路を通らない)
+  $('tts-gemini-voice').value = 'Puck';
+  $('tts-gemini-voice').dispatchEvent(new window.Event('change'));
+  geminiMode = 'word';
+  geminiCalls = 0;
+  $('word-input').value = 'resilient | She remained resilient.';
+  $('word-generate').click();
+  for (let i = 0; i < 100 && geminiCalls < 1; i += 1) await sleep(50);
+  await sleep(200);
+
+  geminiTtsDailyQuota = true;
+  const asked = [];
+  const realConfirm = globalThis.confirm;
+  globalThis.confirm = (msg) => { asked.push(msg); return true; };
+  window.confirm = globalThis.confirm;
+  downloaded = null;
+  $('word-export').click();
+  for (let i = 0; i < 200 && !downloaded; i += 1) await sleep(50);
+  await sleep(100);
+  globalThis.confirm = realConfirm;
+  window.confirm = realConfirm;
+  geminiTtsDailyQuota = false;
+
+  if (asked.length === 1 && asked[0].includes('音声なしで') && asked[0].includes('TTS音声')
+      && asked[0].includes('Cloud TTS') && !asked[0].includes('"error"')) {
+    ok('上限に当たったら、音声の設定(TTS音声)を案内したうえで、音声なしで出力するか1回だけ確かめる');
+  } else {
+    fail(`確認の内容・回数が想定外: ${asked.length} 回 / ${(asked[0] || '').slice(0, 200)}`);
+  }
+  if (downloaded) {
+    const zip = await window.JSZip.loadAsync(Buffer.from(await downloaded.arrayBuffer()));
+    const names = Object.values(JSON.parse(await zip.file('media').async('string')));
+    if (names.length === 0) ok('音声の上限に当たっても .apkg は出力される(音声なし)');
+    else fail(`音声なしのはずが音声が入っている: ${names}`);
+  } else {
+    fail('音声の上限で .apkg の出力ごと止まった');
+  }
+  const st = $('word-export-status').textContent;
+  if (st.includes('音声なしで出力しました') && st.includes('出力済みの印を外す')) {
+    ok('完了メッセージに、音声なしで出力したことと後から音声を付ける方法を出す');
+  } else {
+    fail(`完了メッセージが想定外: ${st.slice(0, 200)}`);
+  }
+  const line = window.document.querySelector('#tab-word [data-tts-summary]').textContent;
+  if (line.includes('今日')) ok(`音声の欄に今日の使用回数を出す: ${line}`);
+  else fail(`音声の欄に使用回数が出ていない: ${line}`);
+
+  // 「キャンセル」を選べば従来どおり出力をやめ、カードは残す
+  $('word-reset-exported').click();
+  await sleep(20);
+  geminiTtsDailyQuota = true;
+  globalThis.confirm = () => false;
+  window.confirm = globalThis.confirm;
+  downloaded = null;
+  $('word-export').click();
+  for (let i = 0; i < 100 && !$('word-export-status').textContent.includes('上限'); i += 1) await sleep(50);
+  globalThis.confirm = realConfirm;
+  window.confirm = realConfirm;
+  geminiTtsDailyQuota = false;
+  if (!downloaded && $('word-export-status').textContent.includes('TTS音声')
+      && JSON.parse(localStorage.getItem('anki_tool_word_stock')).some((it) => !it.exported_at)) {
+    ok('キャンセルしたら出力せず、カードは未出力のまま残る(エラーは音声の設定を案内する)');
+  } else {
+    fail(`キャンセル時の挙動が想定外: downloaded=${Boolean(downloaded)} / ${$('word-export-status').textContent.slice(0, 150)}`);
+  }
+
+  $('tts-engine').value = 'cloud';
+  $('tts-engine').dispatchEvent(new window.Event('change'));
   $('word-clear-stock').click();
   await sleep(20);
 }

@@ -28,22 +28,22 @@ import {
 // 2026-10-05: lib/tts.js も Gemini TTS のために gemini.js を import するように
 // なった。**tts.js 側の `?v=` と必ず同じ値にすること**(URLが違うと同じ
 // モジュールが2つ読み込まれる)。
-} from './lib/gemini.js?v=20261026a';
+} from './lib/gemini.js?v=20261026b';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21: 一括出力タブのために buildApkg を複数種別対応にしたため、
 // 古い apkg.js が使われると groups 指定が無視されてしまう)。
 // apkg.js は app.js からしか import されていない。
-import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20261026a';
+import { buildApkg, fieldsFromItem } from './lib/apkg.js?v=20261026b';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-20: 習熟用のフィールド構成をv2へ変えた際、ここが無かったために
 // ブラウザが古い lib/shuujuku.js を読み続け、旧Num/Content形式のカードが
 // 出力され続けた)。shuujuku.js は app.js からしか import されていない。
 import {
   buildFieldsReadyItem, buildFieldsReadyItems, getNextNum, advanceNextNum,
-} from './lib/shuujuku.js?v=20261026a';
+} from './lib/shuujuku.js?v=20261026b';
 import {
   getNextDue, setNextDue, advanceNextDue, DUE_COUNTER_KEYS,
-} from './lib/dueCounter.js?v=20261026a';
+} from './lib/dueCounter.js?v=20261026b';
 // `?v=` を付ける理由と注意点は、下の './lib/sheets.js?v=...' のコメントを参照
 // (2026-08-21に付けた。読み上げテキストの組み立てを変えたため、古い tts.js を
 //  掴んだままだと「Ex1.」等が読み上げに残り続ける。tts.js を import している
@@ -54,7 +54,7 @@ import {
   listCloudVoices, PREBUILT_VOICES, prebuiltVoiceLabel, chirp3VoiceName, languageCodeFromVoiceName,
   GEMINI_TTS_MODELS, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE, DEFAULT_CLOUD_VOICE,
   geminiTtsSupportsStyle, TTS_ENGINE_GEMINI, TTS_ENGINE_CLOUD, DEFAULT_TEST_TEXT,
-} from './lib/tts.js?v=20261026a';
+} from './lib/tts.js?v=20261026b';
 import {
   getAccessToken, clearAccessToken, signOut, isSignedIn,
   beginAuthCodeFlow, completeAuthCodeFlowIfReturning,
@@ -64,16 +64,16 @@ import {
 // 更新しないため、これが無いとブラウザが古い lib/sheets.js を使い続ける。
 // **他から import されていないモジュールにだけ付けること**——同じモジュールを
 // 別々のURLで読むと実体が2つでき、ここでは accessToken などの状態が二重になる。
-} from './lib/sheets.js?v=20261026a';
-import * as dailyconv from './lib/dailyconv.js?v=20261026a';
+} from './lib/sheets.js?v=20261026b';
+import * as dailyconv from './lib/dailyconv.js?v=20261026b';
 import {
-  getAllUsage, usageSummary, clearCounts, clearLearnedLimits,
-} from './lib/quota.js?v=20261026a';
+  getAllUsage, getUsage, usageSummary, clearCounts, clearLearnedLimits,
+} from './lib/quota.js?v=20261026b';
 import {
   newSyncId, ensureItemIds, mergeStock, capacityPercent, parseIdArray,
   exceedsSyncLimit, SYNC_VALUE_LIMIT, CAPACITY_WARN_PERCENT, pruneTombstoneIds,
   isUnreadableJsonArray,
-} from './lib/sync.js?v=20261026a';
+} from './lib/sync.js?v=20261026b';
 
 // フィルターチェックボックスの状態をlocalStorageに永続化する際のキー接頭辞
 // (bindPersistentCheckbox()参照)。init()がモジュール読み込み直後に即時
@@ -1773,6 +1773,18 @@ function ttsSummaryText() {
   if (!$('tts-enabled').checked) return '🔇 音声: 付けない設定です(⚙設定 → TTS音声)。';
   const { opts, missing } = getTtsSettings();
   if (missing) return `⚠ 音声: ${missing}が未設定のため、音声無しで出力します(⚙設定 → TTS音声)。`;
+  // Gemini TTS は無料枠の上限が小さい(1モデルあたり1日10回程度・1フィールド=1回)ので、
+  // 出力する前に今日の使用回数を見せる。上限に達していれば、出力の前に気づけるよう
+  // 警告にする(2026-10-26。以前は出力を押して初めてエラーで分かった)。
+  if (opts.engine === TTS_ENGINE_GEMINI) {
+    const u = getUsage(opts.model);
+    if (u.limit && u.count >= u.limit) {
+      return `⚠ 音声: ${describeTtsVoice(opts)} は今日の上限(${u.limit}回)に達しています。`
+        + '⚙設定 → TTS音声 で Cloud TTS か別のTTSモデルに切り替えてください'
+        + '(このまま出力すると、音声なしで出力するか確認します)。';
+    }
+    return `🔊 音声: ${describeTtsVoice(opts)}(${usageSummary(opts.model)})`;
+  }
   return `🔊 音声: ${describeTtsVoice(opts)}`;
 }
 
@@ -1788,7 +1800,14 @@ function updateTtsSummary() {
 function ttsSkipNote() {
   if (!$('tts-enabled').checked) return '';
   const { missing } = getTtsSettings();
-  return missing ? `\n⚠ ${missing}が未設定のため、音声は付けていません(⚙設定 → TTS音声)。` : '';
+  if (missing) return `\n⚠ ${missing}が未設定のため、音声は付けていません(⚙設定 → TTS音声)。`;
+  if (exportAudio.skipped > 0) {
+    return `\n⚠ 音声の生成が途中で止まったため、一部(${exportAudio.skipped} 件)は音声なしで出力しました`
+      + `(${exportAudio.reason})。\n`
+      + '単語・AIに質問タブのカードは、上限が戻った後に「出力済みの印を外す」→ もう一度出力すると、'
+      + 'Anki上のカードが音声付きに更新されます(習熟用は、PCのTTSツールで後から付けられます)。';
+  }
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -2072,15 +2091,66 @@ async function embedTtsAudioIntoItems(items, fieldKeys, tabKey, status) {
       // tts_core.default_source_transform が同じことをする。
       if (key === 'answer' && isMeaningItem(item)) continue;
       showLoading(status, `音声を生成中... (${i + 1}/${items.length})`);
-      item[key] = await synthesizeFieldWithTags(
+      const tagged = await synthesizeOrSkip(() => synthesizeFieldWithTags(
         item[key],
         { ...opts, filenamePrefix: `tts_${tabKey}_${i}_${key}` },
         media,
-      );
+      ), i, items.length);
+      if (tagged !== null) item[key] = tagged;
     }
     out.push(item);
   }
   return { items: out, media };
+}
+
+// ---------------------------------------------------------------------------
+// 音声の合成が途中で止まったとき(2026-10-26追加)
+//
+// Gemini TTS の無料枠は1モデルあたり1日10回程度(1フィールド=1回)で、出力の途中で
+// 上限に当たりやすい。以前は音声の失敗1件で .apkg の出力全体が止まり、作った
+// カードを1枚も取り込めなかった。そこで、作れた分の音声はそのまま入れたうえで、
+// 残りを音声なしで出力するかを1回だけ確かめる(一括出力で複数のタブをまたいでも
+// 確認は1回)。音声なしで出力したカードは、単語・AIに質問タブなら「出力済みの印を
+// 外す」→ もう一度出力で、Anki上のカードが音声付きに更新される(guidが同じため)。
+// ---------------------------------------------------------------------------
+let exportAudio = { stopped: false, skipped: 0, reason: '' };
+
+/** 出力のたびに呼ぶ(beginApkgExport から)。 */
+function resetExportAudio() {
+  exportAudio = { stopped: false, skipped: 0, reason: '' };
+}
+
+/** エラー文言の要点(「詳細: {…JSON…}」より前)だけを取り出す。 */
+function errorSummary(message) {
+  return String(message || '').split('\n詳細')[0].trim();
+}
+
+/**
+ * 合成を実行する。失敗したら、残りを音声なしで続けるか確かめる。
+ * @returns {Promise<any|null>} 合成の結果。音声なしで続ける場合は null。
+ *   中止を選んだ場合は元の例外を投げ直す(出力全体が従来どおり止まる)。
+ */
+async function synthesizeOrSkip(run, done, total) {
+  if (exportAudio.stopped) {
+    exportAudio.skipped += 1;
+    return null;
+  }
+  try {
+    return await run();
+  } catch (e) {
+    const reason = errorSummary(e.message);
+    const goOn = confirm(
+      `音声の生成に失敗しました:\n${reason}\n\n`
+      + `ここまでに作れた音声はそのまま入れます。残り(約 ${Math.max(1, total - done)} 件)は`
+      + '音声なしで .apkg を出力しますか?\n\n'
+      + '「キャンセル」を押すと出力をやめます(カードはそのまま残ります)。',
+    );
+    if (!goOn) throw e;
+    exportAudio.stopped = true;
+    exportAudio.reason = reason.split('\n')[0];
+    exportAudio.skipped += 1;
+    return null;
+  }
 }
 
 /**
@@ -2098,13 +2168,13 @@ async function embedShuujukuTtsAudio(items, status) {
   const audioTagsByItem = [];
   for (let i = 0; i < items.length; i += 1) {
     showLoading(status, `音声を生成中... (${i + 1}/${items.length})`);
-    const tags = await synthesizeExampleAudioTags(
+    const tags = await synthesizeOrSkip(() => synthesizeExampleAudioTags(
       items[i].examples || [],
       opts,
       media,
       `tts_shuujuku_${i}`,
-    );
-    audioTagsByItem.push(tags);
+    ), i, items.length);
+    audioTagsByItem.push(tags || []);
   }
   return { audioTagsByItem, media };
 }
@@ -5022,6 +5092,7 @@ function beginApkgExport(statusEl) {
     const b = $(id);
     if (b) b.setAttribute('aria-disabled', 'true');
   });
+  resetExportAudio();
   acquireWakeLock();
   return true;
 }
@@ -5033,6 +5104,8 @@ function endApkgExport() {
     if (b) b.removeAttribute('aria-disabled');
   });
   releaseWakeLock();
+  // 音声の使用回数が変わったので、各タブの「音声: …」の行を更新する
+  updateTtsSummary();
 }
 
 // ---------------------------------------------------------------------------

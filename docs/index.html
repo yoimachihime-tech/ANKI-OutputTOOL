@@ -15,7 +15,7 @@
      言われる」という症状が出た。**docs/ 配下を変更したらこの値も
      更新すること**(日付+連番。app.js が import する lib/*.js を
      変更した場合は、そちらにも同じ考え方が必要になる点に注意)。 -->
-<link rel="stylesheet" href="./style.css?v=20261026a">
+<link rel="stylesheet" href="./style.css?v=20261026b">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -240,6 +240,13 @@
         Gemini API を1回呼ぶので、例文の多いカードをまとめて出力すると、その分だけ
         「使用状況」の回数が増えます。言語は文章から自動で判定されます。
         まれに、読み飛ばしや言い直しが入ることがあります(気になる場合は Cloud 側を使ってください)。
+      </p>
+      <!-- 2026-10-26: 無料枠でTTSモデルの上限に当たり、文章用のモデルを切り替えても
+           直らないという報告があった。上限が別であることを、ここに明記しておく。 -->
+      <p class="caution">
+        ⚠ 無料枠では、TTSモデルは<b>1モデルあたり1日10回程度</b>しか使えません(1フィールド=1回)。
+        上の「Gemini」の欄の「モデル(カードの文章を作るAI)」とは<b>別の上限</b>で、
+        あちらを切り替えても音声の上限は戻りません。毎日たくさん出力する場合は「Cloud TTS」がおすすめです。
       </p>
       <div class="field-grid">
         <div>
@@ -857,6 +864,6 @@ placeholder="I go to the park yesterday. She don't like coffee."></textarea>
      index.html と app.js の版が食い違うと、bindEvents() が参照するIDの
      食い違いでアプリ全体が動かなくなりうるため、両者を必ず一緒に
      読み込ませる。 -->
-<script type="module" src="./app.js?v=20261026a"></script>
+<script type="module" src="./app.js?v=20261026b"></script>
 </body>
 </html>

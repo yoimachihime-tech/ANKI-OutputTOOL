@@ -14,7 +14,7 @@
 // クロスオリジン要求を許可しているため、プロキシ無しで直接呼べる
 // (2026-07-28 に実測して確認済み)。
 
-import { recordRequest, learnDailyQuotaLimit, usageSummary } from './quota.js?v=20261026a';
+import { recordRequest, learnDailyQuotaLimit, usageSummary } from './quota.js?v=20261026b';
 
 const ENDPOINT_TMPL =
   'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent';
@@ -187,13 +187,26 @@ async function postGeminiRequest(requestBody, apiKey, model, { maxRetries = MAX_
           + `クレジットを追加してください。\n\n詳細: ${lastDetail}`,
         );
       }
+      if (isDailyQuotaError(lastDetail) && isGeminiTtsModel(model)) {
+        // 音声合成(TTS)のモデルは、カードの文章を作るモデルとは別の設定・別の上限
+        // (2026-10-26)。以前は文章用と同じ文言で「⚙設定でより上限の大きいモデルに」
+        // とだけ案内していたため、文章用のモデルを切り替えても直らなかった。
+        throw new GeminiError(
+          `Gemini TTS(音声合成)の1日あたりの上限に達しました(${model}: ${usageSummary(model)})。\n`
+          + 'これはカードの文章を作るモデルとは別の上限です(文章用のモデルを切り替えても直りません)。\n'
+          + '対処: ⚙設定 → TTS音声 で、音声エンジンを「Cloud TTS」に切り替えるか、'
+          + 'TTSの「モデル」を別のもの(上限はモデルごと)に変えてください。'
+          + '上限は太平洋時間の深夜(日本時間おおよそ午後4〜5時)にリセットされます。\n'
+          + `詳細: ${lastDetail}`,
+        );
+      }
       if (isDailyQuotaError(lastDetail)) {
         throw new GeminiError(
           `Gemini APIの1日あたりのリクエスト数上限に達しました(${model}: ${usageSummary(model)})。`
           + '時間を置いてもすぐには回復しないため、リトライは行わず打ち切りました。\n'
-          + '上限は太平洋時間の深夜にリセットされます。それまで待つか、⚙設定でより上限の'
-          + '大きいモデルに切り替えてください(使用状況は⚙設定の「Gemini APIの使用状況」で'
-          + `確認できます)。\n詳細: ${lastDetail}`,
+          + '上限は太平洋時間の深夜にリセットされます。それまで待つか、⚙設定 → Gemini の'
+          + '「モデル(カードの文章を作るAI)」を別のものに切り替えてください(上限はモデルごと。'
+          + `使用状況は⚙設定の「Gemini APIの使用状況」で確認できます)。\n詳細: ${lastDetail}`,
         );
       }
       if (attempt < maxRetries - 1) {

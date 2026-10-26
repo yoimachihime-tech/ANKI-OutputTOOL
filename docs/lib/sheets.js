@@ -51,7 +51,7 @@
 // 同期データの分割保存(2026-08-05)。1キーの値が1セルの上限(50,000文字)を
 // 超えても書けるよう、B列以降へチャンクに分けて並べる。定数と分割・連結の
 // 処理そのものは sync.js が持つ(このファイルは Sheets API との入出力だけを担う)。
-import { splitIntoChunks, joinChunks, SYNC_MAX_CHUNKS } from './sync.js?v=20261026a';
+import { splitIntoChunks, joinChunks, SYNC_MAX_CHUNKS } from './sync.js?v=20261026b';
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';

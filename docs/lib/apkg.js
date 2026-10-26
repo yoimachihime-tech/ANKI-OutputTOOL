@@ -16,7 +16,7 @@
 // 唯一 JS で再実装しているのが guid(guid.js)とカード生成条件(req)の判定で、
 // どちらも tools/verify_web_parity.mjs で Python 版との一致を検証している。
 
-import { buildItemGuid } from './guid.js?v=20261026a';
+import { buildItemGuid } from './guid.js?v=20261026b';
 
 const SQL_JS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
 
